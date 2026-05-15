@@ -333,15 +333,20 @@ export default function App() {
       {/* ---------------------------------------------------------------- */}
       {/* HEADER — titre + statut + actions                                */}
       {/* ---------------------------------------------------------------- */}
-      <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-3 flex-wrap">
-        <h1 className="text-xl font-bold text-slate-800">📊 Gantt</h1>
+      {/* v1.8 — Header compact sur une seule ligne. Boutons icône avec
+          tooltip pour les actions, libellés ultracourts pour le reste.
+          `flex-nowrap` + `overflow-hidden` empêchent le retour à la ligne ;
+          le select projet `min-w-0` peut rétrécir si nécessaire. */}
+      <header className="bg-white border-b border-slate-200 px-3 py-2 flex items-center gap-2 flex-nowrap overflow-hidden whitespace-nowrap">
+        <h1 className="text-lg font-bold text-slate-800 shrink-0" title="Gantt">
+          📊
+        </h1>
 
         {/* v1.8 — Sélecteur de projet + actions CRUD */}
         {state && (
-          <div className="flex items-center gap-1 ml-2 pl-2 border-l border-slate-200">
-            <span className="text-xs text-slate-500 mr-1">Projet</span>
+          <div className="flex items-center gap-1 pl-2 border-l border-slate-200 min-w-0">
             <select
-              className="text-sm border border-slate-300 rounded px-2 py-1 bg-white hover:bg-slate-50"
+              className="text-sm border border-slate-300 rounded px-2 py-1 bg-white hover:bg-slate-50 max-w-[10rem] truncate"
               value={state.current_project_id ?? ''}
               onChange={(e) => handleSelectProject(e.target.value)}
               disabled={state.projects.length === 0}
@@ -358,14 +363,14 @@ export default function App() {
               )}
             </select>
             <button
-              className="px-2 py-1 text-sm rounded border border-slate-300 hover:bg-slate-100"
+              className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
               onClick={handleCreateProject}
               title="Nouveau projet"
             >
               +
             </button>
             <button
-              className="px-2 py-1 text-sm rounded border border-slate-300 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
               onClick={handleRenameProject}
               disabled={!currentProject}
               title="Renommer le projet"
@@ -373,7 +378,7 @@ export default function App() {
               ✎
             </button>
             <button
-              className="px-2 py-1 text-sm rounded border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+              className="w-7 h-7 text-sm rounded border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
               onClick={handleDeleteProject}
               disabled={!currentProject || state.projects.length <= 1}
               title={
@@ -387,46 +392,50 @@ export default function App() {
           </div>
         )}
 
-        <div className="flex items-center gap-1 ml-4">
+        {/* Navigation temporelle — icônes seules + tooltips */}
+        <div className="flex items-center gap-1 pl-2 border-l border-slate-200 shrink-0">
           <button
-            className="px-2 py-1 text-sm rounded border border-slate-300 hover:bg-slate-100"
+            className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
             onClick={() => shiftWindow(-30)}
             title="Reculer d'un mois"
           >
-            « mois
+            «
           </button>
           <button
-            className="px-2 py-1 text-sm rounded border border-slate-300 hover:bg-slate-100"
+            className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
             onClick={() => shiftWindow(-7)}
             title="Reculer d'une semaine"
           >
-            ‹ sem
+            ‹
           </button>
           <button
-            className="px-2 py-1 text-sm rounded border border-slate-300 hover:bg-slate-100"
+            className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
             onClick={() => setWindow(defaultWindow())}
             title="Recentrer sur aujourd'hui"
           >
-            Aujourd'hui
+            ⌂
           </button>
           <button
-            className="px-2 py-1 text-sm rounded border border-slate-300 hover:bg-slate-100"
+            className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
             onClick={() => shiftWindow(7)}
             title="Avancer d'une semaine"
           >
-            sem ›
+            ›
           </button>
           <button
-            className="px-2 py-1 text-sm rounded border border-slate-300 hover:bg-slate-100"
+            className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
             onClick={() => shiftWindow(30)}
             title="Avancer d'un mois"
           >
-            mois »
+            »
           </button>
         </div>
 
-        <div className="flex items-center gap-2 ml-2">
-          <span className="text-xs text-slate-600">Zoom</span>
+        {/* Zoom — slider plus court, libellé masqué */}
+        <div
+          className="flex items-center gap-1 pl-2 border-l border-slate-200 shrink-0"
+          title="Zoom (largeur d'un jour)"
+        >
           <button
             className="w-7 h-7 rounded border border-slate-300 hover:bg-slate-100"
             onClick={() => setDayWidth((v) => clampDayWidth(v - 4))}
@@ -440,6 +449,7 @@ export default function App() {
             max={MAX_DAY_WIDTH}
             value={dayWidth}
             onChange={(e) => setDayWidth(clampDayWidth(Number(e.target.value)))}
+            className="w-24"
           />
           <button
             className="w-7 h-7 rounded border border-slate-300 hover:bg-slate-100"
@@ -450,25 +460,28 @@ export default function App() {
           </button>
         </div>
 
-        <div className="ml-auto flex items-center gap-2">
+        {/* Actions globales — alignées à droite, icônes seules */}
+        <div className="ml-auto flex items-center gap-1 shrink-0">
           <button
-            className="px-3 py-1.5 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700"
+            className="h-7 px-2 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700"
             onClick={() => setCreating(true)}
+            title="Nouvelle tâche / jalon / phase"
           >
-            + Nouvelle tâche
+            + Tâche
           </button>
           <button
-            className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
+            className="w-7 h-7 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
             onClick={handleScreenshot}
-            title="Télécharge un PNG du Gantt pour PowerPoint"
+            title="Capture PNG du Gantt (pour PowerPoint)"
           >
-            📷 Capture PNG
+            📷
           </button>
           <button
-            className="px-3 py-1.5 text-sm rounded border border-slate-300 hover:bg-slate-100"
+            className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
             onClick={handleReset}
+            title="Restaurer les données de démonstration"
           >
-            Reset démo
+            ↺
           </button>
           <StatusBadge status={status} />
         </div>
@@ -556,16 +569,39 @@ async function formatApiError(res: Response): Promise<string> {
   }
 }
 
-/** Petit badge de statut réseau (en haut à droite). */
+/**
+ * Petit badge de statut réseau (en haut à droite). v1.8 — Compacté en
+ * icône seule pour tenir sur une ligne ; le label complet reste accessible
+ * via le tooltip `title`.
+ */
 function StatusBadge({ status }: { status: NetStatus }) {
   const cfg = {
-    idle: { text: '…', cls: 'bg-slate-200 text-slate-600' },
-    loading: { text: '⟳ Sauvegarde…', cls: 'bg-amber-100 text-amber-700' },
-    ok: { text: '✓ Synchronisé', cls: 'bg-emerald-100 text-emerald-700' },
-    error: { text: '✕ Erreur', cls: 'bg-red-100 text-red-700' },
+    idle: {
+      text: '…',
+      label: 'En attente',
+      cls: 'bg-slate-200 text-slate-600',
+    },
+    loading: {
+      text: '⟳',
+      label: 'Sauvegarde en cours',
+      cls: 'bg-amber-100 text-amber-700',
+    },
+    ok: {
+      text: '✓',
+      label: 'Synchronisé',
+      cls: 'bg-emerald-100 text-emerald-700',
+    },
+    error: {
+      text: '✕',
+      label: 'Erreur réseau',
+      cls: 'bg-red-100 text-red-700',
+    },
   }[status]
   return (
-    <span className={`text-xs px-2 py-1 rounded ${cfg.cls}`} title={status}>
+    <span
+      className={`inline-flex items-center justify-center w-7 h-7 text-sm rounded ${cfg.cls}`}
+      title={cfg.label}
+    >
       {cfg.text}
     </span>
   )

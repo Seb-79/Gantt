@@ -13,6 +13,7 @@ import {
   isWeekend,
   parseISO,
   startOfDay,
+  startOfWeek,
   startOfMonth,
 } from 'date-fns'
 import type { Collaborator, Task } from './types'
@@ -192,6 +193,47 @@ export function maxIso(a: string, b: string): string {
   if (!a) return b
   if (!b) return a
   return a > b ? a : b
+}
+
+/**
+ * Retourne le LUNDI de la semaine de la date passée.
+ * Si la date est déjà un lundi, la renvoie inchangée ; sinon recule
+ * jusqu'au lundi précédent.
+ *
+ * @param iso  Date ISO YYYY-MM-DD.
+ * @returns    Date ISO du lundi de la même semaine.
+ */
+export function mondayOnOrBefore(iso: string): string {
+  // weekStartsOn: 1 = lundi (l'ISO 8601 standard).
+  return dateToIso(startOfWeek(isoToDate(iso), { weekStartsOn: 1 }))
+}
+
+/**
+ * Calcule la fenêtre temporelle d'affichage par défaut à partir des tâches :
+ * démarre au LUNDI de la semaine de la tâche démarrant le plus tôt et
+ * couvre N mois.
+ *
+ * Si la liste de tâches est vide, retombe sur `defaultWindow()` (4 mois
+ * autour d'aujourd'hui, aligné sur le 1er du mois).
+ *
+ * @param tasks   Liste de tâches (au moins `start_date` requis sur chacune).
+ * @param months  Nombre de mois à afficher (défaut : 4).
+ * @returns       { startIso, endIso } bornes du calendrier (incluses).
+ */
+export function windowFromTasks(
+  tasks: Array<{ start_date: string }>,
+  months: number = 4,
+): { startIso: string; endIso: string } {
+  if (tasks.length === 0) return defaultWindow(undefined, months)
+  // La comparaison lexicographique fonctionne sur YYYY-MM-DD.
+  let earliest = tasks[0].start_date
+  for (const t of tasks) {
+    if (t.start_date && t.start_date < earliest) earliest = t.start_date
+  }
+  const startIso = mondayOnOrBefore(earliest)
+  // Fin = start + N mois - 1 jour (cohérent avec defaultWindow).
+  const end = addDays(addMonths(isoToDate(startIso), months), -1)
+  return { startIso, endIso: dateToIso(end) }
 }
 
 /**

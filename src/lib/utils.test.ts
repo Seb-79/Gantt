@@ -16,9 +16,11 @@ import {
   isWeekendDay,
   makeId,
   maxIso,
+  mondayOnOrBefore,
   rangeToWidth,
   sortTasksHierarchically,
   todayIso,
+  windowFromTasks,
   DEFAULT_DAY_WIDTH,
   DEFAULT_TASK_COLOR,
   MAX_DAY_WIDTH,
@@ -208,6 +210,49 @@ describe('maxIso', () => {
     expect(maxIso('', '2026-05-15')).toBe('2026-05-15')
     expect(maxIso('2026-05-15', '')).toBe('2026-05-15')
     expect(maxIso('', '')).toBe('')
+  })
+})
+
+describe('mondayOnOrBefore', () => {
+  it('renvoie le lundi pour un mardi (recul de 1 j)', () => {
+    // 2026-05-12 est un mardi → lundi de la même semaine = 2026-05-11
+    expect(mondayOnOrBefore('2026-05-12')).toBe('2026-05-11')
+  })
+
+  it('un lundi reste inchangé', () => {
+    expect(mondayOnOrBefore('2026-05-11')).toBe('2026-05-11')
+  })
+
+  it('un dimanche recule au lundi de la semaine en cours', () => {
+    // 2026-05-17 est un dimanche → lundi 2026-05-11 (semaine ISO)
+    expect(mondayOnOrBefore('2026-05-17')).toBe('2026-05-11')
+  })
+})
+
+describe('windowFromTasks', () => {
+  it('démarre au lundi de la tâche la plus précoce', () => {
+    const tasks = [
+      { start_date: '2026-05-15' }, // vendredi
+      { start_date: '2026-05-20' },
+      { start_date: '2026-05-12' }, // mardi → la plus précoce
+      { start_date: '2026-06-01' },
+    ]
+    const w = windowFromTasks(tasks, 4)
+    expect(w.startIso).toBe('2026-05-11') // lundi de la semaine du 2026-05-12
+    // start + 4 mois - 1 jour
+    expect(w.endIso).toBe('2026-09-10')
+  })
+
+  it("liste vide → retombe sur defaultWindow autour d'aujourd'hui", () => {
+    const w = windowFromTasks([], 4)
+    expect(w.startIso).toMatch(/^\d{4}-\d{2}-01$/)
+    expect(w.endIso).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  it('paramétrable sur N mois', () => {
+    const w = windowFromTasks([{ start_date: '2026-05-12' }], 6)
+    expect(w.startIso).toBe('2026-05-11')
+    expect(w.endIso).toBe('2026-11-10')
   })
 })
 

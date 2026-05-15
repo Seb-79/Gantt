@@ -22,6 +22,7 @@ import {
   MIN_DAY_WIDTH,
   sortTasksHierarchically,
   todayIso,
+  windowFromTasks,
 } from './lib/utils'
 import type { GanttState, Task } from './lib/types'
 
@@ -49,6 +50,13 @@ export default function App() {
   const ganttRef = useRef<HTMLDivElement | null>(null)
 
   /**
+   * Drapeau "fenêtre déjà recalée à partir des tâches" : empêche d'écraser
+   * la navigation manuelle de l'utilisateur (boutons « mois / sem »)
+   * lors des polls suivants.
+   */
+  const initialWindowSet = useRef(false)
+
+  /**
    * Tâches triées hiérarchiquement : chaque enfant juste après son parent.
    * Mémoïsé pour ne recalculer que si la liste change vraiment.
    */
@@ -56,6 +64,22 @@ export default function App() {
     () => (state ? sortTasksHierarchically(state.tasks) : []),
     [state],
   )
+
+  /**
+   * v1.4 — Au premier chargement de l'état, recale la fenêtre de visualisation
+   * sur le LUNDI de la semaine de la tâche démarrant le plus tôt (plutôt que
+   * d'afficher 4 mois à partir d'aujourd'hui). N'est exécuté qu'une seule fois
+   * grâce au drapeau `initialWindowSet`, pour ne pas écraser ensuite les
+   * déplacements manuels de l'utilisateur dans le calendrier.
+   */
+  useEffect(() => {
+    if (!state || initialWindowSet.current) return
+    if (state.tasks.length === 0) return
+    initialWindowSet.current = true
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setWindow(windowFromTasks(state.tasks, 4))
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [state])
 
   /**
    * Récupère l'état complet depuis l'API. Met à jour status + state.

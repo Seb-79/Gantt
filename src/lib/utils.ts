@@ -156,7 +156,13 @@ export function effectiveTaskColor(
  * @returns       Identifiant unique.
  */
 export function makeId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`
+  // sonarjs/pseudo-random désactivé : `makeId` ne génère pas un secret
+  // cryptographique. C'est un id local lisible (préfixe + timestamp + random
+  // base36) — suffisant pour un usage mono-utilisateur LAN, et déjà signalé
+  // dans la JSDoc ci-dessus.
+  // eslint-disable-next-line sonarjs/pseudo-random
+  const rnd = Math.floor(Math.random() * 1e6).toString(36)
+  return `${prefix}_${Date.now().toString(36)}_${rnd}`
 }
 
 /**

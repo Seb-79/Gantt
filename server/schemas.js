@@ -165,57 +165,56 @@ export const MoveTaskBody = z.object({
  * @param {{params?: import('zod').ZodTypeAny, body?: import('zod').ZodTypeAny, query?: import('zod').ZodTypeAny}} schemas
  * @returns {import('express').RequestHandler}
  */
+/**
+ * Valide une section (params, body ou query) avec son schéma Zod.
+ * En cas d'échec, accumule les erreurs dans `details`.
+ * En cas de succès, applique la valeur parsée via `assign(req, parsed)` —
+ * Express 5 interdit la réécriture de `req.query`, d'où le callback.
+ *
+ * @param {import('zod').ZodTypeAny|undefined} schema  Schéma ou undefined (no-op).
+ * @param {unknown} input                              Source à valider.
+ * @param {string} where                               'params' | 'body' | 'query'.
+ * @param {(parsed:any)=>void} assign                  Callback en cas de succès.
+ * @param {Array<{where:string,path:any,message:string}>} details  Accumulateur.
+ */
+function validateSection(schema, input, where, assign, details) {
+  if (!schema) return
+  const r = schema.safeParse(input)
+  if (r.success) {
+    assign(r.data)
+    return
+  }
+  for (const issue of r.error.issues) {
+    details.push({ where, path: issue.path, message: issue.message })
+  }
+}
+
 export function validate(schemas) {
   return (req, res, next) => {
     const details = []
-
-    if (schemas.params) {
-      const r = schemas.params.safeParse(req.params)
-      if (!r.success) {
-        for (const issue of r.error.issues) {
-          details.push({
-            where: 'params',
-            path: issue.path,
-            message: issue.message,
-          })
-        }
-      } else {
-        req.params = r.data
-      }
-    }
-
-    if (schemas.body) {
-      const r = schemas.body.safeParse(req.body)
-      if (!r.success) {
-        for (const issue of r.error.issues) {
-          details.push({
-            where: 'body',
-            path: issue.path,
-            message: issue.message,
-          })
-        }
-      } else {
-        req.body = r.data
-      }
-    }
-
-    if (schemas.query) {
-      const r = schemas.query.safeParse(req.query)
-      if (!r.success) {
-        for (const issue of r.error.issues) {
-          details.push({
-            where: 'query',
-            path: issue.path,
-            message: issue.message,
-          })
-        }
-      } else {
-        // req.query est read-only en Express 5 — on annexe le résultat
-        // sur un attribut séparé pour les routes qui en ont besoin.
-        req.validQuery = r.data
-      }
-    }
-
+    validateSection(
+      schemas.params,
+      req.params,
+      'params',
+      (d) => (req.params = d),
+      details,
+    )
+    validateSection(
+      schemas.body,
+      req.body,
+      'body',
+      (d) => (req.body = d),
+      details,
+    )
+    // req.query est read-only en Express 5 — on annexe le résultat sur
+    // un attribut séparé pour les routes qui en ont besoin.
+    validateSection(
+      schemas.query,
+      req.query,
+      'query',
+      (d) => (req.validQuery = d),
+      details,
+    )
     if (details.length > 0) {
       return res.status(400).json({ error: 'Validation échouée', details })
     }

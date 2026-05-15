@@ -158,6 +158,17 @@ export default function TaskEditor({
   const minStart = predecessor?.end_date || ''
 
   /**
+   * Calcule le tooltip à afficher sur le champ "Début" selon le contexte.
+   * Évite un ternaire imbriqué dans le JSX (cf. `sonarjs/no-nested-conditional`).
+   */
+  function startDateTooltip(): string | undefined {
+    if (kind === 'phase') return 'Calculée automatiquement à partir des enfants'
+    if (predecessor)
+      return `Doit être ≥ fin du prédécesseur « ${predecessor.name} » (${minStart})`
+    return undefined
+  }
+
+  /**
    * Valide les champs puis appelle onSave. Affiche un message d'erreur
    * dans le modal (au lieu d'un alert technique) si la validation échoue.
    */
@@ -295,13 +306,7 @@ export default function TaskEditor({
               min={minStart || undefined}
               onChange={(e) => handleStartDateChange(e.target.value)}
               disabled={kind === 'phase'}
-              title={
-                kind === 'phase'
-                  ? 'Calculée automatiquement à partir des enfants'
-                  : predecessor
-                    ? `Doit être ≥ fin du prédécesseur « ${predecessor.name} » (${minStart})`
-                    : undefined
-              }
+              title={startDateTooltip()}
             />
           </label>
 

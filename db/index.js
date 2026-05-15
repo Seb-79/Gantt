@@ -810,81 +810,105 @@ function descendantTaskIds(db, rootId) {
  * @param {{parent_id: string|null, before_id: string|null}} target
  * @returns {{version:number, changed:boolean}}
  */
+/**
+ * Vérifie que `parent_id` est un parent valide pour la tâche `id` :
+ *   • pas elle-même
+ *   • pas un de ses descendants (anti-cycle)
+ *   • doit exister en base
+ *
+ * Lève une Error explicite (convertie en HTTP 400 par le caller).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} id          Id de la tâche déplacée.
+ * @param {string|null} parentId  Id du parent cible (null = racine).
+ */
+function assertValidMoveParent(db, id, parentId) {
+  if (parentId === id) {
+    throw new Error('Une tâche ne peut pas être son propre parent')
+  }
+  if (!parentId) return
+  const banned = descendantTaskIds(db, id)
+  if (banned.has(parentId)) {
+    throw new Error(
+      'Impossible de déplacer une tâche dans un de ses propres descendants',
+    )
+  }
+  const parentExists = db
+    .prepare(`SELECT 1 AS x FROM tasks WHERE id = ?`)
+    .get(parentId)
+  if (!parentExists) {
+    throw new Error(`parent introuvable : ${parentId}`)
+  }
+}
+
+/**
+ * Liste les ids des frères d'une tâche dans un parent donné (en l'excluant),
+ * triés par position. Gère le cas spécial parent NULL (= racine).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string|null} parentId
+ * @param {string} excludeId   Id à exclure de la liste.
+ * @returns {string[]}         Ids triés.
+ */
+function siblingIds(db, parentId, excludeId) {
+  const rows =
+    parentId === null
+      ? db
+          .prepare(
+            `SELECT id FROM tasks WHERE parent_id IS NULL AND id != ?
+               ORDER BY position ASC, id ASC`,
+          )
+          .all(excludeId)
+      : db
+          .prepare(
+            `SELECT id FROM tasks WHERE parent_id = ? AND id != ?
+               ORDER BY position ASC, id ASC`,
+          )
+          .all(parentId, excludeId)
+  return rows.map((r) => r.id)
+}
+
+/**
+ * Réécrit `position` (0..N-1) pour la liste d'ids passée — compaction.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string[]} ids
+ */
+function renumberPositions(db, ids) {
+  const upd = db.prepare(`UPDATE tasks SET position = ? WHERE id = ?`)
+  for (let i = 0; i < ids.length; i++) upd.run(i, ids[i])
+}
+
 export function moveTask(db, id, { parent_id, before_id }) {
   const tx = db.transaction(() => {
     const task = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id)
     if (!task) return { version: getVersion(db), changed: false }
 
-    // Anti-cycle : on refuse de placer la tâche dans elle-même ou un de
-    // ses descendants. Lève une erreur explicite (le caller la convertit
-    // en HTTP 400).
-    if (parent_id === id) {
-      throw new Error('Une tâche ne peut pas être son propre parent')
-    }
-    if (parent_id) {
-      const banned = descendantTaskIds(db, id)
-      if (banned.has(parent_id)) {
-        throw new Error(
-          'Impossible de déplacer une tâche dans un de ses propres descendants',
-        )
-      }
-      // Vérifier aussi que le parent existe.
-      const parentExists = db
-        .prepare(`SELECT 1 AS x FROM tasks WHERE id = ?`)
-        .get(parent_id)
-      if (!parentExists) {
-        throw new Error(`parent introuvable : ${parent_id}`)
-      }
-    }
+    assertValidMoveParent(db, id, parent_id)
 
     const oldParentId = task.parent_id
     const newParentId = parent_id ?? null
 
-    // 1. Met à jour parent_id de la tâche déplacée (la position sera
-    //    écrasée par la renumérotation ci-dessous).
+    // 1. Met à jour parent_id de la tâche déplacée.
     db.prepare(`UPDATE tasks SET parent_id = ? WHERE id = ?`).run(
       newParentId,
       id,
     )
 
-    // 2. Liste des nouveaux frères (sans la tâche déplacée), triés.
-    //    Note : on prépare 2 versions car SQLite n'accepte pas `= NULL`.
-    const siblingsStmtNull = db.prepare(
-      `SELECT id FROM tasks WHERE parent_id IS NULL AND id != ?
-         ORDER BY position ASC, id ASC`,
-    )
-    const siblingsStmt = db.prepare(
-      `SELECT id FROM tasks WHERE parent_id = ? AND id != ?
-         ORDER BY position ASC, id ASC`,
-    )
-    const newSiblings =
-      newParentId === null
-        ? siblingsStmtNull.all(id).map((r) => r.id)
-        : siblingsStmt.all(newParentId, id).map((r) => r.id)
-
-    // 3. Calcul de l'index d'insertion. before_id absent ou inconnu = fin.
+    // 2. Construit la nouvelle liste de frères avec la tâche insérée
+    //    à la bonne position, puis renumérote.
+    const newSiblings = siblingIds(db, newParentId, id)
     let insertAt = newSiblings.length
     if (before_id) {
       const idx = newSiblings.indexOf(before_id)
       if (idx >= 0) insertAt = idx
     }
     newSiblings.splice(insertAt, 0, id)
+    renumberPositions(db, newSiblings)
 
-    // 4. Renumérotation compacte du nouveau parent (positions 0..N-1).
-    const updatePos = db.prepare(`UPDATE tasks SET position = ? WHERE id = ?`)
-    for (let i = 0; i < newSiblings.length; i++) {
-      updatePos.run(i, newSiblings[i])
-    }
-
-    // 5. Si parent change, on renumérote aussi l'ancien parent (compaction).
+    // 3. Si parent change, on renumérote aussi l'ancien parent (compaction).
     if (oldParentId !== newParentId) {
-      const oldSiblings =
-        oldParentId === null
-          ? siblingsStmtNull.all(id).map((r) => r.id)
-          : siblingsStmt.all(oldParentId, id).map((r) => r.id)
-      for (let i = 0; i < oldSiblings.length; i++) {
-        updatePos.run(i, oldSiblings[i])
-      }
+      renumberPositions(db, siblingIds(db, oldParentId, id))
     }
 
     // v1.6 — Recompute des dates des phases ancêtres (ancien ET nouveau parent).

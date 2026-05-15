@@ -549,24 +549,31 @@ export default function App() {
  * @param res  Réponse HTTP (déjà constatée non-ok).
  * @returns    Chaîne courte affichable à l'utilisateur.
  */
+/**
+ * Formate un détail Zod (`{ where, path, message }`) en ligne lisible.
+ * @param d  Objet détail tel que renvoyé par l'API.
+ */
+function formatErrorDetail(d: { path?: unknown; message?: unknown }): string {
+  const path = Array.isArray(d.path) ? d.path.join('.') : ''
+  return `• ${path ? path + ' : ' : ''}${d.message}`
+}
+
 async function formatApiError(res: Response): Promise<string> {
+  let data: unknown
   try {
-    const data = await res.json()
-    if (data && typeof data === 'object' && 'error' in data) {
-      const lines: string[] = [String(data.error)]
-      if (Array.isArray(data.details) && data.details.length > 0) {
-        for (const d of data.details) {
-          const path = Array.isArray(d.path) ? d.path.join('.') : ''
-          lines.push(`• ${path ? path + ' : ' : ''}${d.message}`)
-        }
-      }
-      return lines.join('\n')
-    }
-    return JSON.stringify(data)
+    data = await res.json()
   } catch {
-    // Pas de JSON exploitable → texte brut.
     return `HTTP ${res.status}`
   }
+  if (!data || typeof data !== 'object' || !('error' in data)) {
+    return JSON.stringify(data)
+  }
+  const lines: string[] = [String((data as { error: unknown }).error)]
+  const details = (data as { details?: unknown }).details
+  if (Array.isArray(details)) {
+    for (const d of details) lines.push(formatErrorDetail(d))
+  }
+  return lines.join('\n')
 }
 
 /**

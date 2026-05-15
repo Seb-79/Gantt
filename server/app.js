@@ -84,8 +84,11 @@ function safeRoute(handler) {
 export function createApp(db, { requestLog = true } = {}) {
   const app = express()
 
-  // Helmet — durcissement des headers HTTP. CSP désactivée (API JSON pure,
-  // ne sert pas de pages HTML).
+  // Helmet — durcissement des headers HTTP. CSP désactivée volontairement :
+  // cette app Express ne sert QUE l'API JSON (les pages HTML sont servies par
+  // Vite côté front, qui pose sa propre CSP). HSTS désactivée aussi : on est
+  // en HTTP local sur LAN, pas en HTTPS public.
+  // eslint-disable-next-line sonarjs/content-security-policy
   app.use(
     helmet({
       contentSecurityPolicy: false,

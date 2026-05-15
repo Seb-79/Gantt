@@ -1,8 +1,16 @@
 # =============================================================================
-# CI — GitHub Actions
+# CI (Continuous Integration) — GitHub Actions
 # =============================================================================
-# Lance lint, format:check, tests et build à chaque push sur main et à chaque
-# pull request. Échec = badge rouge sur le repo.
+# À chaque push sur la branche `main` ou à chaque ouverture / mise à jour de
+# pull request, GitHub lance les vérifications suivantes :
+#
+#   1. lint              : ESLint signale les erreurs de qualité (sonarjs inclus)
+#   2. format:check      : Prettier vérifie que tout est formaté
+#   3. test              : Vitest exécute tous les tests unitaires (146 tests)
+#   4. build             : tsc + vite vérifient la compilation TypeScript
+#
+# Si une étape échoue, le commit affiche une croix rouge sur GitHub et un mail
+# est envoyé. Cela évite les régressions silencieuses.
 # =============================================================================
 
 name: CI
@@ -14,28 +22,29 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Récupérer le code
+        uses: actions/checkout@v6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Installer Node.js 24
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
-      - name: Install dependencies
+      - name: Installer les dépendances
         run: npm ci
 
-      - name: Lint
+      - name: Lint (ESLint + sonarjs)
         run: npm run lint
 
-      - name: Format check
+      - name: Format (Prettier check)
         run: npm run format:check
 
-      - name: Tests
-        run: npm test
+      - name: Tests unitaires (Vitest)
+        run: npm run test
 
-      - name: Build
+      - name: Build (TypeScript + Vite)
         run: npm run build

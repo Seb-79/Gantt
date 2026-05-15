@@ -1,7 +1,10 @@
+# Fichiers générés / runtime — ne pas reformater
 dist
 coverage
 node_modules
 data.db
 *.db-shm
 *.db-wal
+*.log
 package-lock.json
+backups

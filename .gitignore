@@ -15,6 +15,9 @@ data.db-shm
 data.db-wal
 *.bak.*
 
+# Sauvegardes quotidiennes (v1.8) — fichiers générés
+backups/data-*.db
+
 # Couverture
 coverage
 

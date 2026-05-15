@@ -290,3 +290,98 @@ describe('Tâches', () => {
     expect(t2a.predecessor_id).toBe('t1a')
   })
 })
+
+// =============================================================================
+// PROJETS (v1.8)
+// =============================================================================
+
+describe('Projets', () => {
+  let app
+  beforeEach(() => {
+    app = makeApp()
+  })
+
+  it('GET /api/state renvoie le projet courant + la liste des projets', async () => {
+    const res = await request(app).get('/api/state').expect(200)
+    expect(Array.isArray(res.body.projects)).toBe(true)
+    expect(res.body.projects.length).toBeGreaterThanOrEqual(1)
+    expect(res.body.current_project_id).toBe(res.body.projects[0].id)
+    // Toutes les tâches du résultat appartiennent au projet courant.
+    for (const t of res.body.tasks) {
+      expect(t.project_id).toBe(res.body.current_project_id)
+    }
+  })
+
+  it('POST /api/projects crée un projet, GET /api/state?project_id=… le charge vide', async () => {
+    const created = await request(app)
+      .post('/api/projects')
+      .send({ id: 'p_test', name: 'Mon test' })
+      .expect(200)
+    expect(created.body.project.name).toBe('Mon test')
+
+    const state = await request(app)
+      .get('/api/state?project_id=p_test')
+      .expect(200)
+    expect(state.body.current_project_id).toBe('p_test')
+    expect(state.body.tasks.length).toBe(0)
+    expect(state.body.projects.length).toBe(2)
+  })
+
+  it('PATCH /api/projects/:id renomme', async () => {
+    const list = await request(app).get('/api/projects').expect(200)
+    const first = list.body.projects[0]
+    await request(app)
+      .patch(`/api/projects/${first.id}`)
+      .send({ name: 'Renommé' })
+      .expect(200)
+    const after = await request(app).get('/api/projects').expect(200)
+    expect(after.body.projects.find((p) => p.id === first.id).name).toBe(
+      'Renommé',
+    )
+  })
+
+  it('DELETE /api/projects/:id supprime le projet et ses tâches (cascade)', async () => {
+    // Crée un 2e projet pour pouvoir supprimer le 1er.
+    await request(app)
+      .post('/api/projects')
+      .send({ id: 'p_other', name: 'Autre' })
+      .expect(200)
+    // Récupère l'id du projet par défaut.
+    const list = await request(app).get('/api/projects').expect(200)
+    const def = list.body.projects.find((p) => p.id !== 'p_other')
+    await request(app).delete(`/api/projects/${def.id}`).expect(200)
+    // Plus aucune tâche : le seul projet restant est p_other (vide).
+    const state = await request(app)
+      .get('/api/state?project_id=p_other')
+      .expect(200)
+    expect(state.body.tasks.length).toBe(0)
+    expect(state.body.projects.length).toBe(1)
+  })
+
+  it('DELETE /api/projects/:id refuse de supprimer le dernier projet', async () => {
+    const list = await request(app).get('/api/projects').expect(200)
+    const only = list.body.projects[0]
+    await request(app).delete(`/api/projects/${only.id}`).expect(400)
+  })
+
+  it('POST /api/tasks rattache la tâche au project_id fourni', async () => {
+    await request(app)
+      .post('/api/projects')
+      .send({ id: 'p_other', name: 'Autre' })
+      .expect(200)
+    await request(app)
+      .post('/api/tasks')
+      .send({
+        id: 't_iso',
+        name: 'Tâche isolée',
+        start_date: '2026-09-01',
+        project_id: 'p_other',
+      })
+      .expect(200)
+    const state = await request(app)
+      .get('/api/state?project_id=p_other')
+      .expect(200)
+    expect(state.body.tasks).toHaveLength(1)
+    expect(state.body.tasks[0].id).toBe('t_iso')
+  })
+})

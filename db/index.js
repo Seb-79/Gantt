@@ -48,12 +48,75 @@ export function initDb(dbPath) {
   // kind='phase', on la reconstruit (sinon les insert phase plantent).
   ensureKindAcceptsPhase(db)
 
+  // v1.8 — Crée la colonne project_id si elle manque (base d'avant la v1.8)
+  // et rattache toutes les tâches orphelines au projet "Projet 1" (créé à la
+  // volée s'il n'existe pas encore).
+  ensureProjectsMigration(db)
+
   // Initialise la version à 0 si la ligne meta n'existe pas encore.
   db.prepare(
     `INSERT OR IGNORE INTO meta(key, value) VALUES ('version', '0')`,
   ).run()
 
   return db
+}
+
+/** Id du projet par défaut créé lors de la migration v1.8. */
+export const DEFAULT_PROJECT_ID = 'p_default'
+/** Nom du projet par défaut (renommable ensuite via l'UI). */
+export const DEFAULT_PROJECT_NAME = 'Projet 1'
+
+/**
+ * v1.8 — Migration idempotente vers la notion de projet :
+ *   1. ajoute la colonne `project_id` sur `tasks` si elle manque ;
+ *   2. crée le projet "Projet 1" s'il n'existe aucun projet ET qu'il
+ *      reste des tâches sans rattachement ;
+ *   3. rattache toutes les tâches sans `project_id` à ce projet par défaut.
+ *
+ * L'opération est sûre à rejouer : si tout est déjà en ordre, elle est
+ * silencieuse.
+ *
+ * @param {import('better-sqlite3').Database} db
+ */
+function ensureProjectsMigration(db) {
+  // 1. Ajoute project_id sur tasks si absente.
+  const taskCols = db
+    .prepare(`PRAGMA table_info(tasks)`)
+    .all()
+    .map((c) => c.name)
+  if (!taskCols.includes('project_id')) {
+    db.exec(`ALTER TABLE tasks ADD COLUMN project_id TEXT`)
+  }
+  // L'index dépend de la colonne — toujours rejoué après pour idempotence.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id)`)
+
+  // 2. Combien de tâches orphelines ? (peut être 0 dès le 2e boot)
+  const orphans = db
+    .prepare(`SELECT COUNT(*) AS n FROM tasks WHERE project_id IS NULL`)
+    .get().n
+  if (orphans === 0) return
+
+  // 3. Trouve (ou crée) un projet par défaut à qui les rattacher.
+  let target = db
+    .prepare(`SELECT id FROM projects ORDER BY position ASC, id ASC LIMIT 1`)
+    .get()
+  if (!target) {
+    db.prepare(`INSERT INTO projects(id, name, position) VALUES (?, ?, 0)`).run(
+      DEFAULT_PROJECT_ID,
+      DEFAULT_PROJECT_NAME,
+    )
+    target = { id: DEFAULT_PROJECT_ID }
+    console.log(
+      `[INIT] Migration v1.8 : création du projet par défaut « ${DEFAULT_PROJECT_NAME} »`,
+    )
+  }
+  const upd = db.prepare(
+    `UPDATE tasks SET project_id = ? WHERE project_id IS NULL`,
+  )
+  const r = upd.run(target.id)
+  console.log(
+    `[INIT] Migration v1.8 : ${r.changes} tâche(s) rattachée(s) au projet « ${target.id} »`,
+  )
 }
 
 /**
@@ -169,22 +232,37 @@ function bumpVersion(db) {
 // -----------------------------------------------------------------------------
 
 /**
- * Renvoie l'état complet du Gantt : version, collaborateurs, tâches.
- * Format identique à celui consommé par le frontend.
+ * Renvoie l'état complet du Gantt pour UN projet donné. Les tâches sont
+ * filtrées par project_id. La liste de tous les projets et l'id du projet
+ * courant sont aussi retournés pour piloter le sélecteur de projet en haut.
+ *
+ * Si `projectId` n'est pas fourni (ou ne correspond à aucun projet existant),
+ * on retombe sur le premier projet par ordre de position (déterministe).
+ * Si aucun projet n'existe (base totalement vide), `current_project_id`
+ * vaut `null` et `tasks` est un tableau vide.
  *
  * @param {import('better-sqlite3').Database} db
+ * @param {string} [projectId]  Id du projet à charger (optionnel).
  * @returns {{
  *   version: number,
+ *   current_project_id: string|null,
+ *   projects: Array<{id:string, name:string, position:number}>,
  *   collaborators: Array<{id:string,name:string,color:string,position:number}>,
  *   tasks: Array<{
- *     id:string, name:string, kind:'task'|'milestone',
+ *     id:string, name:string, kind:'task'|'milestone'|'phase',
  *     start_date:string, end_date:string, progress:number,
  *     collaborator_id:string|null, color:string|null,
- *     parent_id:string|null, predecessor_id:string|null, position:number
+ *     parent_id:string|null, predecessor_id:string|null, position:number,
+ *     project_id:string
  *   }>
  * }}
  */
-export function getFullState(db) {
+export function getFullState(db, projectId) {
+  const projects = db
+    .prepare(
+      `SELECT id, name, position FROM projects ORDER BY position ASC, id ASC`,
+    )
+    .all()
   const collaborators = db
     .prepare(
       `SELECT id, name, color, position
@@ -192,15 +270,130 @@ export function getFullState(db) {
          ORDER BY position ASC, id ASC`,
     )
     .all()
-  const tasks = db
+  // Résout le projet courant : id demandé > premier projet > null si vide.
+  let currentId = null
+  if (projectId && projects.some((p) => p.id === projectId)) {
+    currentId = projectId
+  } else if (projects.length > 0) {
+    currentId = projects[0].id
+  }
+  const tasks = currentId
+    ? db
+        .prepare(
+          `SELECT id, name, kind, start_date, end_date, progress,
+                  collaborator_id, color, parent_id, predecessor_id, position,
+                  project_id
+             FROM tasks
+             WHERE project_id = ?
+             ORDER BY position ASC, id ASC`,
+        )
+        .all(currentId)
+    : []
+  return {
+    version: getVersion(db),
+    current_project_id: currentId,
+    projects,
+    collaborators,
+    tasks,
+  }
+}
+
+// -----------------------------------------------------------------------------
+// PROJETS (v1.8)
+// -----------------------------------------------------------------------------
+
+/**
+ * Calcule la prochaine position libre pour un nouveau projet (= MAX + 1).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @returns {number}
+ */
+function nextProjectPosition(db) {
+  const row = db
+    .prepare(`SELECT COALESCE(MAX(position), -1) AS m FROM projects`)
+    .get()
+  return row.m + 1
+}
+
+/**
+ * Liste tous les projets, ordonnés par position.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @returns {Array<{id:string, name:string, position:number}>}
+ */
+export function listProjects(db) {
+  return db
     .prepare(
-      `SELECT id, name, kind, start_date, end_date, progress,
-              collaborator_id, color, parent_id, predecessor_id, position
-         FROM tasks
-         ORDER BY position ASC, id ASC`,
+      `SELECT id, name, position FROM projects ORDER BY position ASC, id ASC`,
     )
     .all()
-  return { version: getVersion(db), collaborators, tasks }
+}
+
+/**
+ * Crée un nouveau projet (vide). La position est calculée auto.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {{id:string, name:string}} input
+ * @returns {{version:number, project:object}}
+ */
+export function createProject(db, input) {
+  const tx = db.transaction(() => {
+    const position = nextProjectPosition(db)
+    db.prepare(`INSERT INTO projects(id, name, position) VALUES (?, ?, ?)`).run(
+      input.id,
+      input.name,
+      position,
+    )
+    const version = bumpVersion(db)
+    const project = db
+      .prepare(`SELECT * FROM projects WHERE id = ?`)
+      .get(input.id)
+    return { version, project }
+  })
+  return tx()
+}
+
+/**
+ * Renomme un projet (le seul champ éditable pour l'instant).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} id
+ * @param {{name?:string}} patch
+ * @returns {{version:number, changed:boolean}}
+ */
+export function updateProject(db, id, patch) {
+  const tx = db.transaction(() => {
+    const current = db.prepare(`SELECT * FROM projects WHERE id = ?`).get(id)
+    if (!current) return { version: getVersion(db), changed: false }
+    const name = patch.name ?? current.name
+    db.prepare(`UPDATE projects SET name = ? WHERE id = ?`).run(name, id)
+    const version = bumpVersion(db)
+    return { version, changed: true }
+  })
+  return tx()
+}
+
+/**
+ * Supprime un projet et toutes ses tâches (cascade FK).
+ * Refuse de supprimer le DERNIER projet pour éviter de se retrouver
+ * sans aucun projet à afficher.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} id
+ * @returns {{version:number, changed:boolean}}
+ */
+export function deleteProject(db, id) {
+  const tx = db.transaction(() => {
+    const count = db.prepare(`SELECT COUNT(*) AS n FROM projects`).get().n
+    if (count <= 1) {
+      throw new Error('Impossible de supprimer le dernier projet')
+    }
+    const info = db.prepare(`DELETE FROM projects WHERE id = ?`).run(id)
+    if (info.changes === 0) return { version: getVersion(db), changed: false }
+    const version = bumpVersion(db)
+    return { version, changed: true }
+  })
+  return tx()
 }
 
 // -----------------------------------------------------------------------------
@@ -368,14 +561,20 @@ function nextTaskPosition(db) {
 }
 
 /**
- * Crée une tâche ou un jalon. Pour un jalon, end_date est forcée à start_date.
+ * Crée une tâche, un jalon ou une phase dans un projet donné.
+ * Pour un jalon, end_date est forcée à start_date.
+ *
+ * Si `project_id` n'est pas fourni, on rattache au premier projet existant
+ * (filet de sécurité pour les anciens clients ; en pratique le frontend
+ * passe toujours l'id du projet courant).
  *
  * @param {import('better-sqlite3').Database} db
  * @param {{
- *   id:string, name:string, kind?:'task'|'milestone',
+ *   id:string, name:string, kind?:'task'|'milestone'|'phase',
  *   start_date:string, end_date?:string, progress?:number,
  *   collaborator_id?:string|null, color?:string|null,
- *   parent_id?:string|null, predecessor_id?:string|null
+ *   parent_id?:string|null, predecessor_id?:string|null,
+ *   project_id?:string
  * }} input
  * @returns {{version:number, task:object}}
  */
@@ -399,11 +598,31 @@ export function createTask(db, input) {
     const endDate =
       kind === 'milestone' ? startDate : input.end_date || startDate
     const position = nextTaskPosition(db)
+    // v1.8 — Résout le projet de rattachement : id fourni > premier projet.
+    // Si la base ne contient encore aucun projet (cas d'un boot très tôt
+    // ou de tests qui créent une tâche sans seed), on crée à la volée le
+    // projet par défaut. Comportement cohérent avec la migration v1.8.
+    let projectId = input.project_id
+    if (!projectId) {
+      const first = db
+        .prepare(
+          `SELECT id FROM projects ORDER BY position ASC, id ASC LIMIT 1`,
+        )
+        .get()
+      if (first) {
+        projectId = first.id
+      } else {
+        db.prepare(
+          `INSERT INTO projects(id, name, position) VALUES (?, ?, 0)`,
+        ).run(DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME)
+        projectId = DEFAULT_PROJECT_ID
+      }
+    }
     db.prepare(
       `INSERT INTO tasks
         (id, name, kind, start_date, end_date, progress,
-         collaborator_id, color, parent_id, predecessor_id, position)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         collaborator_id, color, parent_id, predecessor_id, position, project_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.id,
       input.name,
@@ -417,6 +636,7 @@ export function createTask(db, input) {
       input.parent_id ?? null,
       kind === 'phase' ? null : (input.predecessor_id ?? null),
       position,
+      projectId,
     )
     // v1.6 — Si on vient d'ajouter une feuille (task / milestone) à une
     // phase, il faut recalculer les dates de cette phase et de ses ancêtres.
@@ -693,6 +913,8 @@ export function moveTask(db, id, { parent_id, before_id }) {
  * du projet.
  */
 export const DEMO_STATE = {
+  // v1.8 — Le jeu de démo s'inscrit dans un projet "Projet 1" unique.
+  projects: [{ id: DEFAULT_PROJECT_ID, name: DEFAULT_PROJECT_NAME }],
   collaborators: [
     { id: 'c1', name: 'Alice', color: '#3b82f6' },
     { id: 'c2', name: 'Benoît', color: '#10b981' },
@@ -841,6 +1063,21 @@ export function replaceFullState(db, state) {
   const tx = db.transaction(() => {
     db.prepare(`DELETE FROM tasks`).run()
     db.prepare(`DELETE FROM collaborators`).run()
+    db.prepare(`DELETE FROM projects`).run()
+
+    // v1.8 — Projets. Si l'état ne fournit aucun projet (ex. ancien export),
+    // on en crée un par défaut auquel toutes les tâches seront rattachées.
+    const projects =
+      state.projects && state.projects.length > 0
+        ? state.projects
+        : [{ id: DEFAULT_PROJECT_ID, name: DEFAULT_PROJECT_NAME }]
+    const insProject = db.prepare(
+      `INSERT INTO projects(id, name, position) VALUES (?, ?, ?)`,
+    )
+    projects.forEach((p, idx) => {
+      insProject.run(p.id, p.name, idx)
+    })
+    const fallbackProjectId = projects[0].id
 
     const insCollab = db.prepare(
       `INSERT INTO collaborators(id, name, color, position) VALUES (?, ?, ?, ?)`,
@@ -852,8 +1089,8 @@ export function replaceFullState(db, state) {
     const insTask = db.prepare(
       `INSERT INTO tasks
         (id, name, kind, start_date, end_date, progress,
-         collaborator_id, color, parent_id, predecessor_id, position)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         collaborator_id, color, parent_id, predecessor_id, position, project_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     state.tasks.forEach((t, idx) => {
       const kind = t.kind || 'task'
@@ -872,6 +1109,7 @@ export function replaceFullState(db, state) {
         t.parent_id ?? null,
         kind === 'phase' ? null : (t.predecessor_id ?? null),
         idx,
+        t.project_id || fallbackProjectId,
       )
     })
 
@@ -930,5 +1168,6 @@ export function resetToDemo(db) {
 export function isDatabaseEmpty(db) {
   const c = db.prepare(`SELECT COUNT(*) AS n FROM collaborators`).get().n
   const t = db.prepare(`SELECT COUNT(*) AS n FROM tasks`).get().n
-  return c === 0 && t === 0
+  const p = db.prepare(`SELECT COUNT(*) AS n FROM projects`).get().n
+  return c === 0 && t === 0 && p === 0
 }

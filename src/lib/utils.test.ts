@@ -42,6 +42,7 @@ function mkTask(id: string, overrides: Partial<Task> = {}): Task {
     parent_id: null,
     predecessor_id: null,
     position: 0,
+    project_id: 'p_test',
     ...overrides,
   }
 }

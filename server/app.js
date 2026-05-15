@@ -6,14 +6,19 @@
 // supertest sur une base `:memory:`.
 //
 // Endpoints :
-//   GET    /api/state                  → état complet
+//   GET    /api/state?project_id=…     → état du projet courant (v1.8)
 //   POST   /api/reset                  → restaure les données de démo
+//   GET    /api/projects               → liste les projets (v1.8)
+//   POST   /api/projects               → crée un projet (v1.8)
+//   PATCH  /api/projects/:id           → renomme un projet (v1.8)
+//   DELETE /api/projects/:id           → supprime un projet (cascade tâches)
 //   POST   /api/collaborators          → crée un collaborateur
 //   PATCH  /api/collaborators/:id      → modifie un collaborateur
 //   DELETE /api/collaborators/:id      → supprime
-//   POST   /api/tasks                  → crée une tâche ou un jalon
+//   POST   /api/tasks                  → crée une tâche, un jalon ou une phase
 //   PATCH  /api/tasks/:id              → modifie
 //   DELETE /api/tasks/:id              → supprime (cascade enfants)
+//   POST   /api/tasks/:id/move         → déplace dans la hiérarchie (drag&drop)
 //
 // Toutes les routes mutantes renvoient au minimum `{ version }`.
 // =============================================================================
@@ -22,23 +27,31 @@ import express from 'express'
 import helmet from 'helmet'
 import {
   createCollaborator,
+  createProject,
   createTask,
   deleteCollaborator,
+  deleteProject,
   deleteTask,
   getFullState,
   getVersion,
+  listProjects,
   moveTask,
   resetToDemo,
   updateCollaborator,
+  updateProject,
   updateTask,
 } from '../db/index.js'
 import {
   CollaboratorIdParams,
   CreateCollaboratorBody,
+  CreateProjectBody,
   CreateTaskBody,
   MoveTaskBody,
+  ProjectIdParams,
+  StateQuery,
   TaskIdParams,
   UpdateCollaboratorBody,
+  UpdateProjectBody,
   UpdateTaskBody,
   validate,
 } from './schemas.js'
@@ -95,8 +108,12 @@ export function createApp(db, { requestLog = true } = {}) {
 
   app.get(
     '/api/state',
-    safeRoute((_req, res) => {
-      res.json(getFullState(db))
+    validate({ query: StateQuery }),
+    safeRoute((req, res) => {
+      // v1.8 — `validate({query})` dépose le query parsé sur req.validQuery
+      // (req.query est read-only sur Express 5).
+      const projectId = req.validQuery?.project_id
+      res.json(getFullState(db, projectId))
     }),
   )
 
@@ -109,6 +126,66 @@ export function createApp(db, { requestLog = true } = {}) {
     safeRoute((_req, res) => {
       resetToDemo(db)
       res.json(getFullState(db))
+    }),
+  )
+
+  // -------------------------------------------------------------------------
+  // PROJETS (v1.8)
+  // -------------------------------------------------------------------------
+
+  app.get(
+    '/api/projects',
+    safeRoute((_req, res) => {
+      res.json({ projects: listProjects(db) })
+    }),
+  )
+
+  app.post(
+    '/api/projects',
+    validate({ body: CreateProjectBody }),
+    safeRoute((req, res) => {
+      try {
+        res.json(createProject(db, req.body))
+      } catch (err) {
+        res.status(400).json({ error: `Création impossible : ${err.message}` })
+      }
+    }),
+  )
+
+  app.patch(
+    '/api/projects/:id',
+    validate({ params: ProjectIdParams, body: UpdateProjectBody }),
+    safeRoute((req, res) => {
+      const result = updateProject(db, req.params.id, req.body)
+      if (!result.changed) {
+        return res.status(404).json({
+          error: 'projet introuvable',
+          version: result.version,
+        })
+      }
+      res.json(result)
+    }),
+  )
+
+  app.delete(
+    '/api/projects/:id',
+    validate({ params: ProjectIdParams }),
+    safeRoute((req, res) => {
+      try {
+        const result = deleteProject(db, req.params.id)
+        if (!result.changed) {
+          return res.status(404).json({
+            error: 'projet introuvable',
+            version: result.version,
+          })
+        }
+        res.json(result)
+      } catch (err) {
+        // Cas "dernier projet" : 400 explicite avec le message du DAL.
+        res
+          .status(400)
+          .json({ error: `Suppression impossible : ${err.message}` })
+      }
     }),
   )
 

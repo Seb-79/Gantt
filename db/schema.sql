@@ -1,10 +1,14 @@
 -- =============================================================================
 -- SCHÉMA SQLite — Gantt v1
 -- =============================================================================
--- 3 tables :
+-- 4 tables :
 --   • meta            → métadonnées (notamment "version" incrémentée à chaque
 --                       mutation, utilisée par le client pour détecter les
 --                       changements en polling).
+--   • projects        → (v1.8) regroupement de phases / jalons / activités.
+--                       Chaque tâche appartient à un projet ; la suppression
+--                       d'un projet cascade sur ses tâches.
+--                       Les collaborateurs restent partagés entre projets.
 --   • collaborators   → ressources affectables aux tâches. Chaque collab a une
 --                       couleur de bandeau (utilisée par défaut pour les tâches
 --                       qui lui sont affectées).
@@ -36,6 +40,13 @@ CREATE TABLE IF NOT EXISTS collaborators (
   position INTEGER NOT NULL
 );
 
+-- v1.8 — Projets : un Gantt = N projets distincts, on en charge un à la fois.
+CREATE TABLE IF NOT EXISTS projects (
+  id       TEXT PRIMARY KEY,
+  name     TEXT NOT NULL,
+  position INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
   id              TEXT PRIMARY KEY,
   name            TEXT NOT NULL,
@@ -50,11 +61,18 @@ CREATE TABLE IF NOT EXISTS tasks (
   parent_id       TEXT REFERENCES tasks(id) ON DELETE CASCADE,
   predecessor_id  TEXT REFERENCES tasks(id) ON DELETE SET NULL, -- v1.2
   position        INTEGER NOT NULL,
+  -- v1.8 — project_id est ajouté à la table tasks pour les bases neuves ;
+  -- pour les bases anciennes, c'est `ensureTaskColumns()` (db/index.js) qui
+  -- s'en charge via ALTER TABLE puis affectation au projet par défaut.
+  project_id      TEXT REFERENCES projects(id) ON DELETE CASCADE,
   CHECK (progress BETWEEN 0 AND 100)
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_collab ON tasks(collaborator_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
+-- idx_tasks_project est créé par `ensureProjectsMigration()` dans db/index.js
+-- (même raison que idx_tasks_predecessor : la colonne peut être ajoutée par
+-- migration ALTER TABLE sur une base antérieure à la v1.8).
 -- L'index `idx_tasks_predecessor` est créé par `ensureTaskColumns()` dans
 -- db/index.js : il dépend d'une colonne ajoutée par migration ALTER TABLE,
 -- qui n'existe pas forcément quand `schema.sql` est rejoué sur une base

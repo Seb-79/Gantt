@@ -48,6 +48,30 @@ const Progress = z
   .max(100, 'doit être ≤ 100')
 
 // -----------------------------------------------------------------------------
+// PROJETS (v1.8)
+// -----------------------------------------------------------------------------
+
+export const CreateProjectBody = z.object({
+  id: NonEmptyId,
+  name: NonEmptyText,
+})
+
+export const UpdateProjectBody = z
+  .object({
+    name: NonEmptyText.optional(),
+  })
+  .refine((v) => v.name !== undefined, {
+    message: 'au moins un champ requis (name)',
+  })
+
+export const ProjectIdParams = z.object({ id: NonEmptyId })
+
+/** Query param ?project_id=... pour GET /api/state. */
+export const StateQuery = z.object({
+  project_id: NonEmptyId.optional(),
+})
+
+// -----------------------------------------------------------------------------
 // COLLABORATEURS
 // -----------------------------------------------------------------------------
 
@@ -91,6 +115,9 @@ export const CreateTaskBody = z
     // v1.2 — Tâche prédécesseur. Si renseignée, le DAL force la start_date
     // sur la end_date du prédécesseur (cf. db/index.js).
     predecessor_id: NonEmptyId.nullable().optional(),
+    // v1.8 — Projet de rattachement (optionnel : si absent, le DAL utilise
+    // le premier projet existant).
+    project_id: NonEmptyId.optional(),
   })
   .refine((v) => !v.end_date || v.end_date >= v.start_date, {
     message: 'end_date doit être ≥ start_date',

@@ -26,6 +26,16 @@ export interface Collaborator {
   position: number
 }
 
+/** Un projet (v1.8) — regroupe phases, jalons et activités. */
+export interface Project {
+  /** Identifiant unique. */
+  id: string
+  /** Nom affiché. */
+  name: string
+  /** Position d'affichage dans le sélecteur. */
+  position: number
+}
+
 /** Une tâche ou un jalon dans le Gantt. */
 export interface Task {
   /** Identifiant unique. */
@@ -50,11 +60,18 @@ export interface Task {
   predecessor_id: string | null
   /** Position d'affichage (ordre des lignes). */
   position: number
+  /** Projet de rattachement (v1.8). */
+  project_id: string
 }
 
-/** État complet renvoyé par GET /api/state. */
+/** État complet renvoyé par GET /api/state?project_id=…. */
 export interface GanttState {
   version: number
+  /** Projet actuellement chargé (null si la base est vide). */
+  current_project_id: string | null
+  /** Tous les projets disponibles (pour le sélecteur). */
+  projects: Project[]
   collaborators: Collaborator[]
+  /** Tâches du projet courant uniquement. */
   tasks: Task[]
 }

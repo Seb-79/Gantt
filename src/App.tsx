@@ -7,6 +7,8 @@
 //   • Gère la fenêtre temporelle (4 mois par défaut)
 //   • Permet création / édition / suppression de tâches via TaskEditor
 //   • Bouton "Capture d'écran PNG" via html-to-image (téléchargement direct)
+//   • v1.8 — Sélecteur multi-projets avec création / renommage / suppression
+//     (le projet courant est persisté en localStorage).
 // =============================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -29,12 +31,30 @@ import type { GanttState, Task } from './lib/types'
 /** Intervalle (ms) du polling de synchronisation. */
 const POLL_INTERVAL = 5000
 
+/** Clé localStorage utilisée pour mémoriser le projet ouvert d'une session à l'autre. */
+const LS_CURRENT_PROJECT = 'gantt.currentProjectId'
+
 /** État réseau pour le badge en haut à droite. */
 type NetStatus = 'idle' | 'loading' | 'ok' | 'error'
 
 export default function App() {
-  /** État serveur (collaborateurs + tâches + version). */
+  /** État serveur (projets + collaborateurs + tâches du projet courant + version). */
   const [state, setState] = useState<GanttState | null>(null)
+  /**
+   * Id du projet actuellement affiché. Persisté en localStorage pour
+   * réouvrir le même projet à la prochaine session. Le serveur fait
+   * autorité : si l'id stocké n'existe plus (projet supprimé ailleurs),
+   * la réponse `/api/state` renvoie le 1er projet et on se resynchronise.
+   */
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(
+    () => {
+      try {
+        return localStorage.getItem(LS_CURRENT_PROJECT)
+      } catch {
+        return null
+      }
+    },
+  )
   /** Statut réseau pour feedback visuel. */
   const [status, setStatus] = useState<NetStatus>('idle')
   /** Largeur d'un jour en pixels — pilote le zoom. */
@@ -65,6 +85,12 @@ export default function App() {
     [state],
   )
 
+  /** Objet du projet courant (résolu depuis `state.projects`). */
+  const currentProject = useMemo(() => {
+    if (!state || !state.current_project_id) return null
+    return state.projects.find((p) => p.id === state.current_project_id) || null
+  }, [state])
+
   /**
    * v1.4 — Au premier chargement de l'état, recale la fenêtre de visualisation
    * sur le LUNDI de la semaine de la tâche démarrant le plus tôt (plutôt que
@@ -83,23 +109,49 @@ export default function App() {
 
   /**
    * Récupère l'état complet depuis l'API. Met à jour status + state.
+   * v1.8 — Si un projet est sélectionné, on passe son id en query string ;
+   * le serveur renvoie `current_project_id` (peut différer si l'id demandé
+   * a disparu) — on re-synchronise l'état local sur cette valeur.
    */
   const fetchState = useCallback(async () => {
     try {
-      const res = await fetch('/api/state')
+      const url = currentProjectId
+        ? `/api/state?project_id=${encodeURIComponent(currentProjectId)}`
+        : '/api/state'
+      const res = await fetch(url)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data: GanttState = await res.json()
       setState((prev) => {
-        // Évite un re-render inutile si la version n'a pas bougé.
-        if (prev && prev.version === data.version) return prev
+        // Évite un re-render inutile si la version n'a pas bougé ET que le
+        // projet courant n'a pas changé.
+        if (
+          prev &&
+          prev.version === data.version &&
+          prev.current_project_id === data.current_project_id
+        ) {
+          return prev
+        }
         return data
       })
+      // Le serveur peut substituer un autre projet si celui demandé a été
+      // supprimé : on aligne le state local + localStorage.
+      if (
+        data.current_project_id &&
+        data.current_project_id !== currentProjectId
+      ) {
+        setCurrentProjectId(data.current_project_id)
+        try {
+          localStorage.setItem(LS_CURRENT_PROJECT, data.current_project_id)
+        } catch {
+          // localStorage indisponible (mode privé strict) → on ignore
+        }
+      }
       setStatus('ok')
     } catch (err) {
       console.error('[fetchState]', err)
       setStatus('error')
     }
-  }, [])
+  }, [currentProjectId])
 
   // Mount : 1er chargement + polling 5 s.
   // setState dans l'effect est ici intentionnel (subscribe à un système
@@ -172,10 +224,67 @@ export default function App() {
     if (editing) {
       mutate('PATCH', `/api/tasks/${editing.id}`, patch)
     } else {
-      mutate('POST', '/api/tasks', { id: makeId('t'), ...patch })
+      // v1.8 — Une nouvelle tâche appartient toujours au projet courant.
+      mutate('POST', '/api/tasks', {
+        id: makeId('t'),
+        ...patch,
+        project_id: currentProjectId ?? undefined,
+      })
     }
     setEditing(null)
     setCreating(false)
+  }
+
+  // ---------------------------------------------------------------------------
+  // v1.8 — Gestion des projets (création, renommage, suppression, sélection)
+  // ---------------------------------------------------------------------------
+
+  /** Change de projet courant et persiste le choix. */
+  const handleSelectProject = (id: string) => {
+    setCurrentProjectId(id)
+    try {
+      localStorage.setItem(LS_CURRENT_PROJECT, id)
+    } catch {
+      // localStorage indisponible — on continue, l'id reste en mémoire.
+    }
+    // Reset du drapeau de cadrage initial pour qu'on recale la fenêtre
+    // temporelle sur les tâches du nouveau projet.
+    initialWindowSet.current = false
+  }
+
+  /** Crée un nouveau projet (prompt simple). */
+  const handleCreateProject = async () => {
+    const name = prompt('Nom du nouveau projet :', 'Nouveau projet')?.trim()
+    if (!name) return
+    const id = makeId('p')
+    await mutate('POST', '/api/projects', { id, name })
+    handleSelectProject(id)
+  }
+
+  /** Renomme le projet courant (prompt). */
+  const handleRenameProject = async () => {
+    if (!currentProject) return
+    const name = prompt('Nouveau nom :', currentProject.name)?.trim()
+    if (!name || name === currentProject.name) return
+    await mutate('PATCH', `/api/projects/${currentProject.id}`, { name })
+  }
+
+  /** Supprime le projet courant après confirmation. */
+  const handleDeleteProject = async () => {
+    if (!currentProject || !state) return
+    if (state.projects.length <= 1) {
+      alert('Impossible de supprimer le dernier projet.')
+      return
+    }
+    const ok = confirm(
+      `Supprimer le projet « ${currentProject.name} » et toutes ses tâches ?\n\nCette action est irréversible.`,
+    )
+    if (!ok) return
+    // On bascule sur un autre projet AVANT la suppression pour que le
+    // refetch suivant ne reparte pas sur un id invalide.
+    const fallback = state.projects.find((p) => p.id !== currentProject.id)
+    if (fallback) handleSelectProject(fallback.id)
+    await mutate('DELETE', `/api/projects/${currentProject.id}`)
   }
 
   /** Suppression de la tâche en cours d'édition. */
@@ -226,6 +335,57 @@ export default function App() {
       {/* ---------------------------------------------------------------- */}
       <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-3 flex-wrap">
         <h1 className="text-xl font-bold text-slate-800">📊 Gantt</h1>
+
+        {/* v1.8 — Sélecteur de projet + actions CRUD */}
+        {state && (
+          <div className="flex items-center gap-1 ml-2 pl-2 border-l border-slate-200">
+            <span className="text-xs text-slate-500 mr-1">Projet</span>
+            <select
+              className="text-sm border border-slate-300 rounded px-2 py-1 bg-white hover:bg-slate-50"
+              value={state.current_project_id ?? ''}
+              onChange={(e) => handleSelectProject(e.target.value)}
+              disabled={state.projects.length === 0}
+              title="Changer de projet"
+            >
+              {state.projects.length === 0 ? (
+                <option value="">— aucun projet —</option>
+              ) : (
+                state.projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))
+              )}
+            </select>
+            <button
+              className="px-2 py-1 text-sm rounded border border-slate-300 hover:bg-slate-100"
+              onClick={handleCreateProject}
+              title="Nouveau projet"
+            >
+              +
+            </button>
+            <button
+              className="px-2 py-1 text-sm rounded border border-slate-300 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick={handleRenameProject}
+              disabled={!currentProject}
+              title="Renommer le projet"
+            >
+              ✎
+            </button>
+            <button
+              className="px-2 py-1 text-sm rounded border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+              onClick={handleDeleteProject}
+              disabled={!currentProject || state.projects.length <= 1}
+              title={
+                state.projects.length <= 1
+                  ? 'Impossible de supprimer le dernier projet'
+                  : 'Supprimer le projet'
+              }
+            >
+              🗑
+            </button>
+          </div>
+        )}
 
         <div className="flex items-center gap-1 ml-4">
           <button

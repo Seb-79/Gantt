@@ -412,6 +412,7 @@ export default function TaskEditor({
                     parent_id: null,
                     predecessor_id: null,
                     position: 0,
+                    project_id: '',
                   },
                   collaborators,
                 )

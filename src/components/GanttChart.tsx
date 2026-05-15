@@ -86,6 +86,28 @@ export default function GanttChart({
     return map
   }, [collaborators])
 
+  // Profondeur hiérarchique de chaque tâche (racine = 0). Utilisée pour
+  // indenter visuellement les sous-phases / activités sur plusieurs niveaux.
+  const depthById = useMemo(() => {
+    const byId = new Map<string, Task>()
+    for (const t of tasks) byId.set(t.id, t)
+    const cache = new Map<string, number>()
+    function depth(id: string): number {
+      const cached = cache.get(id)
+      if (cached !== undefined) return cached
+      const t = byId.get(id)
+      if (!t || !t.parent_id || !byId.has(t.parent_id)) {
+        cache.set(id, 0)
+        return 0
+      }
+      const d = depth(t.parent_id) + 1
+      cache.set(id, d)
+      return d
+    }
+    for (const t of tasks) depth(t.id)
+    return cache
+  }, [tasks])
+
   /** Largeur totale du calendrier en pixels. */
   const totalWidth = dates.length * dayWidth
 
@@ -180,7 +202,7 @@ export default function GanttChart({
           const collab = t.collaborator_id
             ? collabById.get(t.collaborator_id)
             : null
-          const indent = t.parent_id ? 16 : 0
+          const indent = (depthById.get(t.id) ?? 0) * 16
           const isDragged = draggedId === t.id
           const hover = hoverDrop?.taskId === t.id ? hoverDrop.zone : null
           // Une tâche ne peut pas accueillir un drop venant d'elle-même
@@ -433,12 +455,34 @@ function PredecessorArrows({
         // Petit décrochement pour ne pas coller à la barre.
         const offset = Math.max(6, Math.min(14, dayWidth))
         let d: string
-        if (Math.abs(y1 - y2) < 1) {
-          // Même ligne : ligne droite horizontale.
-          d = `M ${x1} ${y1} L ${x2} ${y2}`
+        if (x2 >= x1 + offset) {
+          // Cas normal : le successeur démarre suffisamment à droite.
+          // Forme en escalier : droite → vertical → droite (arrive par la gauche).
+          if (Math.abs(y1 - y2) < 1) {
+            d = `M ${x1} ${y1} L ${x2} ${y2}`
+          } else {
+            d = `M ${x1} ${y1} L ${x1 + offset} ${y1} L ${x1 + offset} ${y2} L ${x2} ${y2}`
+          }
         } else {
-          // Forme en L : avancer un peu, descendre, avancer jusqu'au successeur.
-          d = `M ${x1} ${y1} L ${x1 + offset} ${y1} L ${x1 + offset} ${y2} L ${x2} ${y2}`
+          // Le successeur commence AVANT ou JUSTE après la fin du prédécesseur
+          // (typiquement quand les activités s'enchaînent end-to-start). On
+          // contourne par-dessus/dessous pour arriver par la gauche du
+          // successeur, sinon la flèche se replierait sur elle-même.
+          const backOffset = Math.max(offset, dayWidth)
+          if (Math.abs(y1 - y2) < 1) {
+            // Même ligne mais successeur "derrière" : petit détour vertical.
+            const midY = y1 + ROW_HEIGHT / 2
+            d =
+              `M ${x1} ${y1} L ${x1 + offset} ${y1} L ${x1 + offset} ${midY} ` +
+              `L ${x2 - backOffset} ${midY} L ${x2 - backOffset} ${y2} L ${x2} ${y2}`
+          } else {
+            // Forme en U/Z : on remonte/descend à mi-chemin entre les deux
+            // lignes, puis on revient sur la gauche du successeur.
+            const midY = (y1 + y2) / 2
+            d =
+              `M ${x1} ${y1} L ${x1 + offset} ${y1} L ${x1 + offset} ${midY} ` +
+              `L ${x2 - backOffset} ${midY} L ${x2 - backOffset} ${y2} L ${x2} ${y2}`
+          }
         }
         return (
           <path

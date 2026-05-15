@@ -257,14 +257,33 @@ describe('Tâches', () => {
     expect(phase.end_date).toBe('2026-09-25')
   })
 
-  it('PATCH definir un predecesseur recale start_date', async () => {
-    // t2a (tournage extérieur) commence 2026-07-01 ; on lui ajoute t1a comme
-    // prédécesseur (fin 2026-05-29) → start_date doit être recalée.
+  it('PATCH definir un predecesseur preserve start_date si elle est posterieure', async () => {
+    // t2a commence 2026-07-01 ; t1a finit 2026-05-29. Comme le start_date
+    // actuel est DÉJÀ après la fin du prédécesseur, on doit le conserver
+    // (l'utilisateur a le droit de décaler volontairement le début).
     const r = await request(app)
       .patch('/api/tasks/t2a')
       .send({ predecessor_id: 't1a' })
       .expect(200)
     expect(r.body.changed).toBe(true)
+    const state = await request(app).get('/api/state').expect(200)
+    const t2a = state.body.tasks.find((t) => t.id === 't2a')
+    expect(t2a.start_date).toBe('2026-07-01')
+    expect(t2a.predecessor_id).toBe('t1a')
+  })
+
+  it('PATCH predecesseur pousse start_date si elle est anterieure a la fin du predecesseur', async () => {
+    // On force d'abord t2a à démarrer AVANT la fin de t1a (2026-05-29),
+    // puis on ajoute t1a comme prédécesseur : le serveur doit repousser
+    // start_date jusqu'à 2026-05-29 (la borne MIN imposée).
+    await request(app)
+      .patch('/api/tasks/t2a')
+      .send({ start_date: '2026-05-01', end_date: '2026-05-10' })
+      .expect(200)
+    await request(app)
+      .patch('/api/tasks/t2a')
+      .send({ predecessor_id: 't1a' })
+      .expect(200)
     const state = await request(app).get('/api/state').expect(200)
     const t2a = state.body.tasks.find((t) => t.id === 't2a')
     expect(t2a.start_date).toBe('2026-05-29')

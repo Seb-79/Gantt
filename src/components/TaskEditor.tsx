@@ -11,9 +11,12 @@
 // La validation forte reste faite par Zod côté serveur.
 //
 // Règles métier :
-//   • Si un PRÉDÉCESSEUR est sélectionné, la `start_date` est forcée sur la
-//     `end_date` du prédécesseur ET le champ Début est grisé. Pour reprendre
-//     la main sur la date, l'utilisateur doit retirer le prédécesseur.
+//   • Si un PRÉDÉCESSEUR est sélectionné, la `start_date` est initialisée sur
+//     sa `end_date` mais reste éditable : l'utilisateur peut décaler le début
+//     plus tard. En revanche, il ne peut pas la mettre AVANT la fin du
+//     prédécesseur (attribut `min` + validation côté `handleSave`).
+//   • Un jalon peut servir de prédécesseur (sa date de fin == sa date de jalon).
+//     Seules les phases sont exclues du menu.
 //   • Quand la `start_date` change (manuellement ou via prédécesseur) et
 //     dépasse la `end_date`, on recale `end_date = start_date` automatiquement.
 //   • La COULEUR est éditable. Valeur initiale = couleur effective (collab >
@@ -104,8 +107,9 @@ export default function TaskEditor({
 
   /**
    * Sélectionne (ou retire) un prédécesseur. Si un nouveau prédécesseur est
-   * choisi, sa end_date va devenir la start_date verrouillée → on recale
-   * end_date côté tâche pour qu'elle ne soit pas dans le passé.
+   * choisi, on recale start_date sur sa end_date (sauf si l'utilisateur avait
+   * déjà saisi une date plus tardive — qu'on conserve). end_date est recalée
+   * pour rester ≥ start_date.
    *
    * @param value  Id du prédécesseur (ou '' pour retirer).
    */
@@ -113,7 +117,10 @@ export default function TaskEditor({
     setPredecessorId(value)
     if (value) {
       const pred = tasks.find((t) => t.id === value)
-      if (pred) setEndDate((current) => maxIso(current, pred.end_date))
+      if (pred) {
+        setStartDate((current) => maxIso(current, pred.end_date))
+        setEndDate((current) => maxIso(current, pred.end_date))
+      }
     }
     setError(null)
   }
@@ -131,22 +138,24 @@ export default function TaskEditor({
     return DEFAULT_TASK_COLOR
   }, [collabId, collaborators])
 
-  /** Liste des prédécesseurs valides : toutes les tâches sauf elle-même
-   *  et ses descendants (anti-cycle), et qui ont une end_date. */
+  /** Liste des prédécesseurs valides : toutes les tâches OU jalons sauf
+   *  elle-même et ses descendants (anti-cycle). Les phases (regroupements)
+   *  sont exclues car leurs dates sont calculées automatiquement. */
   const validPredecessors = useMemo(() => {
-    if (!task) return tasks.filter((t) => t.kind === 'task')
+    const isEligible = (t: Task) => t.kind === 'task' || t.kind === 'milestone'
+    if (!task) return tasks.filter(isEligible)
     const banned = descendantIds(task.id, tasks)
     banned.add(task.id)
-    return tasks.filter((t) => !banned.has(t.id))
+    return tasks.filter((t) => isEligible(t) && !banned.has(t.id))
   }, [task, tasks])
 
-  /** Si un prédécesseur est sélectionné, on force la start_date affichée. */
+  /** Prédécesseur sélectionné (ou null). Sa end_date sert de borne MIN. */
   const predecessor = useMemo(
     () => (predecessorId ? tasks.find((t) => t.id === predecessorId) : null),
     [predecessorId, tasks],
   )
-  const lockedStart = predecessor?.end_date || ''
-  const effectiveStart = predecessor ? lockedStart : startDate
+  /** Date minimale autorisée pour start_date (= fin du prédécesseur, ou ''). */
+  const minStart = predecessor?.end_date || ''
 
   /**
    * Valide les champs puis appelle onSave. Affiche un message d'erreur
@@ -158,13 +167,20 @@ export default function TaskEditor({
       setError('Le nom est obligatoire.')
       return
     }
-    if (!effectiveStart) {
+    if (!startDate) {
       setError('La date de début est obligatoire.')
       return
     }
-    const finalEnd =
-      kind === 'milestone' ? effectiveStart : endDate || effectiveStart
-    if (kind !== 'milestone' && finalEnd < effectiveStart) {
+    // Le début ne peut pas être antérieur à la fin du prédécesseur, mais
+    // peut tout à fait être postérieur (décalage volontaire).
+    if (predecessor && kind !== 'phase' && startDate < predecessor.end_date) {
+      setError(
+        `La date de début doit être ≥ fin du prédécesseur « ${predecessor.name} » (${predecessor.end_date}).`,
+      )
+      return
+    }
+    const finalEnd = kind === 'milestone' ? startDate : endDate || startDate
+    if (kind !== 'milestone' && finalEnd < startDate) {
       setError(
         'La date de fin doit être supérieure ou égale à la date de début.',
       )
@@ -174,7 +190,7 @@ export default function TaskEditor({
     onSave({
       name: name.trim(),
       kind,
-      start_date: effectiveStart,
+      start_date: startDate,
       end_date: finalEnd,
       progress,
       // v1.6 — Une phase n'a ni collaborateur ni prédécesseur (forcés à null
@@ -264,22 +280,26 @@ export default function TaskEditor({
             <span className="text-slate-600">
               Début
               {predecessor && (
-                <span className="ml-1 text-xs text-slate-400">
-                  (verrouillé)
+                <span
+                  className="ml-1 text-xs text-slate-400"
+                  title={`Minimum : ${minStart} (fin du prédécesseur)`}
+                >
+                  (≥ {minStart})
                 </span>
               )}
             </span>
             <input
               type="date"
               className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
-              value={effectiveStart}
+              value={startDate}
+              min={minStart || undefined}
               onChange={(e) => handleStartDateChange(e.target.value)}
-              disabled={!!predecessor || kind === 'phase'}
+              disabled={kind === 'phase'}
               title={
                 kind === 'phase'
                   ? 'Calculée automatiquement à partir des enfants'
                   : predecessor
-                    ? `Forcée à la fin du prédécesseur « ${predecessor.name} »`
+                    ? `Doit être ≥ fin du prédécesseur « ${predecessor.name} » (${minStart})`
                     : undefined
               }
             />
@@ -291,7 +311,7 @@ export default function TaskEditor({
               type="date"
               className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
               value={endDate}
-              min={effectiveStart || undefined}
+              min={startDate || undefined}
               onChange={(e) => {
                 setEndDate(e.target.value)
                 setError(null)
@@ -350,7 +370,7 @@ export default function TaskEditor({
             <span className="text-slate-600">
               Prédécesseur
               <span className="ml-1 text-xs text-slate-400">
-                (facultatif — verrouille la date de début)
+                (facultatif — borne la date de début au minimum)
               </span>
             </span>
             <select
@@ -361,6 +381,7 @@ export default function TaskEditor({
               <option value="">— aucun —</option>
               {validPredecessors.map((t) => (
                 <option key={t.id} value={t.id}>
+                  {t.kind === 'milestone' ? '◆ ' : ''}
                   {t.name} (fin : {t.end_date})
                 </option>
               ))}

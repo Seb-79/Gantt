@@ -383,14 +383,16 @@ export function createTask(db, input) {
   const tx = db.transaction(() => {
     const kind = input.kind || 'task'
     let startDate = input.start_date
-    // v1.2 — Si un prédécesseur est défini, on force la start_date sur sa
-    // end_date. La règle est aussi appliquée côté UI (champ grisé) mais on
-    // la doublonne ici pour garantir la cohérence quel que soit le client.
+    // v1.2 — Si un prédécesseur est défini, on garantit que start_date ≥
+    // end_date du prédécesseur. Si le client a saisi une date plus tardive
+    // (décalage volontaire), on la conserve : seule la borne MIN est imposée.
     if (input.predecessor_id) {
       const pred = db
         .prepare(`SELECT end_date FROM tasks WHERE id = ?`)
         .get(input.predecessor_id)
-      if (pred) startDate = pred.end_date
+      if (pred && (!startDate || startDate < pred.end_date)) {
+        startDate = pred.end_date
+      }
     }
     // Pour un jalon, on ignore end_date envoyé par le client : un jalon est
     // ponctuel, donc end_date = start_date par construction.
@@ -448,14 +450,16 @@ export function updateTask(db, id, patch) {
 
     const next = { ...current, ...patch }
 
-    // v1.2 — Si un prédécesseur est défini (ou réaffirmé), on aligne la
-    // start_date sur sa end_date, en préservant la durée existante de la
-    // tâche pour ne pas la rétrécir/étirer involontairement.
+    // v1.2 — Si un prédécesseur est défini (ou réaffirmé), start_date doit
+    // être ≥ end_date du prédécesseur. Si elle est antérieure, on la pousse
+    // à la fin du prédécesseur (en conservant la durée existante pour ne pas
+    // rétrécir/étirer la tâche involontairement). Si elle est déjà postérieure,
+    // on respecte la valeur saisie par l'utilisateur (décalage volontaire).
     if (next.predecessor_id && next.predecessor_id !== id) {
       const pred = db
         .prepare(`SELECT end_date FROM tasks WHERE id = ?`)
         .get(next.predecessor_id)
-      if (pred) {
+      if (pred && next.start_date < pred.end_date) {
         const oldStart = new Date(next.start_date)
         const oldEnd = new Date(next.end_date)
         const durationDays = Math.max(

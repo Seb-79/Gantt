@@ -40,12 +40,38 @@ export function initDb(dbPath) {
   const schema = fs.readFileSync(SCHEMA_PATH, 'utf-8')
   db.exec(schema)
 
+  // v1.2 — Migration idempotente : ajoute predecessor_id si la table tasks
+  // a été créée avant cette version (base existante d'avant la v1.2).
+  ensureTaskColumns(db)
+
   // Initialise la version à 0 si la ligne meta n'existe pas encore.
   db.prepare(
     `INSERT OR IGNORE INTO meta(key, value) VALUES ('version', '0')`,
   ).run()
 
   return db
+}
+
+/**
+ * Migration ALTER TABLE idempotente. Ajoute les colonnes manquantes sur la
+ * table `tasks` (utile pour les bases créées avec un schéma plus ancien).
+ *
+ * @param {import('better-sqlite3').Database} db
+ */
+function ensureTaskColumns(db) {
+  const cols = db
+    .prepare(`PRAGMA table_info(tasks)`)
+    .all()
+    .map((c) => c.name)
+  if (!cols.includes('predecessor_id')) {
+    // SQLite ne permet pas d'ajouter une colonne FK avec REFERENCES dans
+    // ALTER TABLE, mais on peut référencer logiquement (pas de contrainte
+    // FK forte ; on accepte ce compromis pour rester sans recréer la table).
+    db.exec(`ALTER TABLE tasks ADD COLUMN predecessor_id TEXT`)
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_tasks_predecessor ON tasks(predecessor_id)`,
+    )
+  }
 }
 
 /**
@@ -91,7 +117,7 @@ function bumpVersion(db) {
  *     id:string, name:string, kind:'task'|'milestone',
  *     start_date:string, end_date:string, progress:number,
  *     collaborator_id:string|null, color:string|null,
- *     parent_id:string|null, position:number
+ *     parent_id:string|null, predecessor_id:string|null, position:number
  *   }>
  * }}
  */
@@ -106,7 +132,7 @@ export function getFullState(db) {
   const tasks = db
     .prepare(
       `SELECT id, name, kind, start_date, end_date, progress,
-              collaborator_id, color, parent_id, position
+              collaborator_id, color, parent_id, predecessor_id, position
          FROM tasks
          ORDER BY position ASC, id ASC`,
     )
@@ -225,14 +251,24 @@ function nextTaskPosition(db) {
  * @param {{
  *   id:string, name:string, kind?:'task'|'milestone',
  *   start_date:string, end_date?:string, progress?:number,
- *   collaborator_id?:string|null, color?:string|null, parent_id?:string|null
+ *   collaborator_id?:string|null, color?:string|null,
+ *   parent_id?:string|null, predecessor_id?:string|null
  * }} input
  * @returns {{version:number, task:object}}
  */
 export function createTask(db, input) {
   const tx = db.transaction(() => {
     const kind = input.kind || 'task'
-    const startDate = input.start_date
+    let startDate = input.start_date
+    // v1.2 — Si un prédécesseur est défini, on force la start_date sur sa
+    // end_date. La règle est aussi appliquée côté UI (champ grisé) mais on
+    // la doublonne ici pour garantir la cohérence quel que soit le client.
+    if (input.predecessor_id) {
+      const pred = db
+        .prepare(`SELECT end_date FROM tasks WHERE id = ?`)
+        .get(input.predecessor_id)
+      if (pred) startDate = pred.end_date
+    }
     // Pour un jalon, on ignore end_date envoyé par le client : un jalon est
     // ponctuel, donc end_date = start_date par construction.
     const endDate =
@@ -241,8 +277,8 @@ export function createTask(db, input) {
     db.prepare(
       `INSERT INTO tasks
         (id, name, kind, start_date, end_date, progress,
-         collaborator_id, color, parent_id, position)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         collaborator_id, color, parent_id, predecessor_id, position)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.id,
       input.name,
@@ -253,6 +289,7 @@ export function createTask(db, input) {
       input.collaborator_id ?? null,
       input.color ?? null,
       input.parent_id ?? null,
+      input.predecessor_id ?? null,
       position,
     )
     const version = bumpVersion(db)
@@ -265,13 +302,15 @@ export function createTask(db, input) {
 /**
  * Met à jour une tâche existante (mise à jour partielle).
  * Si on passe une tâche en jalon, end_date est réalignée sur start_date.
+ * Si un prédécesseur est défini, start_date est forcée sur sa end_date.
  *
  * @param {import('better-sqlite3').Database} db
  * @param {string} id
  * @param {{
  *   name?:string, kind?:'task'|'milestone',
  *   start_date?:string, end_date?:string, progress?:number,
- *   collaborator_id?:string|null, color?:string|null, parent_id?:string|null
+ *   collaborator_id?:string|null, color?:string|null,
+ *   parent_id?:string|null, predecessor_id?:string|null
  * }} patch
  * @returns {{version:number, changed:boolean}}
  */
@@ -281,13 +320,37 @@ export function updateTask(db, id, patch) {
     if (!current) return { version: getVersion(db), changed: false }
 
     const next = { ...current, ...patch }
+
+    // v1.2 — Si un prédécesseur est défini (ou réaffirmé), on aligne la
+    // start_date sur sa end_date, en préservant la durée existante de la
+    // tâche pour ne pas la rétrécir/étirer involontairement.
+    if (next.predecessor_id && next.predecessor_id !== id) {
+      const pred = db
+        .prepare(`SELECT end_date FROM tasks WHERE id = ?`)
+        .get(next.predecessor_id)
+      if (pred) {
+        const oldStart = new Date(next.start_date)
+        const oldEnd = new Date(next.end_date)
+        const durationDays = Math.max(
+          0,
+          Math.round((oldEnd - oldStart) / 86400000),
+        )
+        next.start_date = pred.end_date
+        // Conserve la durée existante (sauf jalon : end_date = start_date)
+        if (next.kind !== 'milestone') {
+          const newStart = new Date(next.start_date)
+          newStart.setDate(newStart.getDate() + durationDays)
+          next.end_date = newStart.toISOString().slice(0, 10)
+        }
+      }
+    }
     // Cohérence : un jalon a end_date == start_date, toujours.
     if (next.kind === 'milestone') next.end_date = next.start_date
 
     db.prepare(
       `UPDATE tasks
          SET name = ?, kind = ?, start_date = ?, end_date = ?, progress = ?,
-             collaborator_id = ?, color = ?, parent_id = ?
+             collaborator_id = ?, color = ?, parent_id = ?, predecessor_id = ?
          WHERE id = ?`,
     ).run(
       next.name,
@@ -298,6 +361,7 @@ export function updateTask(db, id, patch) {
       next.collaborator_id,
       next.color,
       next.parent_id,
+      next.predecessor_id,
       id,
     )
     const version = bumpVersion(db)
@@ -491,8 +555,8 @@ export function replaceFullState(db, state) {
     const insTask = db.prepare(
       `INSERT INTO tasks
         (id, name, kind, start_date, end_date, progress,
-         collaborator_id, color, parent_id, position)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         collaborator_id, color, parent_id, predecessor_id, position)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     state.tasks.forEach((t, idx) => {
       const kind = t.kind || 'task'
@@ -508,6 +572,7 @@ export function replaceFullState(db, state) {
         t.collaborator_id ?? null,
         t.color ?? null,
         t.parent_id ?? null,
+        t.predecessor_id ?? null,
         idx,
       )
     })

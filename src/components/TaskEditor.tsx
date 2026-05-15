@@ -1,15 +1,27 @@
 // =============================================================================
-// COMPOSANT TaskEditor — Gantt v1
+// COMPOSANT TaskEditor — Gantt v1.2
 // =============================================================================
 // Modal léger pour éditer (ou créer) une tâche / jalon : nom, type, dates,
-// avancement, collaborateur, parent.
+// avancement, collaborateur, phase parent, prédécesseur, couleur.
 //
 // État local synchronisé sur la prop `task` (édition) ou vide (création).
 // Validation minimale côté client : la validation forte est faite par Zod
 // côté serveur.
+//
+// Règles métier (v1.2) :
+//   • Si un PRÉDÉCESSEUR est sélectionné, la `start_date` est forcée sur la
+//     `end_date` du prédécesseur ET le champ Début est grisé. Pour reprendre
+//     la main sur la date, l'utilisateur doit retirer le prédécesseur.
+//   • La COULEUR est éditable. Valeur initiale = couleur effective (collab >
+//     défaut). Bouton "↺ Auto" pour revenir à null (= ré-hériter du collab).
 // =============================================================================
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import {
+  DEFAULT_TASK_COLOR,
+  descendantIds,
+  effectiveTaskColor,
+} from '../lib/utils'
 import type { Collaborator, Task, TaskKind } from '../lib/types'
 
 interface Props {
@@ -19,7 +31,7 @@ interface Props {
   defaults?: Partial<Task>
   /** Liste des collaborateurs disponibles dans le menu. */
   collaborators: Collaborator[]
-  /** Liste des tâches existantes (pour le menu "parent"). */
+  /** Liste des tâches existantes (pour les menus parent / prédécesseur). */
   tasks: Task[]
   /** Callback de validation. Reçoit les champs édités. */
   onSave: (patch: Partial<Task>) => void
@@ -47,6 +59,9 @@ export default function TaskEditor({
   const [progress, setProgress] = useState(0)
   const [collabId, setCollabId] = useState<string>('')
   const [parentId, setParentId] = useState<string>('')
+  const [predecessorId, setPredecessorId] = useState<string>('')
+  /** Couleur custom (hex, vide = utiliser la couleur effective). */
+  const [color, setColor] = useState<string>('')
 
   // Réinitialisation de l'état local à chaque ouverture (changement de
   // task ou defaults). setState dans l'effect est ici intentionnel —
@@ -61,20 +76,56 @@ export default function TaskEditor({
     setProgress(src.progress ?? 0)
     setCollabId(src.collaborator_id || '')
     setParentId(src.parent_id || '')
+    setPredecessorId(src.predecessor_id || '')
+    setColor(src.color || '')
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [task, defaults])
 
+  /**
+   * Couleur "proposée par défaut" pour le picker quand l'utilisateur n'a
+   * pas défini de couleur custom. = couleur du collab si présent, sinon
+   * couleur grise par défaut.
+   */
+  const defaultColor = useMemo(() => {
+    if (collabId) {
+      const c = collaborators.find((x) => x.id === collabId)
+      if (c) return c.color
+    }
+    return DEFAULT_TASK_COLOR
+  }, [collabId, collaborators])
+
+  /** Liste des prédécesseurs valides : toutes les tâches sauf elle-même
+   *  et ses descendants (anti-cycle), et qui ont une end_date. */
+  const validPredecessors = useMemo(() => {
+    if (!task) return tasks.filter((t) => t.kind === 'task')
+    const banned = descendantIds(task.id, tasks)
+    banned.add(task.id)
+    return tasks.filter((t) => !banned.has(t.id))
+  }, [task, tasks])
+
+  /** Si un prédécesseur est sélectionné, on force la start_date affichée. */
+  const predecessor = useMemo(
+    () => (predecessorId ? tasks.find((t) => t.id === predecessorId) : null),
+    [predecessorId, tasks],
+  )
+  const lockedStart = predecessor?.end_date || ''
+  const effectiveStart = predecessor ? lockedStart : startDate
+
   /** Construit le patch et appelle onSave. */
   function handleSave() {
-    if (!name.trim() || !startDate) return
+    if (!name.trim() || !effectiveStart) return
     onSave({
       name: name.trim(),
       kind,
-      start_date: startDate,
-      end_date: kind === 'milestone' ? startDate : endDate || startDate,
+      start_date: effectiveStart,
+      end_date:
+        kind === 'milestone' ? effectiveStart : endDate || effectiveStart,
       progress,
       collaborator_id: collabId || null,
       parent_id: parentId || null,
+      predecessor_id: predecessorId || null,
+      // color: '' (vide) → null (= hériter automatiquement)
+      color: color || null,
     })
   }
 
@@ -130,12 +181,25 @@ export default function TaskEditor({
 
         <div className="flex gap-2">
           <label className="block text-sm flex-1">
-            <span className="text-slate-600">Début</span>
+            <span className="text-slate-600">
+              Début
+              {predecessor && (
+                <span className="ml-1 text-xs text-slate-400">
+                  (verrouillé)
+                </span>
+              )}
+            </span>
             <input
               type="date"
-              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
-              value={startDate}
+              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
+              value={effectiveStart}
               onChange={(e) => setStartDate(e.target.value)}
+              disabled={!!predecessor}
+              title={
+                predecessor
+                  ? `Forcée à la fin du prédécesseur « ${predecessor.name} »`
+                  : undefined
+              }
             />
           </label>
 
@@ -143,7 +207,7 @@ export default function TaskEditor({
             <span className="text-slate-600">Fin</span>
             <input
               type="date"
-              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
               disabled={kind === 'milestone'}
@@ -184,6 +248,84 @@ export default function TaskEditor({
               ))}
           </select>
         </label>
+
+        <label className="block text-sm">
+          <span className="text-slate-600">
+            Prédécesseur
+            <span className="ml-1 text-xs text-slate-400">
+              (facultatif — verrouille la date de début)
+            </span>
+          </span>
+          <select
+            className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+            value={predecessorId}
+            onChange={(e) => setPredecessorId(e.target.value)}
+          >
+            <option value="">— aucun —</option>
+            {validPredecessors.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name} (fin : {t.end_date})
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {/* COULEUR — éditable, par défaut = couleur effective */}
+        <div className="block text-sm">
+          <span className="text-slate-600">Couleur de la barre</span>
+          <div className="mt-1 flex items-center gap-2">
+            <input
+              type="color"
+              className="h-9 w-14 border border-slate-300 rounded cursor-pointer"
+              value={
+                color ||
+                effectiveTaskColor(
+                  // tâche fictive juste pour le calcul de couleur effective
+                  {
+                    id: '',
+                    name: '',
+                    kind: 'task',
+                    start_date: '',
+                    end_date: '',
+                    progress: 0,
+                    collaborator_id: collabId || null,
+                    color: null,
+                    parent_id: null,
+                    predecessor_id: null,
+                    position: 0,
+                  },
+                  collaborators,
+                )
+              }
+              onChange={(e) => setColor(e.target.value)}
+              title="Choisir une couleur personnalisée"
+            />
+            <span className="text-xs text-slate-500 flex-1">
+              {color ? (
+                <>Couleur personnalisée : {color}</>
+              ) : (
+                <>
+                  Auto :{' '}
+                  <span
+                    className="inline-block w-3 h-3 rounded align-middle mr-1"
+                    style={{ backgroundColor: defaultColor }}
+                  />
+                  hérite du collaborateur
+                </>
+              )}
+            </span>
+            {color && (
+              <button
+                type="button"
+                className="px-2 py-1 text-xs rounded border border-slate-300 hover:bg-slate-100"
+                onClick={() => setColor('')}
+                title="Repasser en automatique (hérite du collaborateur)"
+              >
+                ↺ Auto
+              </button>
+            )}
+          </div>
+        </div>
 
         <div className="flex justify-between pt-2">
           {task && onDelete ? (

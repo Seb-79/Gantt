@@ -39,6 +39,8 @@ export interface Task {
   color: string | null
   /** Tâche parent (regroupement en phases). */
   parent_id: string | null
+  /** Tâche prédécesseur (v1.2) : si défini, start_date == end_date du prédécesseur. */
+  predecessor_id: string | null
   /** Position d'affichage (ordre des lignes). */
   position: number
 }

@@ -88,6 +88,9 @@ export const CreateTaskBody = z
     collaborator_id: NonEmptyId.nullable().optional(),
     color: HexColor.nullable().optional(),
     parent_id: NonEmptyId.nullable().optional(),
+    // v1.2 — Tâche prédécesseur. Si renseignée, le DAL force la start_date
+    // sur la end_date du prédécesseur (cf. db/index.js).
+    predecessor_id: NonEmptyId.nullable().optional(),
   })
   .refine((v) => !v.end_date || v.end_date >= v.start_date, {
     message: 'end_date doit être ≥ start_date',
@@ -104,6 +107,7 @@ export const UpdateTaskBody = z
     collaborator_id: NonEmptyId.nullable().optional(),
     color: HexColor.nullable().optional(),
     parent_id: NonEmptyId.nullable().optional(),
+    predecessor_id: NonEmptyId.nullable().optional(), // v1.2
   })
   .refine((v) => Object.keys(v).length > 0, {
     message: 'au moins un champ doit être fourni',

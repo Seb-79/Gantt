@@ -9,7 +9,7 @@
 //   • Bouton "Capture d'écran PNG" via html-to-image (téléchargement direct)
 // =============================================================================
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toPng } from 'html-to-image'
 import GanttChart from './components/GanttChart'
 import TaskEditor from './components/TaskEditor'
@@ -20,6 +20,7 @@ import {
   makeId,
   MAX_DAY_WIDTH,
   MIN_DAY_WIDTH,
+  sortTasksHierarchically,
 } from './lib/utils'
 import type { GanttState, Task } from './lib/types'
 
@@ -45,6 +46,15 @@ export default function App() {
 
   /** Référence sur le bloc Gantt — utilisée pour la capture PNG. */
   const ganttRef = useRef<HTMLDivElement | null>(null)
+
+  /**
+   * Tâches triées hiérarchiquement : chaque enfant juste après son parent.
+   * Mémoïsé pour ne recalculer que si la liste change vraiment.
+   */
+  const orderedTasks = useMemo(
+    () => (state ? sortTasksHierarchically(state.tasks) : []),
+    [state],
+  )
 
   /**
    * Récupère l'état complet depuis l'API. Met à jour status + state.
@@ -269,7 +279,7 @@ export default function App() {
               windowStart={startIso}
               windowEnd={endIso}
               dayWidth={dayWidth}
-              tasks={state.tasks}
+              tasks={orderedTasks}
               collaborators={state.collaborators}
               onTaskClick={setEditing}
             />
@@ -291,7 +301,7 @@ export default function App() {
               : undefined
           }
           collaborators={state.collaborators}
-          tasks={state.tasks}
+          tasks={orderedTasks}
           onSave={handleSaveTask}
           onClose={() => {
             setEditing(null)

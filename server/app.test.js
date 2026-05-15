@@ -161,4 +161,36 @@ describe('Tâches', () => {
   it('DELETE inconnu → 404', async () => {
     await request(app).delete('/api/tasks/inconnu').expect(404)
   })
+
+  // ---- v1.2 — Prédécesseur ------------------------------------------------
+
+  it('POST avec predecessor_id : start_date forcée à la fin du prédécesseur', async () => {
+    // t1a finit le 2026-05-29 dans les données démo.
+    const r = await request(app)
+      .post('/api/tasks')
+      .send({
+        id: 'tSucc',
+        name: 'Successeur',
+        start_date: '2026-01-01', // sera ignoré
+        end_date: '2026-01-02',
+        predecessor_id: 't1a',
+      })
+      .expect(200)
+    expect(r.body.task.predecessor_id).toBe('t1a')
+    expect(r.body.task.start_date).toBe('2026-05-29')
+  })
+
+  it('PATCH definir un predecesseur recale start_date', async () => {
+    // t2a (tournage extérieur) commence 2026-07-01 ; on lui ajoute t1a comme
+    // prédécesseur (fin 2026-05-29) → start_date doit être recalée.
+    const r = await request(app)
+      .patch('/api/tasks/t2a')
+      .send({ predecessor_id: 't1a' })
+      .expect(200)
+    expect(r.body.changed).toBe(true)
+    const state = await request(app).get('/api/state').expect(200)
+    const t2a = state.body.tasks.find((t) => t.id === 't2a')
+    expect(t2a.start_date).toBe('2026-05-29')
+    expect(t2a.predecessor_id).toBe('t1a')
+  })
 })

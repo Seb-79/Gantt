@@ -9,18 +9,38 @@ import {
   dateToIso,
   dateToX,
   defaultWindow,
+  descendantIds,
   effectiveTaskColor,
   groupByMonth,
   isoToDate,
   isWeekendDay,
   makeId,
   rangeToWidth,
+  sortTasksHierarchically,
   DEFAULT_DAY_WIDTH,
   DEFAULT_TASK_COLOR,
   MAX_DAY_WIDTH,
   MIN_DAY_WIDTH,
 } from './utils'
 import type { Collaborator, Task } from './types'
+
+/** Petit helper pour fabriquer une tâche minimale dans les tests. */
+function mkTask(id: string, overrides: Partial<Task> = {}): Task {
+  return {
+    id,
+    name: id,
+    kind: 'task',
+    start_date: '2026-01-01',
+    end_date: '2026-01-02',
+    progress: 0,
+    collaborator_id: null,
+    color: null,
+    parent_id: null,
+    predecessor_id: null,
+    position: 0,
+    ...overrides,
+  }
+}
 
 describe('isoToDate / dateToIso', () => {
   it('round-trip stable', () => {
@@ -83,18 +103,7 @@ describe('effectiveTaskColor', () => {
   const collabs: Collaborator[] = [
     { id: 'c1', name: 'A', color: '#ff0000', position: 0 },
   ]
-  const baseTask: Task = {
-    id: 't1',
-    name: 'x',
-    kind: 'task',
-    start_date: '2026-01-01',
-    end_date: '2026-01-02',
-    progress: 0,
-    collaborator_id: null,
-    color: null,
-    parent_id: null,
-    position: 0,
-  }
+  const baseTask: Task = mkTask('t1')
 
   it('priorité couleur custom', () => {
     expect(effectiveTaskColor({ ...baseTask, color: '#abcdef' }, collabs)).toBe(
@@ -137,5 +146,64 @@ describe('groupByMonth', () => {
     expect(groups).toHaveLength(2)
     expect(groups[0].span).toBe(2) // 30, 31 mai
     expect(groups[1].span).toBe(2) // 1, 2 juin
+  })
+})
+
+describe('sortTasksHierarchically', () => {
+  it('place chaque enfant juste après son parent', () => {
+    const tasks: Task[] = [
+      mkTask('A', { position: 0 }),
+      mkTask('B', { position: 1 }),
+      mkTask('A1', { position: 2, parent_id: 'A' }),
+      mkTask('B1', { position: 3, parent_id: 'B' }),
+      mkTask('A2', { position: 4, parent_id: 'A' }),
+    ]
+    const out = sortTasksHierarchically(tasks).map((t) => t.id)
+    expect(out).toEqual(['A', 'A1', 'A2', 'B', 'B1'])
+  })
+
+  it('descend récursivement (petits-enfants)', () => {
+    const tasks: Task[] = [
+      mkTask('A'),
+      mkTask('A1', { parent_id: 'A' }),
+      mkTask('A1a', { parent_id: 'A1' }),
+    ]
+    const out = sortTasksHierarchically(tasks).map((t) => t.id)
+    expect(out).toEqual(['A', 'A1', 'A1a'])
+  })
+
+  it('rattache à la racine les enfants orphelins', () => {
+    const tasks: Task[] = [mkTask('orphan', { parent_id: 'inconnu' })]
+    const out = sortTasksHierarchically(tasks)
+    expect(out).toHaveLength(1)
+    expect(out[0].id).toBe('orphan')
+  })
+
+  it("respecte l'ordre `position` au sein d'un même parent", () => {
+    const tasks: Task[] = [
+      mkTask('A'),
+      mkTask('A2', { position: 2, parent_id: 'A' }),
+      mkTask('A1', { position: 1, parent_id: 'A' }),
+    ]
+    const out = sortTasksHierarchically(tasks).map((t) => t.id)
+    expect(out).toEqual(['A', 'A1', 'A2'])
+  })
+})
+
+describe('descendantIds', () => {
+  it('renvoie tous les descendants (récursif)', () => {
+    const tasks: Task[] = [
+      mkTask('A'),
+      mkTask('A1', { parent_id: 'A' }),
+      mkTask('A1a', { parent_id: 'A1' }),
+      mkTask('B'),
+    ]
+    const ids = [...descendantIds('A', tasks)]
+    expect(ids.sort()).toEqual(['A1', 'A1a'])
+  })
+
+  it('set vide pour une feuille', () => {
+    const tasks: Task[] = [mkTask('A')]
+    expect(descendantIds('A', tasks).size).toBe(0)
   })
 })

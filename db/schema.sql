@@ -15,6 +15,10 @@
 --                       collaborator_id nullable (tâche non affectée)
 --                       color nullable (sinon couleur du collab, sinon défaut)
 --                       parent_id nullable (regroupement en phases / lots)
+--                       predecessor_id nullable (v1.2) — tâche prédécesseur :
+--                         la start_date de la tâche est alors imposée à la
+--                         end_date du prédécesseur (logique gérée côté client
+--                         et au moment de la sauvegarde).
 --
 -- Mode WAL activé par initDb() pour autoriser plusieurs lecteurs et un
 -- écrivain simultanés (largement suffisant pour ~10 utilisateurs en LAN).
@@ -42,10 +46,12 @@ CREATE TABLE IF NOT EXISTS tasks (
   collaborator_id TEXT REFERENCES collaborators(id) ON DELETE SET NULL,
   color           TEXT,                           -- nullable, sinon couleur du collab
   parent_id       TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+  predecessor_id  TEXT REFERENCES tasks(id) ON DELETE SET NULL, -- v1.2
   position        INTEGER NOT NULL,
   CHECK (kind IN ('task', 'milestone')),
   CHECK (progress BETWEEN 0 AND 100)
 );
 
-CREATE INDEX IF NOT EXISTS idx_tasks_collab ON tasks(collaborator_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_collab      ON tasks(collaborator_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent      ON tasks(parent_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_predecessor ON tasks(predecessor_id);

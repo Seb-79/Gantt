@@ -188,3 +188,73 @@ export function groupByMonth(
   }
   return out
 }
+
+/**
+ * Trie les tâches hiérarchiquement : chaque tâche enfant est placée
+ * immédiatement après son parent (en respectant `position` au sein de
+ * chaque niveau). Les enfants orphelins (parent_id pointe sur un id absent)
+ * sont remontés à la racine pour ne pas être perdus.
+ *
+ * @param tasks  Liste plate de tâches (ordre d'origine quelconque).
+ * @returns      Nouvelle liste ordonnée parent → enfants → petits-enfants…
+ */
+export function sortTasksHierarchically(tasks: Task[]): Task[] {
+  // Index id → tâche pour résoudre les orphelins.
+  const byId = new Map<string, Task>()
+  for (const t of tasks) byId.set(t.id, t)
+
+  // Pour chaque parent (ou racine = ''), liste de ses enfants triés par position.
+  const childrenOf = new Map<string, Task[]>()
+  for (const t of tasks) {
+    // Parent ignoré s'il est inconnu → on rattache à la racine.
+    const parentKey = t.parent_id && byId.has(t.parent_id) ? t.parent_id : ''
+    const arr = childrenOf.get(parentKey) || []
+    arr.push(t)
+    childrenOf.set(parentKey, arr)
+  }
+  for (const arr of childrenOf.values()) {
+    arr.sort((a, b) => a.position - b.position)
+  }
+
+  // Parcours profondeur d'abord en partant des racines.
+  const out: Task[] = []
+  function walk(parentKey: string) {
+    const list = childrenOf.get(parentKey) || []
+    for (const t of list) {
+      out.push(t)
+      walk(t.id)
+    }
+  }
+  walk('')
+  return out
+}
+
+/**
+ * Calcule l'ensemble des descendants d'une tâche (enfants + petits-enfants…).
+ * Utilisé côté UI pour empêcher de choisir un descendant comme prédécesseur
+ * (ce qui créerait un cycle).
+ *
+ * @param taskId  Id de la tâche racine.
+ * @param tasks   Liste complète des tâches.
+ * @returns       Set des ids descendants (n'inclut PAS taskId lui-même).
+ */
+export function descendantIds(taskId: string, tasks: Task[]): Set<string> {
+  const out = new Set<string>()
+  // Index parent_id → enfants directs.
+  const childrenOf = new Map<string, Task[]>()
+  for (const t of tasks) {
+    if (!t.parent_id) continue
+    const arr = childrenOf.get(t.parent_id) || []
+    arr.push(t)
+    childrenOf.set(t.parent_id, arr)
+  }
+  function walk(id: string) {
+    for (const child of childrenOf.get(id) || []) {
+      if (out.has(child.id)) continue
+      out.add(child.id)
+      walk(child.id)
+    }
+  }
+  walk(taskId)
+  return out
+}

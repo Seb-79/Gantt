@@ -1,0 +1,64 @@
+{
+  "name": "gantt",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Application web de gestion de plannings Gantt avec export pour PowerPoint",
+  "type": "module",
+  "scripts": {
+    "dev:client": "vite --host",
+    "dev:server": "node server.js",
+    "dev": "concurrently -n client,server -c blue,green \"npm:dev:client\" \"npm:dev:server\"",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "preview": "vite preview",
+    "start": "node server.js",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,css,md,html}": [
+      "prettier --write"
+    ]
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.3.0",
+    "better-sqlite3": "^12.10.0",
+    "concurrently": "^9.2.1",
+    "date-fns": "^4.1.0",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0",
+    "html-to-image": "^1.11.13",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "tailwindcss": "^4.3.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.12.3",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/coverage-v8": "^4.1.6",
+    "eslint": "^10.3.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.6.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.4",
+    "prettier": "^3.8.3",
+    "supertest": "^7.2.2",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "^8.59.2",
+    "vite": "^8.0.12",
+    "vitest": "^4.1.6"
+  }
+}

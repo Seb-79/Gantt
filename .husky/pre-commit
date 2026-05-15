@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+# =============================================================================
+# Pre-commit hook — Gantt
+# =============================================================================
+# Lance lint-staged (eslint --fix + prettier sur les fichiers stagés) puis la
+# suite de tests. Bloque le commit si un test échoue.
+# Bypass possible avec `git commit --no-verify` en cas d'urgence.
+# =============================================================================
+
+npx lint-staged && npm test

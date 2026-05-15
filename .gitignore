@@ -1,0 +1,36 @@
+# Dépendances
+node_modules
+.pnp
+.pnp.js
+
+# Build
+dist
+dist-ssr
+build
+*.tsbuildinfo
+
+# SQLite (base locale + journaux WAL)
+data.db
+data.db-shm
+data.db-wal
+*.bak.*
+
+# Couverture
+coverage
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log

@@ -1,0 +1,542 @@
+// =============================================================================
+// COUCHE D'ACCÈS BASE DE DONNÉES (DAL) — Gantt v1
+// =============================================================================
+// Toutes les fonctions exportées prennent en premier paramètre la base SQLite
+// (`better-sqlite3`). Elles sont synchrones (better-sqlite3 l'est par design)
+// et 100 % testables avec une base en mémoire (`new Database(':memory:')`).
+//
+// Conventions :
+//   • Toute mutation incrémente `meta.version` et renvoie `{ version, ... }`.
+//   • Les écritures multiples sont enveloppées dans des transactions pour
+//     garantir l'atomicité ET améliorer les performances.
+//   • Le mode WAL est activé au boot pour autoriser des lectures concurrentes
+//     pendant qu'une écriture est en cours (cf. `initDb`).
+// =============================================================================
+
+import Database from 'better-sqlite3'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const SCHEMA_PATH = path.join(__dirname, 'schema.sql')
+
+/**
+ * Ouvre (ou crée) la base SQLite passée en paramètre, applique le schéma et
+ * configure le mode WAL pour la concurrence.
+ *
+ * @param {string} dbPath  Chemin de la base sur disque, ou ':memory:' pour les tests.
+ * @returns {import('better-sqlite3').Database}  Instance prête à l'emploi.
+ */
+export function initDb(dbPath) {
+  const db = new Database(dbPath)
+  // WAL = Write-Ahead Logging : permet d'avoir plusieurs lecteurs et UN
+  // écrivain en parallèle, là où le mode "rollback journal" sérialise tout.
+  db.pragma('journal_mode = WAL')
+  // Active la vérification des contraintes FOREIGN KEY (désactivée par défaut
+  // dans SQLite pour des raisons historiques).
+  db.pragma('foreign_keys = ON')
+
+  const schema = fs.readFileSync(SCHEMA_PATH, 'utf-8')
+  db.exec(schema)
+
+  // Initialise la version à 0 si la ligne meta n'existe pas encore.
+  db.prepare(
+    `INSERT OR IGNORE INTO meta(key, value) VALUES ('version', '0')`,
+  ).run()
+
+  return db
+}
+
+/**
+ * Lit la version courante de l'état (entier monotone, incrémenté à chaque
+ * mutation). Utilisée côté client pour détecter les changements en polling.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @returns {number}
+ */
+export function getVersion(db) {
+  const row = db.prepare(`SELECT value FROM meta WHERE key = 'version'`).get()
+  return row ? Number(row.value) : 0
+}
+
+/**
+ * Incrémente la version et renvoie la nouvelle valeur. À appeler à la fin
+ * de chaque mutation (de préférence dans la même transaction que l'écriture).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @returns {number}
+ */
+function bumpVersion(db) {
+  const next = getVersion(db) + 1
+  db.prepare(`UPDATE meta SET value = ? WHERE key = 'version'`).run(
+    String(next),
+  )
+  return next
+}
+
+// -----------------------------------------------------------------------------
+// LECTURE — état complet
+// -----------------------------------------------------------------------------
+
+/**
+ * Renvoie l'état complet du Gantt : version, collaborateurs, tâches.
+ * Format identique à celui consommé par le frontend.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @returns {{
+ *   version: number,
+ *   collaborators: Array<{id:string,name:string,color:string,position:number}>,
+ *   tasks: Array<{
+ *     id:string, name:string, kind:'task'|'milestone',
+ *     start_date:string, end_date:string, progress:number,
+ *     collaborator_id:string|null, color:string|null,
+ *     parent_id:string|null, position:number
+ *   }>
+ * }}
+ */
+export function getFullState(db) {
+  const collaborators = db
+    .prepare(
+      `SELECT id, name, color, position
+         FROM collaborators
+         ORDER BY position ASC, id ASC`,
+    )
+    .all()
+  const tasks = db
+    .prepare(
+      `SELECT id, name, kind, start_date, end_date, progress,
+              collaborator_id, color, parent_id, position
+         FROM tasks
+         ORDER BY position ASC, id ASC`,
+    )
+    .all()
+  return { version: getVersion(db), collaborators, tasks }
+}
+
+// -----------------------------------------------------------------------------
+// COLLABORATEURS
+// -----------------------------------------------------------------------------
+
+/**
+ * Calcule la prochaine position libre pour un nouveau collaborateur
+ * (max + 1, ou 0 si la table est vide).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @returns {number}
+ */
+function nextCollabPosition(db) {
+  const row = db
+    .prepare(`SELECT COALESCE(MAX(position), -1) AS m FROM collaborators`)
+    .get()
+  return row.m + 1
+}
+
+/**
+ * Crée un nouveau collaborateur. La position est calculée automatiquement
+ * pour aller à la fin de la liste.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {{id:string, name:string, color?:string}} input
+ * @returns {{version:number, collaborator:object}}
+ */
+export function createCollaborator(db, input) {
+  const tx = db.transaction(() => {
+    const position = nextCollabPosition(db)
+    db.prepare(
+      `INSERT INTO collaborators(id, name, color, position)
+         VALUES (?, ?, ?, ?)`,
+    ).run(input.id, input.name, input.color || '#3b82f6', position)
+    const version = bumpVersion(db)
+    const collaborator = db
+      .prepare(`SELECT * FROM collaborators WHERE id = ?`)
+      .get(input.id)
+    return { version, collaborator }
+  })
+  return tx()
+}
+
+/**
+ * Met à jour le nom et/ou la couleur d'un collaborateur. Champs absents = inchangés.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} id
+ * @param {{name?:string, color?:string}} patch
+ * @returns {{version:number, changed:boolean}}
+ */
+export function updateCollaborator(db, id, patch) {
+  const tx = db.transaction(() => {
+    const current = db
+      .prepare(`SELECT * FROM collaborators WHERE id = ?`)
+      .get(id)
+    if (!current) return { version: getVersion(db), changed: false }
+    const name = patch.name ?? current.name
+    const color = patch.color ?? current.color
+    db.prepare(`UPDATE collaborators SET name = ?, color = ? WHERE id = ?`).run(
+      name,
+      color,
+      id,
+    )
+    const version = bumpVersion(db)
+    return { version, changed: true }
+  })
+  return tx()
+}
+
+/**
+ * Supprime un collaborateur. Les tâches qui lui étaient affectées sont
+ * conservées (collaborator_id passe à NULL grâce à ON DELETE SET NULL).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} id
+ * @returns {{version:number, changed:boolean}}
+ */
+export function deleteCollaborator(db, id) {
+  const tx = db.transaction(() => {
+    const info = db.prepare(`DELETE FROM collaborators WHERE id = ?`).run(id)
+    if (info.changes === 0) return { version: getVersion(db), changed: false }
+    const version = bumpVersion(db)
+    return { version, changed: true }
+  })
+  return tx()
+}
+
+// -----------------------------------------------------------------------------
+// TÂCHES & JALONS
+// -----------------------------------------------------------------------------
+
+/**
+ * Calcule la prochaine position libre pour une nouvelle tâche.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @returns {number}
+ */
+function nextTaskPosition(db) {
+  const row = db
+    .prepare(`SELECT COALESCE(MAX(position), -1) AS m FROM tasks`)
+    .get()
+  return row.m + 1
+}
+
+/**
+ * Crée une tâche ou un jalon. Pour un jalon, end_date est forcée à start_date.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {{
+ *   id:string, name:string, kind?:'task'|'milestone',
+ *   start_date:string, end_date?:string, progress?:number,
+ *   collaborator_id?:string|null, color?:string|null, parent_id?:string|null
+ * }} input
+ * @returns {{version:number, task:object}}
+ */
+export function createTask(db, input) {
+  const tx = db.transaction(() => {
+    const kind = input.kind || 'task'
+    const startDate = input.start_date
+    // Pour un jalon, on ignore end_date envoyé par le client : un jalon est
+    // ponctuel, donc end_date = start_date par construction.
+    const endDate =
+      kind === 'milestone' ? startDate : input.end_date || startDate
+    const position = nextTaskPosition(db)
+    db.prepare(
+      `INSERT INTO tasks
+        (id, name, kind, start_date, end_date, progress,
+         collaborator_id, color, parent_id, position)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.id,
+      input.name,
+      kind,
+      startDate,
+      endDate,
+      input.progress ?? 0,
+      input.collaborator_id ?? null,
+      input.color ?? null,
+      input.parent_id ?? null,
+      position,
+    )
+    const version = bumpVersion(db)
+    const task = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(input.id)
+    return { version, task }
+  })
+  return tx()
+}
+
+/**
+ * Met à jour une tâche existante (mise à jour partielle).
+ * Si on passe une tâche en jalon, end_date est réalignée sur start_date.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} id
+ * @param {{
+ *   name?:string, kind?:'task'|'milestone',
+ *   start_date?:string, end_date?:string, progress?:number,
+ *   collaborator_id?:string|null, color?:string|null, parent_id?:string|null
+ * }} patch
+ * @returns {{version:number, changed:boolean}}
+ */
+export function updateTask(db, id, patch) {
+  const tx = db.transaction(() => {
+    const current = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id)
+    if (!current) return { version: getVersion(db), changed: false }
+
+    const next = { ...current, ...patch }
+    // Cohérence : un jalon a end_date == start_date, toujours.
+    if (next.kind === 'milestone') next.end_date = next.start_date
+
+    db.prepare(
+      `UPDATE tasks
+         SET name = ?, kind = ?, start_date = ?, end_date = ?, progress = ?,
+             collaborator_id = ?, color = ?, parent_id = ?
+         WHERE id = ?`,
+    ).run(
+      next.name,
+      next.kind,
+      next.start_date,
+      next.end_date,
+      next.progress,
+      next.collaborator_id,
+      next.color,
+      next.parent_id,
+      id,
+    )
+    const version = bumpVersion(db)
+    return { version, changed: true }
+  })
+  return tx()
+}
+
+/**
+ * Supprime une tâche. Les tâches enfants (parent_id) sont supprimées en cascade.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} id
+ * @returns {{version:number, changed:boolean}}
+ */
+export function deleteTask(db, id) {
+  const tx = db.transaction(() => {
+    const info = db.prepare(`DELETE FROM tasks WHERE id = ?`).run(id)
+    if (info.changes === 0) return { version: getVersion(db), changed: false }
+    const version = bumpVersion(db)
+    return { version, changed: true }
+  })
+  return tx()
+}
+
+// -----------------------------------------------------------------------------
+// REMPLACEMENT GLOBAL & DEMO
+// -----------------------------------------------------------------------------
+
+/**
+ * Données de démonstration chargées au premier démarrage (base vide).
+ * Inspirées de l'exemple "Video Production Template" fourni à la création
+ * du projet.
+ */
+export const DEMO_STATE = {
+  collaborators: [
+    { id: 'c1', name: 'Alice', color: '#3b82f6' },
+    { id: 'c2', name: 'Benoît', color: '#10b981' },
+    { id: 'c3', name: 'Camille', color: '#f59e0b' },
+  ],
+  tasks: [
+    // Phase 1
+    {
+      id: 't1',
+      name: 'Pré-production',
+      kind: 'task',
+      start_date: '2026-05-15',
+      end_date: '2026-06-30',
+      progress: 60,
+    },
+    {
+      id: 't1a',
+      name: 'Recherche audience',
+      kind: 'task',
+      start_date: '2026-05-15',
+      end_date: '2026-05-29',
+      progress: 100,
+      collaborator_id: 'c1',
+      parent_id: 't1',
+    },
+    {
+      id: 't1b',
+      name: 'Définir le message',
+      kind: 'task',
+      start_date: '2026-05-25',
+      end_date: '2026-06-05',
+      progress: 100,
+      collaborator_id: 'c1',
+      parent_id: 't1',
+    },
+    {
+      id: 't1c',
+      name: 'Écrire le script',
+      kind: 'task',
+      start_date: '2026-06-01',
+      end_date: '2026-06-15',
+      progress: 80,
+      collaborator_id: 'c2',
+      parent_id: 't1',
+    },
+    {
+      id: 't1d',
+      name: 'Storyboard',
+      kind: 'task',
+      start_date: '2026-06-10',
+      end_date: '2026-06-25',
+      progress: 30,
+      collaborator_id: 'c2',
+      parent_id: 't1',
+    },
+    {
+      id: 'm1',
+      name: 'Validation pré-production',
+      kind: 'milestone',
+      start_date: '2026-06-30',
+      parent_id: 't1',
+    },
+
+    // Phase 2
+    {
+      id: 't2',
+      name: 'Tournage',
+      kind: 'task',
+      start_date: '2026-07-01',
+      end_date: '2026-07-20',
+      progress: 0,
+    },
+    {
+      id: 't2a',
+      name: 'Tournage extérieur',
+      kind: 'task',
+      start_date: '2026-07-01',
+      end_date: '2026-07-10',
+      progress: 0,
+      collaborator_id: 'c3',
+      parent_id: 't2',
+    },
+    {
+      id: 't2b',
+      name: 'Tournage intérieur',
+      kind: 'task',
+      start_date: '2026-07-08',
+      end_date: '2026-07-20',
+      progress: 0,
+      collaborator_id: 'c3',
+      parent_id: 't2',
+    },
+
+    // Phase 3
+    {
+      id: 't3',
+      name: 'Post-production',
+      kind: 'task',
+      start_date: '2026-07-21',
+      end_date: '2026-08-31',
+      progress: 0,
+    },
+    {
+      id: 't3a',
+      name: 'Montage',
+      kind: 'task',
+      start_date: '2026-07-21',
+      end_date: '2026-08-10',
+      progress: 0,
+      collaborator_id: 'c2',
+      parent_id: 't3',
+    },
+    {
+      id: 't3b',
+      name: 'Voix off',
+      kind: 'task',
+      start_date: '2026-08-05',
+      end_date: '2026-08-15',
+      progress: 0,
+      collaborator_id: 'c1',
+      parent_id: 't3',
+    },
+    {
+      id: 'm2',
+      name: 'Livraison finale',
+      kind: 'milestone',
+      start_date: '2026-08-31',
+      parent_id: 't3',
+    },
+  ],
+}
+
+/**
+ * Vide entièrement la base (collaborateurs + tâches) puis insère un état
+ * complet. Utilisé par le reset démo et les tests d'intégration.
+ *
+ * Toute l'opération est dans une transaction pour rester atomique : si
+ * une insertion échoue, rien n'est appliqué.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {{collaborators:Array, tasks:Array}} state
+ * @returns {{version:number}}
+ */
+export function replaceFullState(db, state) {
+  const tx = db.transaction(() => {
+    db.prepare(`DELETE FROM tasks`).run()
+    db.prepare(`DELETE FROM collaborators`).run()
+
+    const insCollab = db.prepare(
+      `INSERT INTO collaborators(id, name, color, position) VALUES (?, ?, ?, ?)`,
+    )
+    state.collaborators.forEach((c, idx) => {
+      insCollab.run(c.id, c.name, c.color || '#3b82f6', idx)
+    })
+
+    const insTask = db.prepare(
+      `INSERT INTO tasks
+        (id, name, kind, start_date, end_date, progress,
+         collaborator_id, color, parent_id, position)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    state.tasks.forEach((t, idx) => {
+      const kind = t.kind || 'task'
+      const endDate =
+        kind === 'milestone' ? t.start_date : t.end_date || t.start_date
+      insTask.run(
+        t.id,
+        t.name,
+        kind,
+        t.start_date,
+        endDate,
+        t.progress ?? 0,
+        t.collaborator_id ?? null,
+        t.color ?? null,
+        t.parent_id ?? null,
+        idx,
+      )
+    })
+
+    const version = bumpVersion(db)
+    return { version }
+  })
+  return tx()
+}
+
+/**
+ * Restaure les données de démonstration. Utilisé par POST /api/reset.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @returns {{version:number}}
+ */
+export function resetToDemo(db) {
+  return replaceFullState(db, DEMO_STATE)
+}
+
+/**
+ * Indique si la base est complètement vide (pas de collab, pas de tâche).
+ * Utilisé au boot pour décider s'il faut charger les données démo.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @returns {boolean}
+ */
+export function isDatabaseEmpty(db) {
+  const c = db.prepare(`SELECT COUNT(*) AS n FROM collaborators`).get().n
+  const t = db.prepare(`SELECT COUNT(*) AS n FROM tasks`).get().n
+  return c === 0 && t === 0
+}

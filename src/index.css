@@ -1,0 +1,32 @@
+@import 'tailwindcss';
+
+/* ===========================================================================
+   Styles globaux Gantt
+   ===========================================================================
+   Tailwind v4 fait l'essentiel via classes utilitaires. On n'ajoute ici
+   que les quelques styles non exprimables en utilitaires (focus de barre,
+   police de la timeline).
+   =========================================================================== */
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+/* Conteneur du Gantt — empêche la sélection de texte pendant le drag éventuel */
+.gantt-no-select {
+  user-select: none;
+  -webkit-user-select: none;
+}

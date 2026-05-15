@@ -37,6 +37,9 @@ export default defineConfig({
     },
   },
   test: {
+    // Environnement par défaut = node (DAL, schemas, intégration HTTP).
+    // Les tests de composants React déclarent `// @vitest-environment jsdom`
+    // en tête de fichier pour disposer du DOM (cf. src/components/*.test.tsx).
     environment: 'node',
     globals: false,
     include: [
@@ -44,11 +47,19 @@ export default defineConfig({
       'db/**/*.test.{js,ts}',
       'server/**/*.test.{js,ts}',
     ],
+    // Setup global pour les tests React (extensions DOM de jest-dom).
+    setupFiles: ['./src/test/setup.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html'],
-      include: ['src/lib/**/*.ts', 'db/**/*.js', 'server/**/*.js'],
-      exclude: ['**/*.test.*'],
+      include: [
+        'src/lib/**/*.ts',
+        'src/components/**/*.tsx',
+        'src/App.tsx',
+        'db/**/*.js',
+        'server/**/*.js',
+      ],
+      exclude: ['**/*.test.*', 'src/test/**'],
     },
   },
 })

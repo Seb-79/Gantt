@@ -384,4 +384,192 @@ describe('Projets', () => {
     expect(state.body.tasks).toHaveLength(1)
     expect(state.body.tasks[0].id).toBe('t_iso')
   })
+
+  it('GET /api/projects renvoie la liste seule', async () => {
+    const r = await request(app).get('/api/projects').expect(200)
+    expect(Array.isArray(r.body.projects)).toBe(true)
+    expect(r.body.projects.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('GET /api/state?project_id=inconnu retombe sur le premier projet', async () => {
+    const r = await request(app)
+      .get('/api/state?project_id=p_inexistant')
+      .expect(200)
+    // Le projet demandé n'existe pas → le serveur substitue le premier projet.
+    expect(r.body.current_project_id).not.toBe('p_inexistant')
+    expect(r.body.projects.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('POST /api/projects sans id → 400 (validation Zod)', async () => {
+    const r = await request(app)
+      .post('/api/projects')
+      .send({ name: 'Sans id' })
+      .expect(400)
+    expect(r.body.error).toBe('Validation échouée')
+  })
+
+  it('PATCH /api/projects/inconnu → 404', async () => {
+    await request(app)
+      .patch('/api/projects/inconnu')
+      .send({ name: 'X' })
+      .expect(404)
+  })
+
+  it('PATCH /api/projects body vide → 400', async () => {
+    const list = await request(app).get('/api/projects').expect(200)
+    await request(app)
+      .patch(`/api/projects/${list.body.projects[0].id}`)
+      .send({})
+      .expect(400)
+  })
+
+  it('DELETE /api/projects/inconnu (avec autre projet existant) → 404', async () => {
+    // Crée un 2e projet pour ne pas tomber sur la règle "dernier projet".
+    await request(app)
+      .post('/api/projects')
+      .send({ id: 'p_x', name: 'X' })
+      .expect(200)
+    await request(app).delete('/api/projects/p_inconnu').expect(404)
+  })
+})
+
+// =============================================================================
+// CHEMINS D'ERREUR — couverture des branches restantes
+// =============================================================================
+
+describe('Erreurs et validation (couverture)', () => {
+  let app
+  beforeEach(() => {
+    app = makeApp()
+  })
+
+  it('GET /api/state?project_id=… invalide (>64 char) → 400 (validation query)', async () => {
+    const tooLong = 'a'.repeat(65)
+    const r = await request(app)
+      .get(`/api/state?project_id=${tooLong}`)
+      .expect(400)
+    expect(r.body.error).toBe('Validation échouée')
+    expect(r.body.details[0].where).toBe('query')
+  })
+
+  it('PATCH /api/collaborators/<id>/ id trop long → 400 (validation params)', async () => {
+    // 65 caractères → dépasse `NonEmptyId.max(64)` → branche `params` de validate().
+    const tooLong = 'a'.repeat(65)
+    const r = await request(app)
+      .patch(`/api/collaborators/${tooLong}`)
+      .send({ name: 'X' })
+      .expect(400)
+    expect(r.body.error).toBe('Validation échouée')
+    expect(r.body.details[0].where).toBe('params')
+  })
+
+  it('POST /api/collaborators id déjà existant → 400 (PRIMARY KEY)', async () => {
+    // Première création OK puis re-création avec le même id → catch dans
+    // la route (createCollaborator lève → 400 explicite).
+    await request(app).post('/api/collaborators').send({ id: 'c1', name: 'X' })
+    const r = await request(app)
+      .post('/api/collaborators')
+      .send({ id: 'c1', name: 'Y' })
+      .expect(400)
+    expect(r.body.error).toMatch(/Création impossible/)
+  })
+
+  it('DELETE /api/collaborators/inconnu → 404', async () => {
+    await request(app).delete('/api/collaborators/inconnu').expect(404)
+  })
+
+  it('PATCH /api/tasks/inconnu → 404', async () => {
+    await request(app)
+      .patch('/api/tasks/inconnu')
+      .send({ name: 'X' })
+      .expect(404)
+  })
+
+  it('POST /api/tasks predecessor_id inexistant → 400 (FK violée, catch route)', async () => {
+    // La FK `predecessor_id REFERENCES tasks(id)` empêche l'insert : le
+    // catch de la route renvoie 400 avec un message lisible. Cible la
+    // branche `catch (err)` du POST /api/tasks.
+    const origErr = console.error
+    console.error = () => {}
+    try {
+      const r = await request(app)
+        .post('/api/tasks')
+        .send({
+          id: 't_ok',
+          name: 'OK',
+          start_date: '2026-09-01',
+          end_date: '2026-09-05',
+          predecessor_id: 'inconnu',
+        })
+        .expect(400)
+      expect(r.body.error).toMatch(/Création impossible/)
+    } finally {
+      console.error = origErr
+    }
+  })
+
+  it('POST /api/tasks/:id/move sur cycle → 400 (catch route)', async () => {
+    // On tente de déplacer t1 sous lui-même → moveTask lève → 400.
+    const r = await request(app)
+      .post('/api/tasks/t1/move')
+      .send({ parent_id: 't1', before_id: null })
+      .expect(400)
+    expect(r.body.error).toMatch(/Déplacement impossible/)
+  })
+
+  it('POST /api/tasks/:id/move sur id inconnu → 404', async () => {
+    await request(app)
+      .post('/api/tasks/inconnu/move')
+      .send({ parent_id: null, before_id: null })
+      .expect(404)
+  })
+
+  it('POST /api/projects avec id dupliqué → 400 (catch route)', async () => {
+    const origErr = console.error
+    console.error = () => {}
+    try {
+      await request(app)
+        .post('/api/projects')
+        .send({ id: 'p_dup', name: 'A' })
+        .expect(200)
+      const r = await request(app)
+        .post('/api/projects')
+        .send({ id: 'p_dup', name: 'B' })
+        .expect(400)
+      expect(r.body.error).toMatch(/Création impossible/)
+    } finally {
+      console.error = origErr
+    }
+  })
+
+  it('logger de requête activé (couverture de la branche requestLog)', async () => {
+    // Construit une app à part avec le log activé pour couvrir la branche
+    // (l'app de test par défaut est créée avec requestLog: false).
+    const db = initDb(':memory:')
+    replaceFullState(db, DEMO_STATE)
+    const appWithLog = createApp(db, { requestLog: true })
+    const origLog = console.log
+    console.log = () => {}
+    try {
+      await request(appWithLog).get('/api/state').expect(200)
+    } finally {
+      console.log = origLog
+    }
+  })
+
+  it('JSON malformé → 500 via le handler global', async () => {
+    // express.json() rejette → next(err) → handler global → 500.
+    // On désactive le log console pendant ce test pour ne pas polluer la sortie.
+    const origErr = console.error
+    console.error = () => {}
+    try {
+      await request(app)
+        .post('/api/tasks')
+        .set('Content-Type', 'application/json')
+        .send('{"id": "tBad", ') // JSON tronqué volontaire
+        .expect(500)
+    } finally {
+      console.error = origErr
+    }
+  })
 })

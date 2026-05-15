@@ -25,10 +25,12 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import {
+  addWorkingDays,
   DEFAULT_TASK_COLOR,
   descendantIds,
   effectiveTaskColor,
   maxIso,
+  workingDaysBetween,
 } from '../lib/utils'
 import type { Collaborator, Task, TaskKind } from '../lib/types'
 
@@ -70,6 +72,10 @@ export default function TaskEditor({
   const [predecessorId, setPredecessorId] = useState<string>('')
   /** Couleur custom (hex, vide = utiliser la couleur effective). */
   const [color, setColor] = useState<string>('')
+  /** v1.9 — Charge en jours ouvrés (uniquement pour kind='task'). La date
+   *  de fin est dérivée de start_date + charge ; éditer end_date met à jour
+   *  charge en miroir pour rester cohérent. */
+  const [charge, setCharge] = useState<number>(1)
   /** Message d'erreur de validation à afficher dans le modal (null = OK). */
   const [error, setError] = useState<string | null>(null)
 
@@ -78,30 +84,75 @@ export default function TaskEditor({
   // c'est précisément ce qui permet de re-synchroniser le formulaire.
   useEffect(() => {
     const src = task || defaults || {}
+    const initStart = src.start_date || ''
+    const initEnd = src.end_date || src.start_date || ''
     /* eslint-disable react-hooks/set-state-in-effect */
     setName(src.name || '')
     setKind(src.kind || 'task')
-    setStartDate(src.start_date || '')
-    setEndDate(src.end_date || src.start_date || '')
+    setStartDate(initStart)
+    setEndDate(initEnd)
     setProgress(src.progress ?? 0)
     setCollabId(src.collaborator_id || '')
     setParentId(src.parent_id || '')
     setPredecessorId(src.predecessor_id || '')
     setColor(src.color || '')
+    // v1.9 — Charge initiale = nb de jours ouvrés entre start et end existants.
+    // Min 1 pour rester cohérent avec la convention "une tâche dure au moins 1 jour".
+    setCharge(
+      initStart && initEnd
+        ? Math.max(1, workingDaysBetween(initStart, initEnd))
+        : 1,
+    )
     setError(null)
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [task, defaults])
 
   /**
-   * Modifie la date de début (saisie manuelle). Recale automatiquement
-   * end_date sur la nouvelle valeur si elle se retrouve antérieure
-   * (préserve la cohérence end_date >= start_date sans contrarier l'utilisateur).
+   * Modifie la date de début (saisie manuelle).
+   *
+   * v1.9 — Pour une tâche, la fin est dérivée : end_date = start + charge
+   * (en jours ouvrés). Pour les autres types (milestone / phase), on conserve
+   * l'ancien comportement (recale end_date si elle devient antérieure).
    *
    * @param value  Nouvelle date ISO YYYY-MM-DD (ou '' si l'input est vidé).
    */
   function handleStartDateChange(value: string) {
     setStartDate(value)
-    setEndDate((current) => maxIso(current, value))
+    if (kind === 'task' && value) {
+      setEndDate(addWorkingDays(value, charge))
+    } else {
+      setEndDate((current) => maxIso(current, value))
+    }
+    setError(null)
+  }
+
+  /**
+   * v1.9 — Modifie la charge (jours ouvrés) → recalcule end_date.
+   * La valeur est bornée à un entier ≥ 1.
+   *
+   * @param raw  Valeur saisie (string venant de l'input number).
+   */
+  function handleChargeChange(raw: string) {
+    const n = Math.max(1, Math.floor(Number(raw) || 1))
+    setCharge(n)
+    if (startDate && kind === 'task') {
+      setEndDate(addWorkingDays(startDate, n))
+    }
+    setError(null)
+  }
+
+  /**
+   * v1.9 — Modifie la date de fin manuellement → recalcule la charge
+   * correspondante pour rester cohérent. Permet à l'utilisateur de saisir
+   * "je veux finir le X" sans passer par la charge.
+   *
+   * @param value  Date ISO YYYY-MM-DD.
+   */
+  function handleEndDateChange(value: string) {
+    setEndDate(value)
+    if (kind === 'task' && startDate && value && value >= startDate) {
+      setCharge(Math.max(1, workingDaysBetween(startDate, value)))
+    }
     setError(null)
   }
 
@@ -109,7 +160,7 @@ export default function TaskEditor({
    * Sélectionne (ou retire) un prédécesseur. Si un nouveau prédécesseur est
    * choisi, on recale start_date sur sa end_date (sauf si l'utilisateur avait
    * déjà saisi une date plus tardive — qu'on conserve). end_date est recalée
-   * pour rester ≥ start_date.
+   * en respectant la charge (v1.9) si le type est 'task', sinon ≥ start_date.
    *
    * @param value  Id du prédécesseur (ou '' pour retirer).
    */
@@ -118,8 +169,13 @@ export default function TaskEditor({
     if (value) {
       const pred = tasks.find((t) => t.id === value)
       if (pred) {
-        setStartDate((current) => maxIso(current, pred.end_date))
-        setEndDate((current) => maxIso(current, pred.end_date))
+        const newStart = maxIso(startDate, pred.end_date)
+        setStartDate(newStart)
+        if (kind === 'task' && newStart) {
+          setEndDate(addWorkingDays(newStart, charge))
+        } else {
+          setEndDate((current) => maxIso(current, pred.end_date))
+        }
       }
     }
     setError(null)
@@ -165,6 +221,17 @@ export default function TaskEditor({
     if (kind === 'phase') return 'Calculée automatiquement à partir des enfants'
     if (predecessor)
       return `Doit être ≥ fin du prédécesseur « ${predecessor.name} » (${minStart})`
+    return undefined
+  }
+
+  /**
+   * v1.9 — Calcule le tooltip à afficher sur le champ "Fin" selon le type.
+   * Extrait pour éviter un ternaire imbriqué dans le JSX.
+   */
+  function endDateTooltip(): string | undefined {
+    if (kind === 'phase') return 'Calculée automatiquement à partir des enfants'
+    if (kind === 'task')
+      return 'Modifiable directement — la charge est ajustée en conséquence.'
     return undefined
   }
 
@@ -310,6 +377,28 @@ export default function TaskEditor({
             />
           </label>
 
+          {/* v1.9 — Champ Charge (jours ouvrés). Affiché uniquement pour
+              kind='task' : un jalon est ponctuel, une phase est auto-calculée. */}
+          {kind === 'task' && (
+            <label className="block text-sm w-28">
+              <span
+                className="text-slate-600"
+                title="Nombre de jours ouvrés (lundi-vendredi). Détermine la date de fin."
+              >
+                Charge (j)
+              </span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+                value={charge}
+                onChange={(e) => handleChargeChange(e.target.value)}
+                title="Nombre de jours ouvrés (lundi-vendredi). La date de fin est recalculée automatiquement (les week-ends sont sautés)."
+              />
+            </label>
+          )}
+
           <label className="block text-sm flex-1">
             <span className="text-slate-600">Fin</span>
             <input
@@ -317,16 +406,9 @@ export default function TaskEditor({
               className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
               value={endDate}
               min={startDate || undefined}
-              onChange={(e) => {
-                setEndDate(e.target.value)
-                setError(null)
-              }}
+              onChange={(e) => handleEndDateChange(e.target.value)}
               disabled={kind === 'milestone' || kind === 'phase'}
-              title={
-                kind === 'phase'
-                  ? 'Calculée automatiquement à partir des enfants'
-                  : undefined
-              }
+              title={endDateTooltip()}
             />
           </label>
         </div>

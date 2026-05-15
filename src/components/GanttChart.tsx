@@ -12,8 +12,10 @@
 // (testables séparément).
 // =============================================================================
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
+  addDaysIso,
+  addWorkingDays,
   buildDateRange,
   dateToX,
   descendantIds,
@@ -21,6 +23,8 @@ import {
   groupByMonth,
   isWeekendDay,
   rangeToWidth,
+  snapForwardToWorkingDay,
+  workingDaysBetween,
 } from '../lib/utils'
 import type { Collaborator, Task } from '../lib/types'
 
@@ -56,6 +60,19 @@ interface Props {
     parentId: string | null,
     beforeId: string | null,
   ) => void
+  /**
+   * v1.9 — Callback de redimensionnement / déplacement d'une barre dans
+   * le planning (drag sur la barre, kind='task' uniquement).
+   * Reçoit un patch contenant `start_date` et/ou `end_date` ; toutes les
+   * dates renvoyées tombent sur un jour ouvré (week-ends sautés).
+   *
+   * @param taskId  Id de la tâche déplacée.
+   * @param patch   { start_date?, end_date? } à appliquer.
+   */
+  onResizeTask?: (
+    taskId: string,
+    patch: { start_date?: string; end_date?: string },
+  ) => void
 }
 
 /**
@@ -70,6 +87,7 @@ export default function GanttChart({
   collaborators,
   onTaskClick,
   onMoveTask,
+  onResizeTask,
 }: Props) {
   // Précalcul de la liste des jours et des groupes de mois (recalcul uniquement
   // si la fenêtre temporelle change).
@@ -112,7 +130,101 @@ export default function GanttChart({
   const totalWidth = dates.length * dayWidth
 
   // -------------------------------------------------------------------------
-  // v1.5 — État du drag & drop
+  // v1.9 — État du drag des barres dans le planning
+  // -------------------------------------------------------------------------
+  /**
+   * Drag d'une barre dans la zone calendrier : soit déplace la tâche vers
+   * la droite (mode 'move' : start_date avance, durée constante en jours
+   * ouvrés), soit étend sa fin (mode 'resize-end' : end_date avance).
+   * Le drag est contraint à aller vers la droite (deltaDays ≥ 0).
+   */
+  const [resizing, setResizing] = useState<null | {
+    taskId: string
+    mode: 'move' | 'resize-end'
+    startX: number
+    origStart: string
+    origEnd: string
+    deltaDays: number
+  }>(null)
+
+  // Écoute mousemove / mouseup au niveau document tant qu'un drag est actif.
+  // Sortie via useEffect pour pouvoir détacher proprement (et éviter les
+  // fuites d'event listeners). Ne se déclenche pas si onResizeTask est absent.
+  useEffect(() => {
+    if (!resizing) return
+    /** Met à jour deltaDays au fil du mouvement de la souris. */
+    function onMove(e: MouseEvent) {
+      if (!resizing) return
+      const rawDelta = (e.clientX - resizing.startX) / dayWidth
+      // Borné à ≥ 0 (drag vers la droite uniquement, cf. spec).
+      const delta = Math.max(0, Math.round(rawDelta))
+      if (delta !== resizing.deltaDays) {
+        setResizing({ ...resizing, deltaDays: delta })
+      }
+    }
+    /** Au relâchement, applique la modification si delta > 0. */
+    function onUp() {
+      if (!resizing) return
+      const r = resizing
+      if (r.deltaDays > 0 && onResizeTask) {
+        if (r.mode === 'move') {
+          // Conserve la charge (durée en jours ouvrés) : on recalcule end_date
+          // à partir du nouveau start aligné sur un jour ouvré.
+          const charge = Math.max(1, workingDaysBetween(r.origStart, r.origEnd))
+          const newStart = snapForwardToWorkingDay(
+            addDaysIso(r.origStart, r.deltaDays),
+          )
+          const newEnd = addWorkingDays(newStart, charge)
+          onResizeTask(r.taskId, {
+            start_date: newStart,
+            end_date: newEnd,
+          })
+        } else {
+          // resize-end : seule la fin bouge, snap sur jour ouvré.
+          const newEnd = snapForwardToWorkingDay(
+            addDaysIso(r.origEnd, r.deltaDays),
+          )
+          onResizeTask(r.taskId, { end_date: newEnd })
+        }
+      }
+      setResizing(null)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [resizing, dayWidth, onResizeTask])
+
+  /**
+   * v1.9 — Démarre un drag sur une barre de tâche. Détecte le mode
+   * (déplacement vs redimensionnement de la fin) selon que la souris est
+   * proche du bord droit (zone de poignée ≈ 8 px).
+   *
+   * @param e     Événement souris (mousedown sur la barre).
+   * @param task  Tâche concernée (déjà filtrée sur kind='task').
+   */
+  function handleBarMouseDown(e: React.MouseEvent<HTMLDivElement>, task: Task) {
+    if (!onResizeTask) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const distFromRight = rect.right - e.clientX
+    const mode: 'move' | 'resize-end' =
+      distFromRight <= 8 ? 'resize-end' : 'move'
+    setResizing({
+      taskId: task.id,
+      mode,
+      startX: e.clientX,
+      origStart: task.start_date,
+      origEnd: task.end_date,
+      deltaDays: 0,
+    })
+    e.preventDefault()
+    e.stopPropagation()
+  }
+
+  // -------------------------------------------------------------------------
+  // v1.5 — État du drag & drop hiérarchique (colonne gauche)
   // -------------------------------------------------------------------------
   /** Id de la tâche actuellement en cours de drag (null = pas de drag). */
   const [draggedId, setDraggedId] = useState<string | null>(null)
@@ -361,8 +473,21 @@ export default function GanttChart({
                   ))}
                 </div>
 
-                {/* Barre de tâche OU jalon OU phase */}
-                {renderBar(t, windowStart, dayWidth, collabById)}
+                {/* Barre de tâche OU jalon OU phase.
+                    v1.9 — Pour kind='task', on rend une barre interactive
+                    (drag = move ou resize-end) ; les autres types restent
+                    statiques via `renderBar`. */}
+                {t.kind === 'task'
+                  ? renderInteractiveTaskBar(
+                      t,
+                      windowStart,
+                      dayWidth,
+                      collabById,
+                      resizing,
+                      handleBarMouseDown,
+                      !!onResizeTask,
+                    )
+                  : renderBar(t, windowStart, dayWidth, collabById)}
               </div>
             ))}
 
@@ -608,6 +733,115 @@ function renderBar(
         <span className="relative px-2 text-[11px] font-medium text-slate-800 truncate">
           {task.name}
         </span>
+      )}
+    </div>
+  )
+}
+
+/**
+ * v1.9 — Rend une barre de tâche INTERACTIVE :
+ *   • Clic-glisser sur le corps → déplace la tâche vers la droite
+ *     (start_date avance, durée constante en jours ouvrés).
+ *   • Clic-glisser sur le bord droit (poignée 8 px) → étend la tâche
+ *     (end_date avance, charge augmente).
+ *   • Drag uniquement vers la DROITE (cohérent avec la spec : on n'avance
+ *     pas dans le passé par geste).
+ *   • Preview visuel pendant le drag : la barre se décale / s'allonge
+ *     en temps réel (snap au jour), et l'opacité diminue.
+ *
+ * Le calcul des nouvelles dates et l'appel API sont délégués au composant
+ * parent via `onResizeTask` (capturé dans le state `resizing`).
+ *
+ * @param task           La tâche (kind='task' garanti par le caller).
+ * @param windowStart    Borne gauche du calendrier (YYYY-MM-DD).
+ * @param dayWidth       Largeur d'un jour en pixels.
+ * @param collabById     Map id → collaborateur (pour résoudre les couleurs).
+ * @param resizing       État courant du drag (null = pas de drag).
+ * @param onMouseDown    Handler à appeler au mousedown sur la barre.
+ * @param enabled        true si le drag est actif (onResizeTask fourni).
+ */
+function renderInteractiveTaskBar(
+  task: Task,
+  windowStart: string,
+  dayWidth: number,
+  collabById: Map<string, Collaborator>,
+  resizing: {
+    taskId: string
+    mode: 'move' | 'resize-end'
+    deltaDays: number
+  } | null,
+  onMouseDown: (e: React.MouseEvent<HTMLDivElement>, task: Task) => void,
+  enabled: boolean,
+) {
+  const color = effectiveTaskColor(task, Array.from(collabById.values()))
+  const baseLeft = dateToX(task.start_date, windowStart, dayWidth)
+  const baseWidth = rangeToWidth(task.start_date, task.end_date, dayWidth)
+
+  // Offset visuel pendant un drag actif sur CETTE tâche : décale la barre
+  // (mode='move') ou allonge sa fin (mode='resize-end'). Ne touche pas les
+  // autres tâches.
+  const active = resizing && resizing.taskId === task.id ? resizing : null
+  const previewOffset =
+    active && active.mode === 'move' ? active.deltaDays * dayWidth : 0
+  const previewExtraWidth =
+    active && active.mode === 'resize-end' ? active.deltaDays * dayWidth : 0
+
+  // Curseur adapté : indique la sémantique du drag selon la zone.
+  // (Le mousemove avec un curseur custom n'est pas trivial sans listener
+  //  global ; on se contente d'un curseur unique sur la barre.)
+  const cursor = enabled ? 'grab' : 'pointer'
+
+  return (
+    <div
+      className="absolute rounded shadow-sm overflow-hidden flex items-center"
+      style={{
+        left: baseLeft + previewOffset,
+        top: 4,
+        width: baseWidth + previewExtraWidth,
+        height: ROW_HEIGHT - 8,
+        backgroundColor: color + '33', // 20% d'opacité — fond clair
+        border: `1px solid ${color}`,
+        cursor,
+        opacity: active ? 0.6 : 1,
+        // Empêche la sélection de texte / drag natif HTML5 pendant le drag.
+        userSelect: 'none',
+      }}
+      title={
+        enabled
+          ? `${task.name} — ${task.start_date} → ${task.end_date} (${task.progress}%)\nGlisser : décaler ; glisser le bord droit : allonger.`
+          : `${task.name} — ${task.start_date} → ${task.end_date} (${task.progress}%)`
+      }
+      onMouseDown={enabled ? (e) => onMouseDown(e, task) : undefined}
+    >
+      {/* Barre de progression */}
+      <div
+        className="absolute inset-y-0 left-0 pointer-events-none"
+        style={{
+          width: `${task.progress}%`,
+          backgroundColor: color,
+          opacity: 0.7,
+        }}
+      />
+      {/* Libellé interne (visible si la barre est assez large) */}
+      {baseWidth + previewExtraWidth > 60 && (
+        <span className="relative px-2 text-[11px] font-medium text-slate-800 truncate pointer-events-none">
+          {task.name}
+        </span>
+      )}
+      {/* Poignée de redimensionnement (bord droit, 6 px) — visible uniquement
+          si le drag est activé. Curseur dédié pour signaler la zone. */}
+      {enabled && (
+        <div
+          className="absolute top-0 right-0 h-full"
+          style={{
+            width: 6,
+            cursor: 'ew-resize',
+            // Léger fond au survol pour rendre la poignée découvrable.
+            background:
+              'linear-gradient(to right, transparent, rgba(0,0,0,0.08))',
+          }}
+          aria-hidden="true"
+        />
       )}
     </div>
   )

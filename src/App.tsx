@@ -314,6 +314,21 @@ export default function App() {
     })
   }
 
+  /**
+   * v1.9 — Redimensionnement / déplacement par drag sur la barre dans le
+   * planning. Patch les dates côté API (le DAL gère ensuite la borne
+   * prédécesseur et le recalcul des phases ancêtres).
+   *
+   * @param taskId  Id de la tâche modifiée.
+   * @param patch   { start_date?, end_date? }
+   */
+  const handleResizeTask = (
+    taskId: string,
+    patch: { start_date?: string; end_date?: string },
+  ) => {
+    mutate('PATCH', `/api/tasks/${taskId}`, patch)
+  }
+
   /** Décalle la fenêtre temporelle de N jours (négatif = passé). */
   const shiftWindow = (days: number) => {
     setWindow((w) => {
@@ -501,6 +516,7 @@ export default function App() {
               collaborators={state.collaborators}
               onTaskClick={setEditing}
               onMoveTask={handleMoveTask}
+              onResizeTask={handleResizeTask}
             />
           </div>
         ) : (

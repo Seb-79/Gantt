@@ -177,6 +177,86 @@ export function isWeekendDay(d: Date): boolean {
 }
 
 /**
+ * v1.9 — Ajoute `charge` jours OUVRÉS à partir de startIso et renvoie la
+ * date de fin (incluse). La date de début est comptée comme le 1er jour
+ * ouvré si elle en est un ; les week-ends sont sautés.
+ *
+ * Exemples (start = lundi 18 mai 2026) :
+ *   • charge=1 → 18 mai (un seul jour ouvré : le lundi)
+ *   • charge=3 → 20 mai (lundi, mardi, mercredi)
+ *   • charge=5 → 22 mai (lundi → vendredi)
+ *   • charge=6 → 25 mai (lun→ven puis sauté sam/dim, lundi suivant)
+ *
+ * Si la date de début est elle-même un week-end, le décompte ne commence
+ * qu'au 1er jour ouvré rencontré (la fin se retrouve alors décalée).
+ *
+ * @param startIso  Date de début YYYY-MM-DD.
+ * @param charge    Nombre de jours ouvrés (≥ 1 ; toute valeur ≤ 1 vaut 1).
+ * @returns         Date de fin YYYY-MM-DD (incluse).
+ */
+export function addWorkingDays(startIso: string, charge: number): string {
+  // Charge ≤ 1 → 1 seul jour ouvré → fin = début (convention : 1 jour de
+  // présence, même si start tombe un week-end on garde la date saisie pour
+  // ne pas surprendre l'utilisateur).
+  if (charge <= 1) return startIso
+  let cur = isoToDate(startIso)
+  // Si on démarre un jour ouvré, il compte pour 1 ; sinon 0.
+  let count = isWeekendDay(cur) ? 0 : 1
+  while (count < charge) {
+    cur = addDays(cur, 1)
+    if (!isWeekendDay(cur)) count++
+  }
+  return dateToIso(cur)
+}
+
+/**
+ * v1.9 — Ajoute N jours calendaires (peu importe le type) à une date ISO.
+ * Helper pour le drag des barres dans le Gantt (où on raisonne en pixels
+ * → jours calendaires, puis on snape en jours ouvrés via les helpers ci-dessus).
+ *
+ * @param iso   Date ISO YYYY-MM-DD.
+ * @param days  Nombre de jours à ajouter (peut être négatif).
+ * @returns     Date ISO décalée.
+ */
+export function addDaysIso(iso: string, days: number): string {
+  return dateToIso(addDays(isoToDate(iso), days))
+}
+
+/**
+ * v1.9 — Si la date ISO tombe un week-end, la pousse au LUNDI suivant ;
+ * sinon la renvoie inchangée. Utilisé pour aligner les dates issues d'un
+ * drag à la souris sur des jours ouvrés (cohérent avec la notion de charge).
+ *
+ * @param iso  Date ISO YYYY-MM-DD.
+ * @returns    Date ISO d'un jour ouvré (= iso ou décalée au lundi suivant).
+ */
+export function snapForwardToWorkingDay(iso: string): string {
+  let cur = isoToDate(iso)
+  while (isWeekendDay(cur)) cur = addDays(cur, 1)
+  return dateToIso(cur)
+}
+
+/**
+ * v1.9 — Compte les jours OUVRÉS (lundi-vendredi) inclus dans l'intervalle
+ * [startIso, endIso]. Inverse de `addWorkingDays` :
+ *   workingDaysBetween(s, addWorkingDays(s, n)) === n   (pour s jour ouvré)
+ *
+ * @param startIso  Date de début YYYY-MM-DD.
+ * @param endIso    Date de fin YYYY-MM-DD (incluse).
+ * @returns         Nombre de jours ouvrés (≥ 0).
+ */
+export function workingDaysBetween(startIso: string, endIso: string): number {
+  if (!startIso || !endIso || endIso < startIso) return 0
+  const start = isoToDate(startIso)
+  const n = differenceInCalendarDays(isoToDate(endIso), start) + 1
+  let count = 0
+  for (let i = 0; i < n; i++) {
+    if (!isWeekendDay(addDays(start, i))) count++
+  }
+  return count
+}
+
+/**
  * Renvoie la date du jour au format ISO 'YYYY-MM-DD' (fuseau local).
  * Utile pour pré-remplir les dates par défaut à la création d'une tâche.
  *

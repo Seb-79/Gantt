@@ -4,6 +4,8 @@
 
 import { describe, it, expect } from 'vitest'
 import {
+  addDaysIso,
+  addWorkingDays,
   buildDateRange,
   clampDayWidth,
   dateToIso,
@@ -18,9 +20,11 @@ import {
   maxIso,
   mondayOnOrBefore,
   rangeToWidth,
+  snapForwardToWorkingDay,
   sortTasksHierarchically,
   todayIso,
   windowFromTasks,
+  workingDaysBetween,
   DEFAULT_DAY_WIDTH,
   DEFAULT_TASK_COLOR,
   MAX_DAY_WIDTH,
@@ -254,6 +258,96 @@ describe('windowFromTasks', () => {
     const w = windowFromTasks([{ start_date: '2026-05-12' }], 6)
     expect(w.startIso).toBe('2026-05-11')
     expect(w.endIso).toBe('2026-11-10')
+  })
+})
+
+describe('addWorkingDays (v1.9)', () => {
+  // Repère : 2026-05-18 est un LUNDI ; 2026-05-22 vendredi ; 23/24 = w-e.
+  it('charge=1 → fin = début (1 seul jour ouvré)', () => {
+    expect(addWorkingDays('2026-05-18', 1)).toBe('2026-05-18')
+  })
+
+  it('charge=3 lundi → fin mercredi (exemple de la spec)', () => {
+    expect(addWorkingDays('2026-05-18', 3)).toBe('2026-05-20')
+  })
+
+  it('charge=5 lundi → fin vendredi de la même semaine', () => {
+    expect(addWorkingDays('2026-05-18', 5)).toBe('2026-05-22')
+  })
+
+  it('charge=6 lundi → fin lundi suivant (saute samedi/dimanche)', () => {
+    expect(addWorkingDays('2026-05-18', 6)).toBe('2026-05-25')
+  })
+
+  it('charge=10 lundi → fin vendredi de la semaine suivante', () => {
+    expect(addWorkingDays('2026-05-18', 10)).toBe('2026-05-29')
+  })
+
+  it('charge ≤ 0 → renvoie la date de début (clamp à 1 jour)', () => {
+    expect(addWorkingDays('2026-05-18', 0)).toBe('2026-05-18')
+  })
+
+  it('démarrage un samedi : décompte commence au lundi suivant', () => {
+    // 2026-05-16 = samedi, donc charge=3 → samedi (compte 0) + lundi(1) + mardi(2) + mercredi(3)
+    expect(addWorkingDays('2026-05-16', 3)).toBe('2026-05-20')
+  })
+})
+
+describe('workingDaysBetween (v1.9)', () => {
+  it('exemple direct lundi → mercredi = 3 jours ouvrés', () => {
+    expect(workingDaysBetween('2026-05-18', '2026-05-20')).toBe(3)
+  })
+
+  it('semaine pleine lundi → dimanche = 5 jours ouvrés', () => {
+    expect(workingDaysBetween('2026-05-18', '2026-05-24')).toBe(5)
+  })
+
+  it('même jour ouvré = 1', () => {
+    expect(workingDaysBetween('2026-05-18', '2026-05-18')).toBe(1)
+  })
+
+  it('même jour week-end = 0', () => {
+    expect(workingDaysBetween('2026-05-23', '2026-05-23')).toBe(0)
+  })
+
+  it('intervalle inverse → 0', () => {
+    expect(workingDaysBetween('2026-05-20', '2026-05-18')).toBe(0)
+  })
+
+  it('round-trip avec addWorkingDays : workingDaysBetween(s, addWorkingDays(s,n)) = n', () => {
+    for (const n of [1, 2, 3, 5, 7, 12]) {
+      const end = addWorkingDays('2026-05-18', n)
+      expect(workingDaysBetween('2026-05-18', end)).toBe(n)
+    }
+  })
+})
+
+describe('addDaysIso (v1.9)', () => {
+  it('avance de 3 jours calendaires', () => {
+    expect(addDaysIso('2026-05-18', 3)).toBe('2026-05-21')
+  })
+
+  it('recule avec valeur négative', () => {
+    expect(addDaysIso('2026-05-18', -3)).toBe('2026-05-15')
+  })
+
+  it('traverse le changement de mois', () => {
+    expect(addDaysIso('2026-05-30', 5)).toBe('2026-06-04')
+  })
+})
+
+describe('snapForwardToWorkingDay (v1.9)', () => {
+  it('jour ouvré inchangé', () => {
+    expect(snapForwardToWorkingDay('2026-05-18')).toBe('2026-05-18') // lundi
+    expect(snapForwardToWorkingDay('2026-05-22')).toBe('2026-05-22') // vendredi
+  })
+
+  it('samedi → lundi suivant', () => {
+    expect(snapForwardToWorkingDay('2026-05-23')).toBe('2026-05-25')
+  })
+
+  it('dimanche → lundi suivant', () => {
+    expect(snapForwardToWorkingDay('2026-05-24')).toBe('2026-05-25')
   })
 })
 

@@ -15,8 +15,10 @@ import {
   isoToDate,
   isWeekendDay,
   makeId,
+  maxIso,
   rangeToWidth,
   sortTasksHierarchically,
+  todayIso,
   DEFAULT_DAY_WIDTH,
   DEFAULT_TASK_COLOR,
   MAX_DAY_WIDTH,
@@ -187,6 +189,25 @@ describe('sortTasksHierarchically', () => {
     ]
     const out = sortTasksHierarchically(tasks).map((t) => t.id)
     expect(out).toEqual(['A', 'A1', 'A2'])
+  })
+})
+
+describe('todayIso', () => {
+  it('renvoie une date ISO YYYY-MM-DD valide', () => {
+    expect(todayIso()).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+})
+
+describe('maxIso', () => {
+  it('renvoie la plus tardive', () => {
+    expect(maxIso('2026-05-15', '2026-05-20')).toBe('2026-05-20')
+    expect(maxIso('2026-05-20', '2026-05-15')).toBe('2026-05-20')
+  })
+
+  it('gère les chaînes vides', () => {
+    expect(maxIso('', '2026-05-15')).toBe('2026-05-15')
+    expect(maxIso('2026-05-15', '')).toBe('2026-05-15')
+    expect(maxIso('', '')).toBe('')
   })
 })
 

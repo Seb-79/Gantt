@@ -21,6 +21,7 @@ import {
   MAX_DAY_WIDTH,
   MIN_DAY_WIDTH,
   sortTasksHierarchically,
+  todayIso,
 } from './lib/utils'
 import type { GanttState, Task } from './lib/types'
 
@@ -104,8 +105,9 @@ export default function App() {
           body: body ? JSON.stringify(body) : undefined,
         })
         if (!res.ok) {
-          const txt = await res.text()
-          throw new Error(`HTTP ${res.status} — ${txt}`)
+          // Parsing du JSON d'erreur de l'API pour afficher un message
+          // lisible plutôt que le payload brut "{error:..., details:[…]}".
+          throw new Error(await formatApiError(res))
         }
         await fetchState()
       } catch (err) {
@@ -297,7 +299,15 @@ export default function App() {
           task={editing}
           defaults={
             creating
-              ? { start_date: startIso, kind: 'task', progress: 0 }
+              ? {
+                  // v1.3 — Dates par défaut = aujourd'hui (et non plus
+                  // le 1er du mois affiché), pour ne pas créer une tâche
+                  // dans le passé sans s'en rendre compte.
+                  start_date: todayIso(),
+                  end_date: todayIso(),
+                  kind: 'task',
+                  progress: 0,
+                }
               : undefined
           }
           collaborators={state.collaborators}
@@ -312,6 +322,34 @@ export default function App() {
       )}
     </div>
   )
+}
+
+/**
+ * Convertit une réponse HTTP d'erreur (400/404/500) en message utilisateur
+ * lisible. Tente de parser le JSON `{ error, details: [{ where, path, message }] }`
+ * renvoyé par l'API ; à défaut, retombe sur le texte brut.
+ *
+ * @param res  Réponse HTTP (déjà constatée non-ok).
+ * @returns    Chaîne courte affichable à l'utilisateur.
+ */
+async function formatApiError(res: Response): Promise<string> {
+  try {
+    const data = await res.json()
+    if (data && typeof data === 'object' && 'error' in data) {
+      const lines: string[] = [String(data.error)]
+      if (Array.isArray(data.details) && data.details.length > 0) {
+        for (const d of data.details) {
+          const path = Array.isArray(d.path) ? d.path.join('.') : ''
+          lines.push(`• ${path ? path + ' : ' : ''}${d.message}`)
+        }
+      }
+      return lines.join('\n')
+    }
+    return JSON.stringify(data)
+  } catch {
+    // Pas de JSON exploitable → texte brut.
+    return `HTTP ${res.status}`
+  }
 }
 
 /** Petit badge de statut réseau (en haut à droite). */

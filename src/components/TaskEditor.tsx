@@ -1,17 +1,21 @@
 // =============================================================================
-// COMPOSANT TaskEditor — Gantt v1.2
+// COMPOSANT TaskEditor — Gantt v1.3
 // =============================================================================
 // Modal léger pour éditer (ou créer) une tâche / jalon : nom, type, dates,
 // avancement, collaborateur, phase parent, prédécesseur, couleur.
 //
 // État local synchronisé sur la prop `task` (édition) ou vide (création).
-// Validation minimale côté client : la validation forte est faite par Zod
-// côté serveur.
+// Validation côté client : end_date >= start_date + auto-recalage de
+// end_date quand start_date avance (manuellement ou via un prédécesseur).
+// Affichage d'un message d'erreur lisible dans le modal en cas de souci.
+// La validation forte reste faite par Zod côté serveur.
 //
-// Règles métier (v1.2) :
+// Règles métier :
 //   • Si un PRÉDÉCESSEUR est sélectionné, la `start_date` est forcée sur la
 //     `end_date` du prédécesseur ET le champ Début est grisé. Pour reprendre
 //     la main sur la date, l'utilisateur doit retirer le prédécesseur.
+//   • Quand la `start_date` change (manuellement ou via prédécesseur) et
+//     dépasse la `end_date`, on recale `end_date = start_date` automatiquement.
 //   • La COULEUR est éditable. Valeur initiale = couleur effective (collab >
 //     défaut). Bouton "↺ Auto" pour revenir à null (= ré-hériter du collab).
 // =============================================================================
@@ -21,6 +25,7 @@ import {
   DEFAULT_TASK_COLOR,
   descendantIds,
   effectiveTaskColor,
+  maxIso,
 } from '../lib/utils'
 import type { Collaborator, Task, TaskKind } from '../lib/types'
 
@@ -62,6 +67,8 @@ export default function TaskEditor({
   const [predecessorId, setPredecessorId] = useState<string>('')
   /** Couleur custom (hex, vide = utiliser la couleur effective). */
   const [color, setColor] = useState<string>('')
+  /** Message d'erreur de validation à afficher dans le modal (null = OK). */
+  const [error, setError] = useState<string | null>(null)
 
   // Réinitialisation de l'état local à chaque ouverture (changement de
   // task ou defaults). setState dans l'effect est ici intentionnel —
@@ -78,8 +85,38 @@ export default function TaskEditor({
     setParentId(src.parent_id || '')
     setPredecessorId(src.predecessor_id || '')
     setColor(src.color || '')
+    setError(null)
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [task, defaults])
+
+  /**
+   * Modifie la date de début (saisie manuelle). Recale automatiquement
+   * end_date sur la nouvelle valeur si elle se retrouve antérieure
+   * (préserve la cohérence end_date >= start_date sans contrarier l'utilisateur).
+   *
+   * @param value  Nouvelle date ISO YYYY-MM-DD (ou '' si l'input est vidé).
+   */
+  function handleStartDateChange(value: string) {
+    setStartDate(value)
+    setEndDate((current) => maxIso(current, value))
+    setError(null)
+  }
+
+  /**
+   * Sélectionne (ou retire) un prédécesseur. Si un nouveau prédécesseur est
+   * choisi, sa end_date va devenir la start_date verrouillée → on recale
+   * end_date côté tâche pour qu'elle ne soit pas dans le passé.
+   *
+   * @param value  Id du prédécesseur (ou '' pour retirer).
+   */
+  function handlePredecessorChange(value: string) {
+    setPredecessorId(value)
+    if (value) {
+      const pred = tasks.find((t) => t.id === value)
+      if (pred) setEndDate((current) => maxIso(current, pred.end_date))
+    }
+    setError(null)
+  }
 
   /**
    * Couleur "proposée par défaut" pour le picker quand l'utilisateur n'a
@@ -111,15 +148,34 @@ export default function TaskEditor({
   const lockedStart = predecessor?.end_date || ''
   const effectiveStart = predecessor ? lockedStart : startDate
 
-  /** Construit le patch et appelle onSave. */
+  /**
+   * Valide les champs puis appelle onSave. Affiche un message d'erreur
+   * dans le modal (au lieu d'un alert technique) si la validation échoue.
+   */
   function handleSave() {
-    if (!name.trim() || !effectiveStart) return
+    // Validations métier ordonnées du plus simple au plus complexe.
+    if (!name.trim()) {
+      setError('Le nom est obligatoire.')
+      return
+    }
+    if (!effectiveStart) {
+      setError('La date de début est obligatoire.')
+      return
+    }
+    const finalEnd =
+      kind === 'milestone' ? effectiveStart : endDate || effectiveStart
+    if (kind !== 'milestone' && finalEnd < effectiveStart) {
+      setError(
+        'La date de fin doit être supérieure ou égale à la date de début.',
+      )
+      return
+    }
+    setError(null)
     onSave({
       name: name.trim(),
       kind,
       start_date: effectiveStart,
-      end_date:
-        kind === 'milestone' ? effectiveStart : endDate || effectiveStart,
+      end_date: finalEnd,
       progress,
       collaborator_id: collabId || null,
       parent_id: parentId || null,
@@ -141,6 +197,17 @@ export default function TaskEditor({
         <h2 className="text-lg font-semibold">
           {task ? 'Modifier' : 'Nouvelle tâche / jalon'}
         </h2>
+
+        {/* Bandeau d'erreur lisible (validation locale OU erreur API
+            transmise via prop ultérieurement). */}
+        {error && (
+          <div
+            className="text-sm rounded border border-red-300 bg-red-50 text-red-700 px-3 py-2"
+            role="alert"
+          >
+            {error}
+          </div>
+        )}
 
         <label className="block text-sm">
           <span className="text-slate-600">Nom</span>
@@ -193,7 +260,7 @@ export default function TaskEditor({
               type="date"
               className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
               value={effectiveStart}
-              onChange={(e) => setStartDate(e.target.value)}
+              onChange={(e) => handleStartDateChange(e.target.value)}
               disabled={!!predecessor}
               title={
                 predecessor
@@ -209,7 +276,11 @@ export default function TaskEditor({
               type="date"
               className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
               value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
+              min={effectiveStart || undefined}
+              onChange={(e) => {
+                setEndDate(e.target.value)
+                setError(null)
+              }}
               disabled={kind === 'milestone'}
             />
           </label>
@@ -259,7 +330,7 @@ export default function TaskEditor({
           <select
             className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
             value={predecessorId}
-            onChange={(e) => setPredecessorId(e.target.value)}
+            onChange={(e) => handlePredecessorChange(e.target.value)}
           >
             <option value="">— aucun —</option>
             {validPredecessors.map((t) => (

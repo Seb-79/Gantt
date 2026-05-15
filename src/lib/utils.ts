@@ -170,6 +170,31 @@ export function isWeekendDay(d: Date): boolean {
 }
 
 /**
+ * Renvoie la date du jour au format ISO 'YYYY-MM-DD' (fuseau local).
+ * Utile pour pré-remplir les dates par défaut à la création d'une tâche.
+ *
+ * @returns Date ISO du jour.
+ */
+export function todayIso(): string {
+  return dateToIso(new Date())
+}
+
+/**
+ * Renvoie la date la plus tardive entre deux dates ISO.
+ * Si l'une des deux est vide, renvoie l'autre. Si les deux sont vides,
+ * renvoie chaîne vide.
+ *
+ * @param a  Date ISO ou ''.
+ * @param b  Date ISO ou ''.
+ * @returns  La plus tardive (comparaison lexicographique = correcte pour ISO).
+ */
+export function maxIso(a: string, b: string): string {
+  if (!a) return b
+  if (!b) return a
+  return a > b ? a : b
+}
+
+/**
  * Découpe une plage de dates en groupes par mois (pour le header du calendrier).
  *
  * @param dates  Liste continue de Date (1 par jour, ordonnée).

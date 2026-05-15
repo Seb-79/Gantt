@@ -21,7 +21,8 @@ import { createApp } from './server/app.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DB_FILE = path.join(__dirname, 'data.db')
-const PORT = 3001
+// 3001 est pris par l'API plan-de-charge → on utilise 3002 pour Gantt.
+const PORT = 3002
 
 const db = initDb(DB_FILE)
 

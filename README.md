@@ -19,8 +19,11 @@ npm install
 npm run dev
 ```
 
-- Frontend Vite : http://localhost:5173 (host `0.0.0.0` → accessible LAN)
-- API Express : http://localhost:3001 (proxy Vite `/api/*`)
+- Frontend Vite : **http://localhost:5174/gantt/** (host `0.0.0.0` → accessible LAN)
+- API Express : http://localhost:3002 (proxy Vite `/api/*`)
+
+> Ports différents de `plan-de-charge` (5173 / 3001) pour pouvoir lancer
+> les deux applications en parallèle sur la même machine.
 
 Pour arrêter : `Ctrl+C` dans le terminal.
 

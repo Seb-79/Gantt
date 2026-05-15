@@ -224,6 +224,39 @@ describe('Tâches', () => {
       .expect(404)
   })
 
+  // ---- v1.6 — Phases ------------------------------------------------------
+
+  it("POST kind=phase puis ajout d'une activité enfant : phase recalculée", async () => {
+    // Crée une phase vide
+    await request(app)
+      .post('/api/tasks')
+      .send({
+        id: 'pNew',
+        name: 'Nouvelle phase',
+        kind: 'phase',
+        start_date: '2026-09-01',
+        end_date: '2026-09-01',
+      })
+      .expect(200)
+    // Ajoute une activité enfant
+    await request(app)
+      .post('/api/tasks')
+      .send({
+        id: 'aNew',
+        name: 'Activité',
+        start_date: '2026-09-15',
+        end_date: '2026-09-25',
+        parent_id: 'pNew',
+      })
+      .expect(200)
+    // La phase doit avoir adopté les dates de son enfant
+    const state = await request(app).get('/api/state').expect(200)
+    const phase = state.body.tasks.find((t) => t.id === 'pNew')
+    expect(phase.kind).toBe('phase')
+    expect(phase.start_date).toBe('2026-09-15')
+    expect(phase.end_date).toBe('2026-09-25')
+  })
+
   it('PATCH definir un predecesseur recale start_date', async () => {
     // t2a (tournage extérieur) commence 2026-07-01 ; on lui ajoute t1a comme
     // prédécesseur (fin 2026-05-29) → start_date doit être recalée.

@@ -177,9 +177,11 @@ export default function TaskEditor({
       start_date: effectiveStart,
       end_date: finalEnd,
       progress,
-      collaborator_id: collabId || null,
+      // v1.6 — Une phase n'a ni collaborateur ni prédécesseur (forcés à null
+      // côté DAL aussi, mais on doublonne ici pour ne pas envoyer de bruit).
+      collaborator_id: kind === 'phase' ? null : collabId || null,
       parent_id: parentId || null,
-      predecessor_id: predecessorId || null,
+      predecessor_id: kind === 'phase' ? null : predecessorId || null,
       // color: '' (vide) → null (= hériter automatiquement)
       color: color || null,
     })
@@ -195,7 +197,7 @@ export default function TaskEditor({
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="text-lg font-semibold">
-          {task ? 'Modifier' : 'Nouvelle tâche / jalon'}
+          {task ? 'Modifier' : 'Nouvelle tâche / jalon / phase'}
         </h2>
 
         {/* Bandeau d'erreur lisible (validation locale OU erreur API
@@ -229,6 +231,7 @@ export default function TaskEditor({
             >
               <option value="task">Tâche</option>
               <option value="milestone">Jalon</option>
+              <option value="phase">Phase (regroupement)</option>
             </select>
           </label>
 
@@ -238,13 +241,23 @@ export default function TaskEditor({
               type="number"
               min={0}
               max={100}
-              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
               value={progress}
               onChange={(e) => setProgress(Number(e.target.value))}
-              disabled={kind === 'milestone'}
+              disabled={kind === 'milestone' || kind === 'phase'}
             />
           </label>
         </div>
+
+        {/* v1.6 — Bandeau d'aide spécifique aux phases. */}
+        {kind === 'phase' && (
+          <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded px-3 py-2">
+            🗂️ <strong>Phase</strong> : les dates seront calculées
+            automatiquement à partir des activités enfants (début = la plus
+            précoce, fin = la plus tardive). Une phase n'a pas de collaborateur
+            ni de prédécesseur.
+          </div>
+        )}
 
         <div className="flex gap-2">
           <label className="block text-sm flex-1">
@@ -261,11 +274,13 @@ export default function TaskEditor({
               className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
               value={effectiveStart}
               onChange={(e) => handleStartDateChange(e.target.value)}
-              disabled={!!predecessor}
+              disabled={!!predecessor || kind === 'phase'}
               title={
-                predecessor
-                  ? `Forcée à la fin du prédécesseur « ${predecessor.name} »`
-                  : undefined
+                kind === 'phase'
+                  ? 'Calculée automatiquement à partir des enfants'
+                  : predecessor
+                    ? `Forcée à la fin du prédécesseur « ${predecessor.name} »`
+                    : undefined
               }
             />
           </label>
@@ -281,26 +296,34 @@ export default function TaskEditor({
                 setEndDate(e.target.value)
                 setError(null)
               }}
-              disabled={kind === 'milestone'}
+              disabled={kind === 'milestone' || kind === 'phase'}
+              title={
+                kind === 'phase'
+                  ? 'Calculée automatiquement à partir des enfants'
+                  : undefined
+              }
             />
           </label>
         </div>
 
-        <label className="block text-sm">
-          <span className="text-slate-600">Collaborateur</span>
-          <select
-            className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
-            value={collabId}
-            onChange={(e) => setCollabId(e.target.value)}
-          >
-            <option value="">— aucun —</option>
-            {collaborators.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        {/* Collaborateur — masqué pour les phases (qui n'en ont pas). */}
+        {kind !== 'phase' && (
+          <label className="block text-sm">
+            <span className="text-slate-600">Collaborateur</span>
+            <select
+              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+              value={collabId}
+              onChange={(e) => setCollabId(e.target.value)}
+            >
+              <option value="">— aucun —</option>
+              {collaborators.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         <label className="block text-sm">
           <span className="text-slate-600">Phase parent</span>
@@ -310,8 +333,9 @@ export default function TaskEditor({
             onChange={(e) => setParentId(e.target.value)}
           >
             <option value="">— aucune —</option>
+            {/* v1.6 — Une "phase parent" doit être de kind='phase'. */}
             {tasks
-              .filter((t) => t.id !== task?.id && t.kind === 'task')
+              .filter((t) => t.id !== task?.id && t.kind === 'phase')
               .map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name}
@@ -320,26 +344,29 @@ export default function TaskEditor({
           </select>
         </label>
 
-        <label className="block text-sm">
-          <span className="text-slate-600">
-            Prédécesseur
-            <span className="ml-1 text-xs text-slate-400">
-              (facultatif — verrouille la date de début)
+        {/* Prédécesseur — masqué pour les phases. */}
+        {kind !== 'phase' && (
+          <label className="block text-sm">
+            <span className="text-slate-600">
+              Prédécesseur
+              <span className="ml-1 text-xs text-slate-400">
+                (facultatif — verrouille la date de début)
+              </span>
             </span>
-          </span>
-          <select
-            className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
-            value={predecessorId}
-            onChange={(e) => handlePredecessorChange(e.target.value)}
-          >
-            <option value="">— aucun —</option>
-            {validPredecessors.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name} (fin : {t.end_date})
-              </option>
-            ))}
-          </select>
-        </label>
+            <select
+              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+              value={predecessorId}
+              onChange={(e) => handlePredecessorChange(e.target.value)}
+            >
+              <option value="">— aucun —</option>
+              {validPredecessors.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name} (fin : {t.end_date})
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         {/* COULEUR — éditable, par défaut = couleur effective */}
         <div className="block text-sm">

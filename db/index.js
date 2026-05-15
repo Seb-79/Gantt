@@ -44,6 +44,10 @@ export function initDb(dbPath) {
   // a été créée avant cette version (base existante d'avant la v1.2).
   ensureTaskColumns(db)
 
+  // v1.6 — Si la table tasks a encore l'ancien CHECK qui interdit
+  // kind='phase', on la reconstruit (sinon les insert phase plantent).
+  ensureKindAcceptsPhase(db)
+
   // Initialise la version à 0 si la ligne meta n'existe pas encore.
   db.prepare(
     `INSERT OR IGNORE INTO meta(key, value) VALUES ('version', '0')`,
@@ -74,6 +78,63 @@ function ensureTaskColumns(db) {
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_tasks_predecessor ON tasks(predecessor_id)`,
   )
+}
+
+/**
+ * v1.6 — Migration : si la définition SQL de `tasks` contient encore
+ * l'ancien CHECK qui n'autorisait que ('task', 'milestone'), reconstruit
+ * la table SANS ce CHECK pour que kind='phase' devienne valide.
+ *
+ * SQLite ne permet pas de modifier un CHECK in-place ; on doit recréer
+ * la table puis y recopier les données. L'opération est faite dans une
+ * transaction implicite par `db.exec()`.
+ *
+ * @param {import('better-sqlite3').Database} db
+ */
+function ensureKindAcceptsPhase(db) {
+  const row = db
+    .prepare(
+      `SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'`,
+    )
+    .get()
+  const sql = row?.sql || ''
+  // Détecte précisément l'ancien check restrictif (avec ou sans espaces).
+  const hasOldCheck =
+    /CHECK\s*\(\s*kind\s+IN\s*\(\s*'task'\s*,\s*'milestone'\s*\)\s*\)/i.test(
+      sql,
+    )
+  if (!hasOldCheck) return
+  console.log(
+    "[INIT] Migration : recréation de la table 'tasks' pour accepter kind='phase'",
+  )
+  db.exec(`
+    CREATE TABLE tasks_new (
+      id              TEXT PRIMARY KEY,
+      name            TEXT NOT NULL,
+      kind            TEXT NOT NULL DEFAULT 'task',
+      start_date      TEXT NOT NULL,
+      end_date        TEXT NOT NULL,
+      progress        INTEGER NOT NULL DEFAULT 0,
+      collaborator_id TEXT REFERENCES collaborators(id) ON DELETE SET NULL,
+      color           TEXT,
+      parent_id       TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+      predecessor_id  TEXT,
+      position        INTEGER NOT NULL,
+      CHECK (progress BETWEEN 0 AND 100)
+    );
+    INSERT INTO tasks_new
+      (id, name, kind, start_date, end_date, progress,
+       collaborator_id, color, parent_id, predecessor_id, position)
+    SELECT
+       id, name, kind, start_date, end_date, progress,
+       collaborator_id, color, parent_id, predecessor_id, position
+    FROM tasks;
+    DROP TABLE tasks;
+    ALTER TABLE tasks_new RENAME TO tasks;
+    CREATE INDEX IF NOT EXISTS idx_tasks_collab      ON tasks(collaborator_id);
+    CREATE INDEX IF NOT EXISTS idx_tasks_parent      ON tasks(parent_id);
+    CREATE INDEX IF NOT EXISTS idx_tasks_predecessor ON tasks(predecessor_id);
+  `)
 }
 
 /**
@@ -230,6 +291,66 @@ export function deleteCollaborator(db, id) {
 }
 
 // -----------------------------------------------------------------------------
+// v1.6 — PHASES : recalcul automatique des dates depuis les enfants
+// -----------------------------------------------------------------------------
+
+/**
+ * Recalcule les dates de la phase passée en paramètre :
+ *   start_date = MIN des start_date de ses enfants directs
+ *   end_date   = MAX des end_date  de ses enfants directs
+ *
+ * Si la phase n'a pas d'enfants, ses dates sont laissées inchangées
+ * (pour ne pas écrire NULL dans des colonnes NOT NULL).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} phaseId   Id d'une tâche kind='phase' (les autres sont ignorées).
+ */
+function recomputePhaseDates(db, phaseId) {
+  const phase = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(phaseId)
+  if (!phase || phase.kind !== 'phase') return
+  const children = db
+    .prepare(`SELECT start_date, end_date FROM tasks WHERE parent_id = ?`)
+    .all(phaseId)
+  if (children.length === 0) return
+  let minStart = children[0].start_date
+  let maxEnd = children[0].end_date
+  for (const c of children) {
+    if (c.start_date < minStart) minStart = c.start_date
+    if (c.end_date > maxEnd) maxEnd = c.end_date
+  }
+  if (phase.start_date !== minStart || phase.end_date !== maxEnd) {
+    db.prepare(
+      `UPDATE tasks SET start_date = ?, end_date = ? WHERE id = ?`,
+    ).run(minStart, maxEnd, phaseId)
+  }
+}
+
+/**
+ * Remonte la chaîne des parents d'une tâche et recalcule les dates de
+ * chaque ancêtre de type 'phase' rencontré (récursif). Indispensable
+ * après tout create/update/delete/move qui peut affecter une phase
+ * (directement ou via un descendant transitivement).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string|null} startId   Id de départ (null = no-op).
+ */
+function recomputeAncestorPhases(db, startId) {
+  if (!startId) return
+  const stmt = db.prepare(`SELECT id, parent_id, kind FROM tasks WHERE id = ?`)
+  let cursor = stmt.get(startId)
+  // Sécurité anti-cycle (les phases ne devraient jamais boucler en parent_id,
+  // mais on protège quand même pour ne pas geler le serveur).
+  const seen = new Set()
+  while (cursor?.parent_id && !seen.has(cursor.parent_id)) {
+    seen.add(cursor.parent_id)
+    const parent = stmt.get(cursor.parent_id)
+    if (!parent) break
+    if (parent.kind === 'phase') recomputePhaseDates(db, parent.id)
+    cursor = parent
+  }
+}
+
+// -----------------------------------------------------------------------------
 // TÂCHES & JALONS
 // -----------------------------------------------------------------------------
 
@@ -288,12 +409,16 @@ export function createTask(db, input) {
       startDate,
       endDate,
       input.progress ?? 0,
-      input.collaborator_id ?? null,
+      // v1.6 — Une phase n'est jamais affectée à un collaborateur.
+      kind === 'phase' ? null : (input.collaborator_id ?? null),
       input.color ?? null,
       input.parent_id ?? null,
-      input.predecessor_id ?? null,
+      kind === 'phase' ? null : (input.predecessor_id ?? null),
       position,
     )
+    // v1.6 — Si on vient d'ajouter une feuille (task / milestone) à une
+    // phase, il faut recalculer les dates de cette phase et de ses ancêtres.
+    recomputeAncestorPhases(db, input.id)
     const version = bumpVersion(db)
     const task = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(input.id)
     return { version, task }
@@ -349,6 +474,11 @@ export function updateTask(db, id, patch) {
     // Cohérence : un jalon a end_date == start_date, toujours.
     if (next.kind === 'milestone') next.end_date = next.start_date
 
+    // v1.6 — Une phase n'a pas de collaborateur ni de prédécesseur.
+    if (next.kind === 'phase') {
+      next.collaborator_id = null
+      next.predecessor_id = null
+    }
     db.prepare(
       `UPDATE tasks
          SET name = ?, kind = ?, start_date = ?, end_date = ?, progress = ?,
@@ -366,6 +496,16 @@ export function updateTask(db, id, patch) {
       next.predecessor_id,
       id,
     )
+    // v1.6 — Si la tâche modifiée est elle-même une phase, on recalcule ses
+    // propres dates (au cas où des enfants ont été déplacés). Et dans tous
+    // les cas, on remonte aux ancêtres pour propager.
+    if (next.kind === 'phase') recomputePhaseDates(db, id)
+    recomputeAncestorPhases(db, id)
+    // Si on a changé de parent (rare en update, mais possible), il faut
+    // aussi recalculer l'ancien parent.
+    if (current.parent_id && current.parent_id !== next.parent_id) {
+      recomputeAncestorPhases(db, current.parent_id)
+    }
     const version = bumpVersion(db)
     return { version, changed: true }
   })
@@ -381,8 +521,22 @@ export function updateTask(db, id, patch) {
  */
 export function deleteTask(db, id) {
   const tx = db.transaction(() => {
+    // v1.6 — On capture parent_id AVANT la suppression pour pouvoir
+    // recalculer les dates de l'ancêtre (s'il s'agit d'une phase).
+    const before = db
+      .prepare(`SELECT parent_id FROM tasks WHERE id = ?`)
+      .get(id)
     const info = db.prepare(`DELETE FROM tasks WHERE id = ?`).run(id)
     if (info.changes === 0) return { version: getVersion(db), changed: false }
+    if (before?.parent_id) {
+      // Recompute via le parent (recomputeAncestorPhases part d'un id
+      // existant ; on appelle directement avec le parent comme cursor).
+      const parent = db
+        .prepare(`SELECT id, kind FROM tasks WHERE id = ?`)
+        .get(before.parent_id)
+      if (parent?.kind === 'phase') recomputePhaseDates(db, parent.id)
+      recomputeAncestorPhases(db, before.parent_id)
+    }
     const version = bumpVersion(db)
     return { version, changed: true }
   })
@@ -509,6 +663,16 @@ export function moveTask(db, id, { parent_id, before_id }) {
       }
     }
 
+    // v1.6 — Recompute des dates des phases ancêtres (ancien ET nouveau parent).
+    recomputeAncestorPhases(db, id) // remonte vers le nouveau parent
+    if (oldParentId && oldParentId !== newParentId) {
+      const oldParent = db
+        .prepare(`SELECT id, kind FROM tasks WHERE id = ?`)
+        .get(oldParentId)
+      if (oldParent?.kind === 'phase') recomputePhaseDates(db, oldParent.id)
+      recomputeAncestorPhases(db, oldParentId)
+    }
+
     const version = bumpVersion(db)
     return { version, changed: true }
   })
@@ -533,12 +697,13 @@ export const DEMO_STATE = {
   tasks: [
     // Phase 1
     {
+      // v1.6 — kind 'phase' : dates auto-calculées depuis les enfants
       id: 't1',
       name: 'Pré-production',
-      kind: 'task',
+      kind: 'phase',
       start_date: '2026-05-15',
       end_date: '2026-06-30',
-      progress: 60,
+      progress: 0,
     },
     {
       id: 't1a',
@@ -592,7 +757,7 @@ export const DEMO_STATE = {
     {
       id: 't2',
       name: 'Tournage',
-      kind: 'task',
+      kind: 'phase',
       start_date: '2026-07-01',
       end_date: '2026-07-20',
       progress: 0,
@@ -622,7 +787,7 @@ export const DEMO_STATE = {
     {
       id: 't3',
       name: 'Post-production',
-      kind: 'task',
+      kind: 'phase',
       start_date: '2026-07-21',
       end_date: '2026-08-31',
       progress: 0,
@@ -697,13 +862,43 @@ export function replaceFullState(db, state) {
         t.start_date,
         endDate,
         t.progress ?? 0,
-        t.collaborator_id ?? null,
+        // v1.6 — pas de collaborateur ni de prédécesseur sur une phase.
+        kind === 'phase' ? null : (t.collaborator_id ?? null),
         t.color ?? null,
         t.parent_id ?? null,
-        t.predecessor_id ?? null,
+        kind === 'phase' ? null : (t.predecessor_id ?? null),
         idx,
       )
     })
+
+    // v1.6 — Recalcul des dates de toutes les phases (depuis les feuilles
+    // les plus profondes vers la racine pour gérer les phases imbriquées).
+    // On itère plusieurs passes : à chaque passe, les dates remontent d'un
+    // niveau ; en pratique 2-3 passes suffisent pour les arborescences
+    // courantes mais on borne à 10 par sécurité.
+    const phaseIds = db
+      .prepare(`SELECT id FROM tasks WHERE kind = 'phase'`)
+      .all()
+      .map((r) => r.id)
+    for (let pass = 0; pass < 10; pass++) {
+      let changed = false
+      for (const pid of phaseIds) {
+        const before = db
+          .prepare(`SELECT start_date, end_date FROM tasks WHERE id = ?`)
+          .get(pid)
+        recomputePhaseDates(db, pid)
+        const after = db
+          .prepare(`SELECT start_date, end_date FROM tasks WHERE id = ?`)
+          .get(pid)
+        if (
+          before?.start_date !== after?.start_date ||
+          before?.end_date !== after?.end_date
+        ) {
+          changed = true
+        }
+      }
+      if (!changed) break
+    }
 
     const version = bumpVersion(db)
     return { version }

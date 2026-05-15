@@ -39,7 +39,9 @@ CREATE TABLE IF NOT EXISTS collaborators (
 CREATE TABLE IF NOT EXISTS tasks (
   id              TEXT PRIMARY KEY,
   name            TEXT NOT NULL,
-  kind            TEXT NOT NULL DEFAULT 'task',  -- 'task' | 'milestone'
+  -- kind ∈ {'task', 'milestone', 'phase'} (v1.6) — la validation est faite
+  -- côté Zod (server/schemas.js). Pas de CHECK SQL pour rester migration-friendly.
+  kind            TEXT NOT NULL DEFAULT 'task',
   start_date      TEXT NOT NULL,                  -- 'YYYY-MM-DD'
   end_date        TEXT NOT NULL,                  -- 'YYYY-MM-DD' (== start si jalon)
   progress        INTEGER NOT NULL DEFAULT 0,     -- 0 à 100
@@ -48,7 +50,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   parent_id       TEXT REFERENCES tasks(id) ON DELETE CASCADE,
   predecessor_id  TEXT REFERENCES tasks(id) ON DELETE SET NULL, -- v1.2
   position        INTEGER NOT NULL,
-  CHECK (kind IN ('task', 'milestone')),
   CHECK (progress BETWEEN 0 AND 100)
 );
 

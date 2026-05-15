@@ -35,9 +35,9 @@ const IsoDate = z
   .string({ message: 'doit être une chaîne' })
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'doit être au format YYYY-MM-DD')
 
-/** Type de tâche : tâche normale ou jalon. */
-const TaskKind = z.enum(['task', 'milestone'], {
-  message: "doit valoir 'task' ou 'milestone'",
+/** Type de tâche : tâche normale, jalon ou phase (v1.6). */
+const TaskKind = z.enum(['task', 'milestone', 'phase'], {
+  message: "doit valoir 'task', 'milestone' ou 'phase'",
 })
 
 /** Pourcentage d'avancement, 0..100. */

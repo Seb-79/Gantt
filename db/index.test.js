@@ -305,6 +305,185 @@ describe('moveTask', () => {
   })
 })
 
+describe('phases (v1.6) — recompute auto des dates', () => {
+  let db
+  beforeEach(() => {
+    db = initDb(':memory:')
+    // Phase vide P initialisée à des dates "placeholder" 2026-05-01..2026-05-01
+    createTask(db, {
+      id: 'P',
+      name: 'P',
+      kind: 'phase',
+      start_date: '2026-05-01',
+      end_date: '2026-05-01',
+    })
+  })
+
+  it('phase : créer une activité enfant recale ses dates', () => {
+    createTask(db, {
+      id: 'A',
+      name: 'A',
+      start_date: '2026-06-10',
+      end_date: '2026-06-15',
+      parent_id: 'P',
+    })
+    const phase = getFullState(db).tasks.find((t) => t.id === 'P')
+    expect(phase.start_date).toBe('2026-06-10')
+    expect(phase.end_date).toBe('2026-06-15')
+  })
+
+  it('phase : MIN/MAX sur plusieurs enfants', () => {
+    createTask(db, {
+      id: 'A',
+      name: 'A',
+      start_date: '2026-06-10',
+      end_date: '2026-06-15',
+      parent_id: 'P',
+    })
+    createTask(db, {
+      id: 'B',
+      name: 'B',
+      start_date: '2026-06-05',
+      end_date: '2026-06-12',
+      parent_id: 'P',
+    })
+    createTask(db, {
+      id: 'C',
+      name: 'C',
+      start_date: '2026-06-20',
+      end_date: '2026-06-25',
+      parent_id: 'P',
+    })
+    const phase = getFullState(db).tasks.find((t) => t.id === 'P')
+    expect(phase.start_date).toBe('2026-06-05') // MIN
+    expect(phase.end_date).toBe('2026-06-25') // MAX
+  })
+
+  it("phase : update d'un enfant recale les dates", () => {
+    createTask(db, {
+      id: 'A',
+      name: 'A',
+      start_date: '2026-06-10',
+      end_date: '2026-06-15',
+      parent_id: 'P',
+    })
+    updateTask(db, 'A', { end_date: '2026-07-01' })
+    const phase = getFullState(db).tasks.find((t) => t.id === 'P')
+    expect(phase.end_date).toBe('2026-07-01')
+  })
+
+  it("phase : suppression d'un enfant recale les dates", () => {
+    createTask(db, {
+      id: 'A',
+      name: 'A',
+      start_date: '2026-06-10',
+      end_date: '2026-06-15',
+      parent_id: 'P',
+    })
+    createTask(db, {
+      id: 'B',
+      name: 'B',
+      start_date: '2026-06-20',
+      end_date: '2026-06-25',
+      parent_id: 'P',
+    })
+    deleteTask(db, 'B')
+    const phase = getFullState(db).tasks.find((t) => t.id === 'P')
+    expect(phase.start_date).toBe('2026-06-10')
+    expect(phase.end_date).toBe('2026-06-15')
+  })
+
+  it('phase imbriquée : recompute remonte récursivement', () => {
+    // Crée une sous-phase SP enfant de P, et une activité A enfant de SP.
+    createTask(db, {
+      id: 'SP',
+      name: 'SP',
+      kind: 'phase',
+      start_date: '2026-05-01',
+      end_date: '2026-05-01',
+      parent_id: 'P',
+    })
+    createTask(db, {
+      id: 'A',
+      name: 'A',
+      start_date: '2026-06-10',
+      end_date: '2026-06-15',
+      parent_id: 'SP',
+    })
+    const tasks = getFullState(db).tasks
+    expect(tasks.find((t) => t.id === 'SP').start_date).toBe('2026-06-10')
+    expect(tasks.find((t) => t.id === 'P').start_date).toBe('2026-06-10')
+    expect(tasks.find((t) => t.id === 'P').end_date).toBe('2026-06-15')
+  })
+
+  it('createTask phase : ignore collaborator_id et predecessor_id', () => {
+    createCollaborator(db, { id: 'c1', name: 'X' })
+    const r = createTask(db, {
+      id: 'PX',
+      name: 'PX',
+      kind: 'phase',
+      start_date: '2026-05-01',
+      end_date: '2026-05-01',
+      collaborator_id: 'c1',
+      predecessor_id: 'P',
+    })
+    expect(r.task.collaborator_id).toBeNull()
+    expect(r.task.predecessor_id).toBeNull()
+  })
+})
+
+describe('migration : ancien CHECK kind restrictif', () => {
+  it("recrée la table tasks pour autoriser kind='phase' sur une base v1.5", async () => {
+    const Database = (await import('better-sqlite3')).default
+    const tmpFile = `/tmp/gantt-phase-migration-test-${Date.now()}.db`
+    const old = new Database(tmpFile)
+    old.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE collaborators (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        color TEXT NOT NULL DEFAULT '#3b82f6', position INTEGER NOT NULL
+      );
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'task',
+        start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,
+        progress INTEGER NOT NULL DEFAULT 0,
+        collaborator_id TEXT,
+        color TEXT,
+        parent_id TEXT,
+        predecessor_id TEXT,
+        position INTEGER NOT NULL,
+        CHECK (kind IN ('task', 'milestone')),
+        CHECK (progress BETWEEN 0 AND 100)
+      );
+      INSERT INTO meta(key, value) VALUES ('version', '7');
+      INSERT INTO tasks (id, name, kind, start_date, end_date, position)
+        VALUES ('legacy', 'leg', 'task', '2026-01-01', '2026-01-05', 0);
+    `)
+    old.close()
+
+    // Au boot, la migration doit recréer la table SANS le CHECK restrictif.
+    const db = initDb(tmpFile)
+    // L'insertion d'une phase ne doit plus planter.
+    expect(() =>
+      createTask(db, {
+        id: 'phaseX',
+        name: 'PX',
+        kind: 'phase',
+        start_date: '2026-01-01',
+        end_date: '2026-01-01',
+      }),
+    ).not.toThrow()
+    // Et la donnée legacy est préservée.
+    expect(getFullState(db).tasks.find((t) => t.id === 'legacy').name).toBe(
+      'leg',
+    )
+    db.close()
+  })
+})
+
 describe('replaceFullState / resetToDemo', () => {
   it('charge les données démo', () => {
     const db = initDb(':memory:')

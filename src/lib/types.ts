@@ -4,8 +4,15 @@
 // Reproduisent à l'identique le format renvoyé par l'API (`GET /api/state`).
 // =============================================================================
 
-/** Type d'une entrée de planning : tâche normale ou jalon ponctuel. */
-export type TaskKind = 'task' | 'milestone'
+/**
+ * Type d'une entrée de planning :
+ *   • 'task'      = tâche normale (barre)
+ *   • 'milestone' = jalon ponctuel (losange)
+ *   • 'phase'     = regroupement (v1.6) : dates auto-calculées
+ *                   depuis les enfants (MIN début / MAX fin), pas de
+ *                   collaborateur ni de prédécesseur.
+ */
+export type TaskKind = 'task' | 'milestone' | 'phase'
 
 /** Un collaborateur affectable à des tâches. */
 export interface Collaborator {

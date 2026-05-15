@@ -25,6 +25,42 @@ describe('initDb', () => {
     expect(getVersion(db)).toBe(0)
     expect(isDatabaseEmpty(db)).toBe(true)
   })
+
+  it('migre une base ancienne (sans predecessor_id) sans erreur', async () => {
+    // Simule une base v1.0/v1.1 : on ouvre directement better-sqlite3,
+    // on crée la table tasks AVEC l'ancien schéma (sans predecessor_id),
+    // puis on ferme. Quand initDb la rouvre, la migration ALTER TABLE
+    // doit s'exécuter et la colonne doit apparaître.
+    const Database = (await import('better-sqlite3')).default
+    const tmpFile = `/tmp/gantt-migration-test-${Date.now()}.db`
+    const old = new Database(tmpFile)
+    old.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE collaborators (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        color TEXT NOT NULL DEFAULT '#3b82f6', position INTEGER NOT NULL
+      );
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'task',
+        start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+        progress INTEGER NOT NULL DEFAULT 0,
+        collaborator_id TEXT, color TEXT,
+        parent_id TEXT, position INTEGER NOT NULL
+      );
+      INSERT INTO meta(key, value) VALUES ('version', '5');
+    `)
+    old.close()
+
+    // Ne doit pas lever : la migration ajoute predecessor_id.
+    const db = initDb(tmpFile)
+    const cols = db
+      .prepare(`PRAGMA table_info(tasks)`)
+      .all()
+      .map((c) => c.name)
+    expect(cols).toContain('predecessor_id')
+    db.close()
+  })
 })
 
 describe('createCollaborator', () => {

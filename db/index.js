@@ -68,10 +68,12 @@ function ensureTaskColumns(db) {
     // ALTER TABLE, mais on peut référencer logiquement (pas de contrainte
     // FK forte ; on accepte ce compromis pour rester sans recréer la table).
     db.exec(`ALTER TABLE tasks ADD COLUMN predecessor_id TEXT`)
-    db.exec(
-      `CREATE INDEX IF NOT EXISTS idx_tasks_predecessor ON tasks(predecessor_id)`,
-    )
   }
+  // Création de l'index APRÈS s'être assuré que la colonne existe.
+  // `IF NOT EXISTS` rend l'opération idempotente (base neuve OU migrée).
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_tasks_predecessor ON tasks(predecessor_id)`,
+  )
 }
 
 /**

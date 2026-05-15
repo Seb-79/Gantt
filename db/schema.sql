@@ -52,6 +52,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   CHECK (progress BETWEEN 0 AND 100)
 );
 
-CREATE INDEX IF NOT EXISTS idx_tasks_collab      ON tasks(collaborator_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_parent      ON tasks(parent_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_predecessor ON tasks(predecessor_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_collab ON tasks(collaborator_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
+-- L'index `idx_tasks_predecessor` est créé par `ensureTaskColumns()` dans
+-- db/index.js : il dépend d'une colonne ajoutée par migration ALTER TABLE,
+-- qui n'existe pas forcément quand `schema.sql` est rejoué sur une base
+-- créée avant la v1.2 (CREATE TABLE IF NOT EXISTS ne migre pas).

@@ -180,6 +180,50 @@ describe('Tâches', () => {
     expect(r.body.task.start_date).toBe('2026-05-29')
   })
 
+  // ---- v1.5 — Déplacement (drag & drop) ----------------------------------
+
+  it('POST /move : insère avant un sibling', async () => {
+    // Démo : t1a, t1b, t1c, t1d, m1 sont enfants de t1.
+    // On déplace t1d juste avant t1b.
+    const r = await request(app)
+      .post('/api/tasks/t1d/move')
+      .send({ parent_id: 't1', before_id: 't1b' })
+      .expect(200)
+    expect(r.body.changed).toBe(true)
+    const state = await request(app).get('/api/state').expect(200)
+    const order = state.body.tasks
+      .filter((t) => t.parent_id === 't1')
+      .sort((a, b) => a.position - b.position)
+      .map((t) => t.id)
+    expect(order.slice(0, 2)).toEqual(['t1a', 't1d'])
+  })
+
+  it('POST /move : change de parent en fin de liste', async () => {
+    // Déplace t2a (enfant de t2) en dernier enfant de t1.
+    await request(app)
+      .post('/api/tasks/t2a/move')
+      .send({ parent_id: 't1', before_id: null })
+      .expect(200)
+    const state = await request(app).get('/api/state').expect(200)
+    const t2a = state.body.tasks.find((t) => t.id === 't2a')
+    expect(t2a.parent_id).toBe('t1')
+  })
+
+  it('POST /move : refuse cycle (déposer dans un descendant)', async () => {
+    const r = await request(app)
+      .post('/api/tasks/t1/move')
+      .send({ parent_id: 't1a', before_id: null })
+      .expect(400)
+    expect(r.body.error).toMatch(/descendants/)
+  })
+
+  it('POST /move : 404 si tâche inconnue', async () => {
+    await request(app)
+      .post('/api/tasks/inconnu/move')
+      .send({ parent_id: null, before_id: null })
+      .expect(404)
+  })
+
   it('PATCH definir un predecesseur recale start_date', async () => {
     // t2a (tournage extérieur) commence 2026-07-01 ; on lui ajoute t1a comme
     // prédécesseur (fin 2026-05-29) → start_date doit être recalée.

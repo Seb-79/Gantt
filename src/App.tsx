@@ -186,6 +186,25 @@ export default function App() {
     setEditing(null)
   }
 
+  /**
+   * v1.5 — Déplacement par drag & drop : appelle l'endpoint /move avec
+   * { parent_id, before_id }.
+   *
+   * @param draggedId  Id de la tâche déplacée.
+   * @param parentId   Nouveau parent (null = racine).
+   * @param beforeId   Id du sibling avant lequel insérer (null = en fin).
+   */
+  const handleMoveTask = (
+    draggedId: string,
+    parentId: string | null,
+    beforeId: string | null,
+  ) => {
+    mutate('POST', `/api/tasks/${draggedId}/move`, {
+      parent_id: parentId,
+      before_id: beforeId,
+    })
+  }
+
   /** Décalle la fenêtre temporelle de N jours (négatif = passé). */
   const shiftWindow = (days: number) => {
     setWindow((w) => {
@@ -308,6 +327,7 @@ export default function App() {
               tasks={orderedTasks}
               collaborators={state.collaborators}
               onTaskClick={setEditing}
+              onMoveTask={handleMoveTask}
             />
           </div>
         ) : (

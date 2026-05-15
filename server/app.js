@@ -27,6 +27,7 @@ import {
   deleteTask,
   getFullState,
   getVersion,
+  moveTask,
   resetToDemo,
   updateCollaborator,
   updateTask,
@@ -35,6 +36,7 @@ import {
   CollaboratorIdParams,
   CreateCollaboratorBody,
   CreateTaskBody,
+  MoveTaskBody,
   TaskIdParams,
   UpdateCollaboratorBody,
   UpdateTaskBody,
@@ -200,6 +202,32 @@ export function createApp(db, { requestLog = true } = {}) {
         })
       }
       res.json(result)
+    }),
+  )
+
+  /**
+   * v1.5 — Déplace une tâche dans la hiérarchie (drag & drop côté UI).
+   * Body : { parent_id, before_id } (cf. MoveTaskBody).
+   * Erreurs métier (cycle, parent inexistant) → 400 explicite.
+   */
+  app.post(
+    '/api/tasks/:id/move',
+    validate({ params: TaskIdParams, body: MoveTaskBody }),
+    safeRoute((req, res) => {
+      try {
+        const result = moveTask(db, req.params.id, req.body)
+        if (!result.changed) {
+          return res.status(404).json({
+            error: 'tâche introuvable',
+            version: result.version,
+          })
+        }
+        res.json(result)
+      } catch (err) {
+        res
+          .status(400)
+          .json({ error: `Déplacement impossible : ${err.message}` })
+      }
     }),
   )
 

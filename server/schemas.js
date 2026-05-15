@@ -115,6 +115,16 @@ export const UpdateTaskBody = z
 
 export const TaskIdParams = z.object({ id: NonEmptyId })
 
+/**
+ * v1.5 — Body de POST /api/tasks/:id/move (drag & drop dans la liste).
+ * - parent_id : nouveau parent (null = racine)
+ * - before_id : id du sibling avant lequel insérer (null = en fin de liste)
+ */
+export const MoveTaskBody = z.object({
+  parent_id: NonEmptyId.nullable(),
+  before_id: NonEmptyId.nullable(),
+})
+
 // -----------------------------------------------------------------------------
 // MIDDLEWARE de validation
 // -----------------------------------------------------------------------------

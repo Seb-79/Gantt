@@ -13,6 +13,7 @@ import {
   getVersion,
   initDb,
   isDatabaseEmpty,
+  moveTask,
   replaceFullState,
   resetToDemo,
   updateCollaborator,
@@ -199,6 +200,108 @@ describe('deleteTask', () => {
   it('cascade les enfants', () => {
     deleteTask(db, 't1')
     expect(getFullState(db).tasks).toHaveLength(0)
+  })
+})
+
+describe('moveTask', () => {
+  let db
+  beforeEach(() => {
+    db = initDb(':memory:')
+    // Hiérarchie : P (parent), avec 3 enfants A, B, C en positions 0,1,2
+    // + une tâche Q racine
+    createTask(db, {
+      id: 'P',
+      name: 'P',
+      start_date: '2026-05-01',
+      end_date: '2026-05-30',
+    })
+    createTask(db, {
+      id: 'A',
+      name: 'A',
+      start_date: '2026-05-01',
+      end_date: '2026-05-05',
+      parent_id: 'P',
+    })
+    createTask(db, {
+      id: 'B',
+      name: 'B',
+      start_date: '2026-05-06',
+      end_date: '2026-05-10',
+      parent_id: 'P',
+    })
+    createTask(db, {
+      id: 'C',
+      name: 'C',
+      start_date: '2026-05-11',
+      end_date: '2026-05-15',
+      parent_id: 'P',
+    })
+    createTask(db, {
+      id: 'Q',
+      name: 'Q',
+      start_date: '2026-06-01',
+      end_date: '2026-06-05',
+    })
+  })
+
+  /** Renvoie l'ordre des enfants d'un parent (id, position). */
+  function childrenOf(parentId) {
+    return getFullState(db)
+      .tasks.filter((t) => t.parent_id === parentId)
+      .sort((a, b) => a.position - b.position)
+      .map((t) => t.id)
+  }
+
+  it("réordonne au sein d'un même parent (insérer C entre A et B)", () => {
+    moveTask(db, 'C', { parent_id: 'P', before_id: 'B' })
+    expect(childrenOf('P')).toEqual(['A', 'C', 'B'])
+  })
+
+  it('change le parent (Q devient enfant de P en dernier)', () => {
+    moveTask(db, 'Q', { parent_id: 'P', before_id: null })
+    expect(childrenOf('P')).toEqual(['A', 'B', 'C', 'Q'])
+    // Q n'est plus en racine
+    const racines = getFullState(db).tasks.filter((t) => t.parent_id === null)
+    expect(racines.map((t) => t.id)).toEqual(['P'])
+  })
+
+  it('change le parent et insère avant un sibling', () => {
+    moveTask(db, 'Q', { parent_id: 'P', before_id: 'B' })
+    expect(childrenOf('P')).toEqual(['A', 'Q', 'B', 'C'])
+  })
+
+  it('détache (parent_id = null) en fin de racine', () => {
+    moveTask(db, 'A', { parent_id: null, before_id: null })
+    expect(childrenOf('P')).toEqual(['B', 'C'])
+    const racines = getFullState(db)
+      .tasks.filter((t) => t.parent_id === null)
+      .sort((a, b) => a.position - b.position)
+      .map((t) => t.id)
+    expect(racines).toEqual(['P', 'Q', 'A'])
+  })
+
+  it('refuse de devenir son propre parent', () => {
+    expect(() =>
+      moveTask(db, 'P', { parent_id: 'P', before_id: null }),
+    ).toThrow(/son propre parent/)
+  })
+
+  it('refuse de se déplacer dans un de ses descendants (cycle)', () => {
+    expect(() =>
+      moveTask(db, 'P', { parent_id: 'A', before_id: null }),
+    ).toThrow(/descendants/)
+  })
+
+  it('refuse un parent inexistant', () => {
+    expect(() =>
+      moveTask(db, 'A', { parent_id: 'inconnu', before_id: null }),
+    ).toThrow(/parent introuvable/)
+  })
+
+  it('inconnu → changed=false sans throw', () => {
+    expect(
+      moveTask(db, 'inconnu', { parent_id: null, before_id: null }).changed,
+    ).toBe(false)
   })
 })
 

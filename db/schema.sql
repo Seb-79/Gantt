@@ -60,6 +60,11 @@ CREATE TABLE IF NOT EXISTS tasks (
   color           TEXT,                           -- nullable, sinon couleur du collab
   parent_id       TEXT REFERENCES tasks(id) ON DELETE CASCADE,
   predecessor_id  TEXT REFERENCES tasks(id) ON DELETE SET NULL, -- v1.2
+  -- v1.10 — Délai (jours OUVRÉS) entre la fin du prédécesseur et le début
+  -- de cette tâche. 0 = enchaînement immédiat (Y.start == X.end).
+  -- N = Y.start = (N+1)-ème jour ouvré depuis X.end (cf. computeSuccessorStart).
+  -- Pour les tâches sans prédécesseur, vaut 0 (non significatif).
+  predecessor_lag INTEGER NOT NULL DEFAULT 0,
   position        INTEGER NOT NULL,
   -- v1.8 — project_id est ajouté à la table tasks pour les bases neuves ;
   -- pour les bases anciennes, c'est `ensureTaskColumns()` (db/index.js) qui

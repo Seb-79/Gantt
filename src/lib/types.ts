@@ -58,6 +58,9 @@ export interface Task {
   parent_id: string | null
   /** Tâche prédécesseur (v1.2) : si défini, start_date == end_date du prédécesseur. */
   predecessor_id: string | null
+  /** v1.10 — Délai (jours ouvrés) entre la fin du prédécesseur et le début de
+   *  cette tâche. 0 = enchaînement immédiat. Non significatif sans prédécesseur. */
+  predecessor_lag: number
   /** Position d'affichage (ordre des lignes). */
   position: number
   /** Projet de rattachement (v1.8). */

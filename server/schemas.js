@@ -47,6 +47,13 @@ const Progress = z
   .min(0, 'doit être ≥ 0')
   .max(100, 'doit être ≤ 100')
 
+/** v1.10 — Délai (jours ouvrés) entre prédécesseur et successeur (≥ 0). */
+const Lag = z
+  .number({ message: 'doit être un nombre' })
+  .int('doit être entier')
+  .min(0, 'doit être ≥ 0')
+  .max(3650, 'doit être ≤ 3650')
+
 // -----------------------------------------------------------------------------
 // PROJETS (v1.8)
 // -----------------------------------------------------------------------------
@@ -115,6 +122,8 @@ export const CreateTaskBody = z
     // v1.2 — Tâche prédécesseur. Si renseignée, le DAL force la start_date
     // sur la end_date du prédécesseur (cf. db/index.js).
     predecessor_id: NonEmptyId.nullable().optional(),
+    // v1.10 — Délai en jours ouvrés entre le prédécesseur et cette tâche.
+    predecessor_lag: Lag.optional(),
     // v1.8 — Projet de rattachement (optionnel : si absent, le DAL utilise
     // le premier projet existant).
     project_id: NonEmptyId.optional(),
@@ -135,6 +144,7 @@ export const UpdateTaskBody = z
     color: HexColor.nullable().optional(),
     parent_id: NonEmptyId.nullable().optional(),
     predecessor_id: NonEmptyId.nullable().optional(), // v1.2
+    predecessor_lag: Lag.optional(), // v1.10
   })
   .refine((v) => Object.keys(v).length > 0, {
     message: 'au moins un champ doit être fourni',

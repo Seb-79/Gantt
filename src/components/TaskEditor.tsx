@@ -26,6 +26,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   addWorkingDays,
+  computeSuccessorStart,
   DEFAULT_TASK_COLOR,
   descendantIds,
   effectiveTaskColor,
@@ -76,6 +77,10 @@ export default function TaskEditor({
    *  de fin est dérivée de start_date + charge ; éditer end_date met à jour
    *  charge en miroir pour rester cohérent. */
   const [charge, setCharge] = useState<number>(1)
+  /** v1.10 — Délai (jours ouvrés) entre la fin du prédécesseur et le début
+   *  de cette tâche. 0 = enchaînement immédiat. Visible uniquement quand
+   *  un prédécesseur est sélectionné. */
+  const [lag, setLag] = useState<number>(0)
   /** Message d'erreur de validation à afficher dans le modal (null = OK). */
   const [error, setError] = useState<string | null>(null)
 
@@ -103,6 +108,10 @@ export default function TaskEditor({
         ? Math.max(1, workingDaysBetween(initStart, initEnd))
         : 1,
     )
+    // v1.10 — Délai initial : la valeur stockée (si tâche existante), 0
+    // par défaut. À l'ouverture, on fait confiance au backend qui garantit
+    // déjà l'invariant start = pred.end + lag.
+    setLag(Math.max(0, Math.floor(Number(src.predecessor_lag) || 0)))
     setError(null)
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [task, defaults])
@@ -113,6 +122,9 @@ export default function TaskEditor({
    * v1.9 — Pour une tâche, la fin est dérivée : end_date = start + charge
    * (en jours ouvrés). Pour les autres types (milestone / phase), on conserve
    * l'ancien comportement (recale end_date si elle devient antérieure).
+   * v1.10 — Si un prédécesseur est défini, on infère le nouveau délai depuis
+   * (value - pred.end) pour rester cohérent (l'utilisateur a explicitement
+   * choisi une date plus tardive).
    *
    * @param value  Nouvelle date ISO YYYY-MM-DD (ou '' si l'input est vidé).
    */
@@ -122,6 +134,37 @@ export default function TaskEditor({
       setEndDate(addWorkingDays(value, charge))
     } else {
       setEndDate((current) => maxIso(current, value))
+    }
+    // v1.10 — Synchronise le délai si un prédécesseur est défini.
+    if (predecessorId) {
+      const pred = tasks.find((t) => t.id === predecessorId)
+      if (pred && value && value >= pred.end_date) {
+        setLag(Math.max(0, workingDaysBetween(pred.end_date, value) - 1))
+      }
+    }
+    setError(null)
+  }
+
+  /**
+   * v1.10 — Modifie le délai (jours ouvrés) entre le prédécesseur et cette
+   * tâche → recalcule start_date (et end_date via la charge).
+   *
+   * @param raw  Valeur saisie (string venant de l'input number).
+   */
+  function handleLagChange(raw: string) {
+    const n = Math.max(0, Math.floor(Number(raw) || 0))
+    setLag(n)
+    if (!predecessorId) return
+    const pred = tasks.find((t) => t.id === predecessorId)
+    if (!pred) return
+    const newStart = computeSuccessorStart(pred.end_date, n)
+    setStartDate(newStart)
+    if (kind === 'task') {
+      setEndDate(addWorkingDays(newStart, charge))
+    } else if (kind === 'milestone') {
+      setEndDate(newStart)
+    } else {
+      setEndDate((current) => maxIso(current, newStart))
     }
     setError(null)
   }
@@ -157,10 +200,12 @@ export default function TaskEditor({
   }
 
   /**
-   * Sélectionne (ou retire) un prédécesseur. Si un nouveau prédécesseur est
-   * choisi, on recale start_date sur sa end_date (sauf si l'utilisateur avait
-   * déjà saisi une date plus tardive — qu'on conserve). end_date est recalée
-   * en respectant la charge (v1.9) si le type est 'task', sinon ≥ start_date.
+   * Sélectionne (ou retire) un prédécesseur.
+   *
+   * v1.10 — Quand un prédécesseur est choisi, on applique le délai courant
+   * (0 par défaut) : start = pred.end + lag. La charge est conservée pour
+   * recalculer end. Quand on retire le prédécesseur, le délai n'a plus de
+   * sens : on le remet à 0 (start_date reste inchangée).
    *
    * @param value  Id du prédécesseur (ou '' pour retirer).
    */
@@ -169,14 +214,19 @@ export default function TaskEditor({
     if (value) {
       const pred = tasks.find((t) => t.id === value)
       if (pred) {
-        const newStart = maxIso(startDate, pred.end_date)
+        const newStart = computeSuccessorStart(pred.end_date, lag)
         setStartDate(newStart)
-        if (kind === 'task' && newStart) {
+        if (kind === 'task') {
           setEndDate(addWorkingDays(newStart, charge))
+        } else if (kind === 'milestone') {
+          setEndDate(newStart)
         } else {
-          setEndDate((current) => maxIso(current, pred.end_date))
+          setEndDate((current) => maxIso(current, newStart))
         }
       }
+    } else {
+      // Plus de prédécesseur → on remet le délai à 0 (sans toucher aux dates).
+      setLag(0)
     }
     setError(null)
   }
@@ -276,6 +326,9 @@ export default function TaskEditor({
       collaborator_id: kind === 'phase' ? null : collabId || null,
       parent_id: parentId || null,
       predecessor_id: kind === 'phase' ? null : predecessorId || null,
+      // v1.10 — Délai en jours ouvrés (uniquement si prédécesseur défini ;
+      // sinon le DAL le force à 0).
+      predecessor_lag: kind === 'phase' || !predecessorId ? 0 : lag,
       // color: '' (vide) → null (= hériter automatiquement)
       color: color || null,
     })
@@ -453,27 +506,50 @@ export default function TaskEditor({
 
         {/* Prédécesseur — masqué pour les phases. */}
         {kind !== 'phase' && (
-          <label className="block text-sm">
-            <span className="text-slate-600">
-              Prédécesseur
-              <span className="ml-1 text-xs text-slate-400">
-                (facultatif — borne la date de début au minimum)
+          <div className="flex gap-2 items-end">
+            <label className="block text-sm flex-1">
+              <span className="text-slate-600">
+                Prédécesseur
+                <span className="ml-1 text-xs text-slate-400">
+                  (facultatif — détermine la date de début)
+                </span>
               </span>
-            </span>
-            <select
-              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
-              value={predecessorId}
-              onChange={(e) => handlePredecessorChange(e.target.value)}
-            >
-              <option value="">— aucun —</option>
-              {validPredecessors.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.kind === 'milestone' ? '◆ ' : ''}
-                  {t.name} (fin : {t.end_date})
-                </option>
-              ))}
-            </select>
-          </label>
+              <select
+                className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+                value={predecessorId}
+                onChange={(e) => handlePredecessorChange(e.target.value)}
+              >
+                <option value="">— aucun —</option>
+                {validPredecessors.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.kind === 'milestone' ? '◆ ' : ''}
+                    {t.name} (fin : {t.end_date})
+                  </option>
+                ))}
+              </select>
+            </label>
+            {/* v1.10 — Délai (jours ouvrés) entre la fin du prédécesseur et le
+                début. Visible uniquement quand un prédécesseur est sélectionné. */}
+            {predecessorId && (
+              <label className="block text-sm w-28">
+                <span
+                  className="text-slate-600"
+                  title="Délai (jours ouvrés) entre la fin du prédécesseur et le début de cette tâche. 0 = enchaînement immédiat."
+                >
+                  Délai (j)
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+                  value={lag}
+                  onChange={(e) => handleLagChange(e.target.value)}
+                  title="0 = la tâche démarre dès la fin du prédécesseur. N = N jours ouvrés de délai supplémentaires."
+                />
+              </label>
+            )}
+          </div>
         )}
 
         {/* COULEUR — éditable, par défaut = couleur effective */}
@@ -498,6 +574,7 @@ export default function TaskEditor({
                     color: null,
                     parent_id: null,
                     predecessor_id: null,
+                    predecessor_lag: 0,
                     position: 0,
                     project_id: '',
                   },

@@ -215,13 +215,39 @@ describe('v1.9 — cascade aux successeurs', () => {
     expect(y.end_date).toBe('2026-05-29')
   })
 
-  it("raccourcir X : Y n'est PAS reculé (décalage volontaire respecté)", () => {
-    // X réduit au mercredi 20 mai → fin antérieure à Y.start (22 mai).
-    // Comme Y.start (22) >= nouvelle fin de X (20), on ne touche pas à Y.
+  it('raccourcir X : Y est tiré en arrière (délai constant — v1.10)', () => {
+    // À l'init, Y a été créé sans predecessor_lag explicite et Y.start ==
+    // X.end → lag inféré = 0. La cascade v1.10 force Y.start = X.end + 0.
+    // X réduit au mercredi 20 mai → Y est tiré à 20 mai (charge 3 j ouvrés
+    // = mer→ven). Ceci corrige le bug du « stuck successor » de v1.9.
+    updateTask(db, 'X', { end_date: '2026-05-20' })
+    const y = get('Y')
+    expect(y.start_date).toBe('2026-05-20')
+    expect(y.end_date).toBe('2026-05-22')
+  })
+
+  it("v1.10 — le délai (predecessor_lag) est respecté lors d'un allongement", () => {
+    // Pose un délai de 2 j ouvrés sur Y (au lieu de l'enchaînement immédiat).
+    updateTask(db, 'Y', { predecessor_lag: 2 })
+    let y = get('Y')
+    // X.end = 22 mai (ven) ; lag=2 → Y.start = 3e jour ouvré ≥ 22 mai
+    // = ven (1) + lun 25 (2) + mar 26 (3) → mar 26 mai.
+    expect(y.start_date).toBe('2026-05-26')
+    // Charge conservée (3 j ouvrés) → mar + 2 = jeu 28 mai.
+    expect(y.end_date).toBe('2026-05-28')
+    // X allongé jusqu'au 27 mai → Y poussé en gardant le délai de 2.
+    updateTask(db, 'X', { end_date: '2026-05-27' })
+    y = get('Y')
+    // X.end = 27 mai (mer) ; lag=2 → mer + 2 = ven 29 mai.
+    expect(y.start_date).toBe('2026-05-29')
+  })
+
+  it("v1.10 — le délai est aussi respecté lors d'un raccourcissement", () => {
+    updateTask(db, 'Y', { predecessor_lag: 2 })
+    // X raccourci à mer 20 mai → Y.start = mer + 2 j ouvrés = ven 22 mai.
     updateTask(db, 'X', { end_date: '2026-05-20' })
     const y = get('Y')
     expect(y.start_date).toBe('2026-05-22')
-    expect(y.end_date).toBe('2026-05-26')
   })
 
   it('chaîne X → Y → Z : la cascade se propage récursivement', () => {

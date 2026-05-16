@@ -266,6 +266,24 @@ export function daysBetweenIso(startIso: string, endIso: string): number {
 }
 
 /**
+ * v1.10 — Calcule la date de début d'un successeur Y à partir de la fin
+ * de son prédécesseur X et d'un délai (jours ouvrés).
+ *   • lag = 0 → Y.start = X.end (ou jour ouvré suivant si X.end est un week-end)
+ *   • lag = N → Y démarre N jours ouvrés APRÈS X.end
+ *
+ * Miroir exact de `computeSuccessorStart` côté serveur (db/index.js).
+ *
+ * @param predEnd  Date de fin du prédécesseur YYYY-MM-DD.
+ * @param lag      Délai en jours ouvrés (≥ 0).
+ * @returns        Date de début du successeur YYYY-MM-DD.
+ */
+export function computeSuccessorStart(predEnd: string, lag: number): string {
+  const base = snapForwardToWorkingDay(predEnd)
+  if (lag <= 0) return base
+  return addWorkingDays(base, lag + 1)
+}
+
+/**
  * v1.9 — Compte les jours OUVRÉS (lundi-vendredi) inclus dans l'intervalle
  * [startIso, endIso]. Inverse de `addWorkingDays` :
  *   workingDaysBetween(s, addWorkingDays(s, n)) === n   (pour s jour ouvré)

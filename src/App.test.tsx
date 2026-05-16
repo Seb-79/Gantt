@@ -38,6 +38,7 @@ function mkState(overrides: Partial<GanttState> = {}): GanttState {
         color: null,
         parent_id: null,
         predecessor_id: null,
+        predecessor_lag: 0,
         position: 0,
         project_id: 'p1',
       },

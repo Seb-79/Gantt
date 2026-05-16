@@ -136,6 +136,44 @@ function ensureTaskColumns(db) {
     // FK forte ; on accepte ce compromis pour rester sans recréer la table).
     db.exec(`ALTER TABLE tasks ADD COLUMN predecessor_id TEXT`)
   }
+  // v1.10 — Délai en jours ouvrés entre le prédécesseur et la tâche.
+  // Sur une base ancienne (sans la colonne), on l'ajoute ET on initialise
+  // chaque tâche ayant un prédécesseur avec son écart courant pour ne pas
+  // « ramener » brusquement Y contre la fin de X au prochain update.
+  if (!cols.includes('predecessor_lag')) {
+    db.exec(
+      `ALTER TABLE tasks ADD COLUMN predecessor_lag INTEGER NOT NULL DEFAULT 0`,
+    )
+    const rows = db
+      .prepare(
+        `SELECT t.id AS id, t.start_date AS start_date, p.end_date AS pred_end
+           FROM tasks t
+           JOIN tasks p ON t.predecessor_id = p.id`,
+      )
+      .all()
+    const upd = db.prepare(`UPDATE tasks SET predecessor_lag = ? WHERE id = ?`)
+    let migrated = 0
+    for (const r of rows) {
+      // lag = nombre de jours ouvrés entre la fin du prédécesseur et le
+      // début de cette tâche, exclus de part et d'autre.
+      //   workingDaysBetween est INCLUSIF aux deux bornes → on retire 1
+      //   pour transformer en "nombre de jours ouvrés strictement entre".
+      //   Borné ≥ 0 (cas où Y.start <= X.end : on considère lag=0).
+      const lag = Math.max(
+        0,
+        workingDaysBetweenServer(r.pred_end, r.start_date) - 1,
+      )
+      if (lag > 0) {
+        upd.run(lag, r.id)
+        migrated++
+      }
+    }
+    if (migrated > 0) {
+      console.log(
+        `[INIT] Migration v1.10 : ${migrated} tâche(s) ont vu leur prédécesseur_lag initialisé depuis l'écart existant.`,
+      )
+    }
+  }
   // Création de l'index APRÈS s'être assuré que la colonne existe.
   // `IF NOT EXISTS` rend l'opération idempotente (base neuve OU migrée).
   db.exec(
@@ -182,15 +220,17 @@ function ensureKindAcceptsPhase(db) {
       color           TEXT,
       parent_id       TEXT REFERENCES tasks(id) ON DELETE CASCADE,
       predecessor_id  TEXT,
+      -- v1.10 — colonne préservée lors de la migration depuis l'ancien CHECK.
+      predecessor_lag INTEGER NOT NULL DEFAULT 0,
       position        INTEGER NOT NULL,
       CHECK (progress BETWEEN 0 AND 100)
     );
     INSERT INTO tasks_new
       (id, name, kind, start_date, end_date, progress,
-       collaborator_id, color, parent_id, predecessor_id, position)
+       collaborator_id, color, parent_id, predecessor_id, predecessor_lag, position)
     SELECT
        id, name, kind, start_date, end_date, progress,
-       collaborator_id, color, parent_id, predecessor_id, position
+       collaborator_id, color, parent_id, predecessor_id, predecessor_lag, position
     FROM tasks;
     DROP TABLE tasks;
     ALTER TABLE tasks_new RENAME TO tasks;
@@ -281,8 +321,8 @@ export function getFullState(db, projectId) {
     ? db
         .prepare(
           `SELECT id, name, kind, start_date, end_date, progress,
-                  collaborator_id, color, parent_id, predecessor_id, position,
-                  project_id
+                  collaborator_id, color, parent_id, predecessor_id,
+                  predecessor_lag, position, project_id
              FROM tasks
              WHERE project_id = ?
              ORDER BY position ASC, id ASC`,
@@ -573,6 +613,26 @@ function addWorkingDaysServer(start, charge) {
   return cur
 }
 
+/**
+ * v1.10 — Calcule la date de début d'un successeur Y à partir de la fin
+ * de son prédécesseur X et d'un délai (jours ouvrés).
+ *   • lag = 0 → Y.start = jour ouvré du jour-même de X.end (snap au lundi
+ *     suivant si X.end tombe un week-end).
+ *   • lag = N → Y démarre N jours ouvrés APRÈS X.end (= le (N+1)-ème jour
+ *     ouvré inclusif depuis X.end).
+ *
+ * @param {string} predEnd  Date de fin du prédécesseur (YYYY-MM-DD).
+ * @param {number} lag      Délai en jours ouvrés (≥ 0).
+ * @returns {string}        Date de début du successeur (YYYY-MM-DD).
+ */
+function computeSuccessorStart(predEnd, lag) {
+  const base = snapForwardToWorkingDayServer(predEnd)
+  if (lag <= 0) return base
+  // addWorkingDaysServer(base, 1) == base ; on veut +N jours ouvrés EN PLUS,
+  // donc on passe (lag + 1) en charge.
+  return addWorkingDaysServer(base, lag + 1)
+}
+
 // -----------------------------------------------------------------------------
 // v1.9 — CASCADE des successeurs
 // -----------------------------------------------------------------------------
@@ -617,12 +677,85 @@ function computeShiftedDates(succ, targetStart) {
   }
 }
 
+/**
+ * v1.10 — Aligne les dates / le délai d'une tâche avec son prédécesseur.
+ *
+ * Trois cas selon le contenu du patch :
+ *   • `predecessor_lag` fourni → délai = source de vérité ; on dérive
+ *     start (et end via la charge).
+ *   • `start_date` fourni OU le prédécesseur a changé → on INFÈRE le délai
+ *     depuis l'écart entre la start (saisie ou existante) et pred.end.
+ *     Si la start est antérieure à pred.end, on l'aligne (lag=0).
+ *   • Aucun champ pertinent → no-op (l'invariant a été posé au précédent
+ *     update ; `propagateToSuccessors` rattrapera plus tard si nécessaire).
+ *
+ * Modifie `next` en place (start_date / end_date / predecessor_lag).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {object} current  Tâche AVANT update (lue depuis la base).
+ * @param {object} next     Tâche APRÈS application du patch (en cours d'éval).
+ * @param {object} patch    Le patch d'origine (pour distinguer les champs
+ *                          explicitement fournis des champs hérités).
+ */
+function reconcilePredecessor(db, current, next, patch) {
+  const pred = db
+    .prepare(`SELECT end_date FROM tasks WHERE id = ?`)
+    .get(next.predecessor_id)
+  if (!pred) return
+  const lagInPatch = patch.predecessor_lag !== undefined
+  if (lagInPatch) {
+    // Délai fourni explicitement → dérive start (source de vérité).
+    const targetStart = computeSuccessorStart(
+      pred.end_date,
+      next.predecessor_lag,
+    )
+    if (targetStart === next.start_date) return
+    const charge = Math.max(
+      1,
+      workingDaysBetweenServer(current.start_date, current.end_date),
+    )
+    next.start_date = targetStart
+    if (next.kind !== 'milestone') {
+      next.end_date = addWorkingDaysServer(targetStart, charge)
+    }
+    return
+  }
+  const predIdChanged = current.predecessor_id !== next.predecessor_id
+  const startInPatch = patch.start_date !== undefined
+  if (!startInPatch && !predIdChanged) return
+  // Cas commun : on infère le délai depuis (next.start_date - pred.end_date).
+  if (next.start_date < pred.end_date) {
+    // start incohérente avec le prédécesseur : alignement.
+    next.start_date = pred.end_date
+    next.predecessor_lag = 0
+  } else {
+    next.predecessor_lag = Math.max(
+      0,
+      workingDaysBetweenServer(pred.end_date, next.start_date) - 1,
+    )
+  }
+}
+
+/**
+ * v1.10 — Propage les modifications de dates aux successeurs (récursif).
+ *
+ * Source de vérité : `predecessor_lag`. Pour chaque Y avec
+ * `predecessor_id = X.id` :
+ *   Y.start_date = computeSuccessorStart(X.end_date, Y.predecessor_lag)
+ *
+ * Conséquence (v1.10) : si X est RACCOURCI, Y est tiré en arrière (le
+ * délai reste constant). Si X est ALLONGÉ, Y est poussé. Plus de
+ * "stuck" du successeur quand le prédécesseur réduit sa durée.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} rootId  Id de la tâche dont les dates viennent de changer.
+ */
 function propagateToSuccessors(db, rootId) {
   const fetch = db.prepare(
     `SELECT id, kind, start_date, end_date FROM tasks WHERE id = ?`,
   )
   const fetchSuccessors = db.prepare(
-    `SELECT id, kind, start_date, end_date, parent_id
+    `SELECT id, kind, start_date, end_date, parent_id, predecessor_lag
        FROM tasks
        WHERE predecessor_id = ?`,
   )
@@ -638,15 +771,15 @@ function propagateToSuccessors(db, rootId) {
     seen.add(curId)
     const cur = fetch.get(curId)
     if (!cur) continue
-    // Cible : le successeur doit démarrer à >= cur.end_date.
-    // On snape sur un jour ouvré pour rester cohérent avec la convention
-    // v1.9 (les barres tombent toujours sur des jours ouvrés).
-    const targetStart = snapForwardToWorkingDayServer(cur.end_date)
 
     for (const succ of fetchSuccessors.all(curId)) {
-      // Décalage volontaire : si le successeur démarre déjà ≥ cur.end_date,
-      // on respecte la saisie utilisateur et on ne touche à rien.
-      if (succ.start_date >= cur.end_date) continue
+      // v1.10 — Source de vérité : delay stocké. On recalcule Y.start_date
+      // depuis X.end_date + Y.predecessor_lag (jours ouvrés). Le délai
+      // ne dépend pas de l'historique des dates antérieures.
+      const targetStart = computeSuccessorStart(
+        cur.end_date,
+        succ.predecessor_lag || 0,
+      )
       const { newStart, newEnd } = computeShiftedDates(succ, targetStart)
       if (newStart === succ.start_date && newEnd === succ.end_date) continue
       updateDates.run(newStart, newEnd, succ.id)
@@ -754,21 +887,51 @@ function nextTaskPosition(db) {
  * }} input
  * @returns {{version:number, task:object}}
  */
+/**
+ * v1.10 — Résout {start_date, predecessor_lag} pour une nouvelle tâche
+ * en fonction de la présence (ou non) d'un prédécesseur et d'un délai.
+ * Extrait pour limiter la complexité cyclomatique de `createTask`.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {object} input  Payload de création (cf. createTask).
+ * @returns {{startDate:string, lag:number}}
+ */
+function resolveCreateStartAndLag(db, input) {
+  const requestedLag = Math.max(
+    0,
+    Math.floor(Number(input.predecessor_lag) || 0),
+  )
+  if (input.kind === 'phase' || !input.predecessor_id) {
+    return { startDate: input.start_date, lag: 0 }
+  }
+  const pred = db
+    .prepare(`SELECT end_date FROM tasks WHERE id = ?`)
+    .get(input.predecessor_id)
+  if (!pred) {
+    return { startDate: input.start_date, lag: requestedLag }
+  }
+  if (input.predecessor_lag !== undefined) {
+    return {
+      startDate: computeSuccessorStart(pred.end_date, requestedLag),
+      lag: requestedLag,
+    }
+  }
+  if (!input.start_date || input.start_date <= pred.end_date) {
+    return { startDate: pred.end_date, lag: 0 }
+  }
+  return {
+    startDate: input.start_date,
+    lag: Math.max(
+      0,
+      workingDaysBetweenServer(pred.end_date, input.start_date) - 1,
+    ),
+  }
+}
+
 export function createTask(db, input) {
   const tx = db.transaction(() => {
     const kind = input.kind || 'task'
-    let startDate = input.start_date
-    // v1.2 — Si un prédécesseur est défini, on garantit que start_date ≥
-    // end_date du prédécesseur. Si le client a saisi une date plus tardive
-    // (décalage volontaire), on la conserve : seule la borne MIN est imposée.
-    if (input.predecessor_id) {
-      const pred = db
-        .prepare(`SELECT end_date FROM tasks WHERE id = ?`)
-        .get(input.predecessor_id)
-      if (pred && (!startDate || startDate < pred.end_date)) {
-        startDate = pred.end_date
-      }
-    }
+    const { startDate, lag } = resolveCreateStartAndLag(db, input)
     // Pour un jalon, on ignore end_date envoyé par le client : un jalon est
     // ponctuel, donc end_date = start_date par construction.
     const endDate =
@@ -797,8 +960,9 @@ export function createTask(db, input) {
     db.prepare(
       `INSERT INTO tasks
         (id, name, kind, start_date, end_date, progress,
-         collaborator_id, color, parent_id, predecessor_id, position, project_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         collaborator_id, color, parent_id, predecessor_id,
+         predecessor_lag, position, project_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.id,
       input.name,
@@ -811,6 +975,7 @@ export function createTask(db, input) {
       input.color ?? null,
       input.parent_id ?? null,
       kind === 'phase' ? null : (input.predecessor_id ?? null),
+      lag,
       position,
       projectId,
     )
@@ -845,31 +1010,24 @@ export function updateTask(db, id, patch) {
     if (!current) return { version: getVersion(db), changed: false }
 
     const next = { ...current, ...patch }
+    // Normalise predecessor_lag : entier ≥ 0 ; null/undefined/NaN → 0.
+    next.predecessor_lag = Math.max(
+      0,
+      Math.floor(Number(next.predecessor_lag) || 0),
+    )
 
-    // v1.2 — Si un prédécesseur est défini (ou réaffirmé), start_date doit
-    // être ≥ end_date du prédécesseur. Si elle est antérieure, on la pousse
-    // à la fin du prédécesseur (en conservant la durée existante pour ne pas
-    // rétrécir/étirer la tâche involontairement). Si elle est déjà postérieure,
-    // on respecte la valeur saisie par l'utilisateur (décalage volontaire).
-    if (next.predecessor_id && next.predecessor_id !== id) {
-      const pred = db
-        .prepare(`SELECT end_date FROM tasks WHERE id = ?`)
-        .get(next.predecessor_id)
-      if (pred && next.start_date < pred.end_date) {
-        const oldStart = new Date(next.start_date)
-        const oldEnd = new Date(next.end_date)
-        const durationDays = Math.max(
-          0,
-          Math.round((oldEnd - oldStart) / 86400000),
-        )
-        next.start_date = pred.end_date
-        // Conserve la durée existante (sauf jalon : end_date = start_date)
-        if (next.kind !== 'milestone') {
-          const newStart = new Date(next.start_date)
-          newStart.setDate(newStart.getDate() + durationDays)
-          next.end_date = newStart.toISOString().slice(0, 10)
-        }
-      }
+    // v1.10 — Contrainte de prédécesseur basée sur le DÉLAI :
+    //   • Si patch.predecessor_lag fourni OU predecessor_id changé
+    //     → on dérive start_date depuis pred.end + lag (le délai est la
+    //       source de vérité ; on préserve la charge en jours ouvrés).
+    //   • Sinon, si patch.start_date fourni → on INFÈRE le nouveau lag
+    //     depuis l'écart (cas du drag du corps de barre par l'utilisateur).
+    if (
+      next.kind !== 'phase' &&
+      next.predecessor_id &&
+      next.predecessor_id !== id
+    ) {
+      reconcilePredecessor(db, current, next, patch)
     }
     // Cohérence : un jalon a end_date == start_date, toujours.
     if (next.kind === 'milestone') next.end_date = next.start_date
@@ -878,11 +1036,16 @@ export function updateTask(db, id, patch) {
     if (next.kind === 'phase') {
       next.collaborator_id = null
       next.predecessor_id = null
+      next.predecessor_lag = 0
     }
+    // Sans prédécesseur, le délai n'a pas de sens : on le force à 0.
+    if (!next.predecessor_id) next.predecessor_lag = 0
+
     db.prepare(
       `UPDATE tasks
          SET name = ?, kind = ?, start_date = ?, end_date = ?, progress = ?,
-             collaborator_id = ?, color = ?, parent_id = ?, predecessor_id = ?
+             collaborator_id = ?, color = ?, parent_id = ?, predecessor_id = ?,
+             predecessor_lag = ?
          WHERE id = ?`,
     ).run(
       next.name,
@@ -894,6 +1057,7 @@ export function updateTask(db, id, patch) {
       next.color,
       next.parent_id,
       next.predecessor_id,
+      next.predecessor_lag,
       id,
     )
     // v1.6 — Si la tâche modifiée est elle-même une phase, on recalcule ses
@@ -1299,8 +1463,9 @@ export function replaceFullState(db, state) {
     const insTask = db.prepare(
       `INSERT INTO tasks
         (id, name, kind, start_date, end_date, progress,
-         collaborator_id, color, parent_id, predecessor_id, position, project_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         collaborator_id, color, parent_id, predecessor_id,
+         predecessor_lag, position, project_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     state.tasks.forEach((t, idx) => {
       const kind = t.kind || 'task'
@@ -1318,6 +1483,8 @@ export function replaceFullState(db, state) {
         t.color ?? null,
         t.parent_id ?? null,
         kind === 'phase' ? null : (t.predecessor_id ?? null),
+        // v1.10 — délai (jours ouvrés) ; 0 par défaut.
+        kind === 'phase' ? 0 : Math.max(0, Math.floor(t.predecessor_lag || 0)),
         idx,
         t.project_id || fallbackProjectId,
       )

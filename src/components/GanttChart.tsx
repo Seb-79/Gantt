@@ -12,7 +12,7 @@
 // (testables séparément).
 // =============================================================================
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { format, parseISO } from 'date-fns'
 import {
   addDaysIso,
@@ -94,6 +94,12 @@ interface Props {
    * seule la date du jalon est affichée.
    */
   showDates?: boolean
+  /**
+   * v1.13 — Si true (par défaut), écrit le nom de la tâche à l'intérieur
+   * de la barre (quand celle-ci est assez large). Mettre à false pour
+   * obtenir un planning purement graphique (barres + couleurs sans texte).
+   */
+  showBarNames?: boolean
 }
 
 /**
@@ -110,12 +116,47 @@ export default function GanttChart({
   onMoveTask,
   onResizeTask,
   showDates = false,
+  showBarNames = true,
 }: Props) {
+  // -------------------------------------------------------------------------
+  // v1.12 — Mesure de la largeur visible du panneau droit (scroll container)
+  // -------------------------------------------------------------------------
+  // Quand on dézoome au maximum, `dates.length * dayWidth` peut devenir plus
+  // petit que la largeur du panneau (ex. 720 px de chart sur 1700 px
+  // disponibles), laissant un grand vide à droite. Pour combler ce vide
+  // visuellement, on étend la fenêtre RENDUE jusqu'à atteindre la largeur du
+  // panneau — sans modifier l'état du parent : la navigation manuelle (« / »)
+  // reste pilotée par windowStart/windowEnd, et le `windowFromTasks` initial
+  // n'est pas perturbé.
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const [panelWidth, setPanelWidth] = useState(0)
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    setPanelWidth(el.clientWidth)
+    const ro = new ResizeObserver(() => setPanelWidth(el.clientWidth))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  /**
+   * Date de fin "effective" : au moins `windowEnd`, étendue si nécessaire
+   * pour que la grille remplisse la largeur visible du panneau.
+   */
+  const effectiveEndIso = useMemo(() => {
+    // +1 car windowEnd est inclus dans la plage rendue (cf. buildDateRange).
+    const naturalDays = daysBetweenIso(windowStart, windowEnd) + 1
+    if (panelWidth === 0 || dayWidth === 0) return windowEnd
+    const minDaysToFill = Math.ceil(panelWidth / dayWidth)
+    if (minDaysToFill <= naturalDays) return windowEnd
+    return addDaysIso(windowStart, minDaysToFill - 1)
+  }, [windowStart, windowEnd, panelWidth, dayWidth])
+
   // Précalcul de la liste des jours et des groupes de mois (recalcul uniquement
-  // si la fenêtre temporelle change).
+  // si la fenêtre temporelle effective change).
   const dates = useMemo(
-    () => buildDateRange(windowStart, windowEnd),
-    [windowStart, windowEnd],
+    () => buildDateRange(windowStart, effectiveEndIso),
+    [windowStart, effectiveEndIso],
   )
   const months = useMemo(() => groupByMonth(dates), [dates])
 
@@ -347,12 +388,12 @@ export default function GanttChart({
       {/* ------------------------------------------------------------------ */}
       {/* COLONNE GAUCHE — libellés des tâches                                */}
       {/* ------------------------------------------------------------------ */}
-      {/* v1.11 — Largeur compactée (w-60 = 240px, contre w-72 = 288px avant)
+      {/* v1.11 — Largeur compactée (w-52 = 208px, contre w-72 = 288px avant)
           pour libérer de l'espace au profit du planning. Les paddings
           internes (px-2 / pl: 8+indent) sont resserrés en cohérence. */}
-      <div className="shrink-0 w-60 border-r border-slate-300 bg-slate-50">
+      <div className="shrink-0 w-52 border-r border-slate-300 bg-slate-50">
         {/* Header (2 lignes pour matcher la hauteur du header de droite) */}
-        <div className="h-14 border-b border-slate-300 flex items-center px-2 font-semibold text-slate-700 text-sm">
+        <div className="h-14 border-b border-slate-300 flex items-center px-2 font-semibold text-slate-700 text-xs">
           Tâches
         </div>
         {tasks.map((t) => {
@@ -374,7 +415,7 @@ export default function GanttChart({
               key={t.id}
               draggable
               className={[
-                'relative flex items-center border-b border-slate-200 px-2 text-sm cursor-pointer',
+                'relative flex items-center border-b border-slate-200 px-2 text-xs cursor-pointer',
                 isDragged ? 'opacity-40' : 'hover:bg-slate-100',
                 hover === 'inside' ? 'bg-blue-50' : '',
               ].join(' ')}
@@ -452,7 +493,7 @@ export default function GanttChart({
               </span>
               {collab && (
                 <span
-                  className="ml-2 text-xs px-1.5 py-0.5 rounded text-white shrink-0"
+                  className="ml-1.5 text-[10px] px-1 py-0.5 rounded text-white shrink-0"
                   style={{ backgroundColor: collab.color }}
                 >
                   {collab.name}
@@ -466,7 +507,9 @@ export default function GanttChart({
       {/* ------------------------------------------------------------------ */}
       {/* COLONNE DROITE — calendrier scrollable                              */}
       {/* ------------------------------------------------------------------ */}
-      <div className="flex-1 overflow-x-auto">
+      {/* v1.12 — ref pour mesurer la largeur visible et combler le vide à
+          droite lorsqu'on dézoome au maximum (cf. effectiveEndIso). */}
+      <div ref={scrollRef} className="flex-1 overflow-x-auto">
         <div style={{ width: totalWidth }}>
           {/* HEADER ligne 1 — mois */}
           <div className="flex h-7 border-b border-slate-200 bg-slate-100">
@@ -532,8 +575,16 @@ export default function GanttChart({
                       handleBarMouseDown,
                       !!onResizeTask,
                       showDates,
+                      showBarNames,
                     )
-                  : renderBar(t, windowStart, dayWidth, collabById, showDates)}
+                  : renderBar(
+                      t,
+                      windowStart,
+                      dayWidth,
+                      collabById,
+                      showDates,
+                      showBarNames,
+                    )}
               </div>
             ))}
 
@@ -736,6 +787,7 @@ function renderDateLabels(
  * @param dayWidth     Largeur d'un jour en pixels.
  * @param collabById   Map id → collaborateur (pour résoudre les couleurs).
  * @param showDates    v1.11 — Si true, ajoute les libellés de dates (dd/MM).
+ * @param showBarNames v1.13 — Si true, écrit le nom de la tâche dans la barre.
  */
 function renderBar(
   task: Task,
@@ -743,6 +795,7 @@ function renderBar(
   dayWidth: number,
   collabById: Map<string, Collaborator>,
   showDates: boolean,
+  showBarNames: boolean,
 ) {
   const color = effectiveTaskColor(task, Array.from(collabById.values()))
   const left = dateToX(task.start_date, windowStart, dayWidth)
@@ -851,7 +904,7 @@ function renderBar(
           }}
         />
         {/* Libellé interne (visible si la barre est assez large) */}
-        {width > 60 && (
+        {showBarNames && width > 60 && (
           <span className="relative px-2 text-[11px] font-medium text-slate-800 truncate">
             {task.name}
           </span>
@@ -885,6 +938,7 @@ function renderBar(
  * @param onMouseDown    Handler à appeler au mousedown sur la barre.
  * @param enabled        true si le drag est actif (onResizeTask fourni).
  * @param showDates      v1.11 — Affiche les dates de début/fin (dd/MM).
+ * @param showBarNames   v1.13 — Écrit le nom de la tâche dans la barre.
  */
 function renderInteractiveTaskBar(
   task: Task,
@@ -899,6 +953,7 @@ function renderInteractiveTaskBar(
   onMouseDown: (e: React.MouseEvent<HTMLDivElement>, task: Task) => void,
   enabled: boolean,
   showDates: boolean,
+  showBarNames: boolean,
 ) {
   const color = effectiveTaskColor(task, Array.from(collabById.values()))
   const baseLeft = dateToX(task.start_date, windowStart, dayWidth)
@@ -951,7 +1006,7 @@ function renderInteractiveTaskBar(
           }}
         />
         {/* Libellé interne (visible si la barre est assez large) */}
-        {baseWidth + previewExtraWidth > 60 && (
+        {showBarNames && baseWidth + previewExtraWidth > 60 && (
           <span className="relative px-2 text-[11px] font-medium text-slate-800 truncate pointer-events-none">
             {task.name}
           </span>

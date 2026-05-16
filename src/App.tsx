@@ -37,6 +37,9 @@ const LS_CURRENT_PROJECT = 'gantt.currentProjectId'
 /** v1.11 — Clé localStorage pour mémoriser l'affichage des dates de barres. */
 const LS_SHOW_DATES = 'gantt.showDates'
 
+/** v1.13 — Clé localStorage pour mémoriser l'affichage du nom dans les barres. */
+const LS_SHOW_BAR_NAMES = 'gantt.showBarNames'
+
 /** État réseau pour le badge en haut à droite. */
 type NetStatus = 'idle' | 'loading' | 'ok' | 'error'
 
@@ -78,6 +81,20 @@ export default function App() {
       return localStorage.getItem(LS_SHOW_DATES) === '1'
     } catch {
       return false
+    }
+  })
+  /**
+   * v1.13 — Affichage du nom de la tâche à l'intérieur des barres. Activé
+   * par défaut (planning textuel) ; on peut le désactiver pour obtenir un
+   * planning purement graphique (utile en mode dézoom ou capture). Persisté
+   * en localStorage : seule la valeur '0' inhibe (toute autre valeur =
+   * défaut "affiché", y compris l'absence de clé).
+   */
+  const [showBarNames, setShowBarNames] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(LS_SHOW_BAR_NAMES) !== '0'
+    } catch {
+      return true
     }
   })
 
@@ -360,6 +377,23 @@ export default function App() {
     })
   }
 
+  /**
+   * v1.13 — Bascule l'affichage du nom des tâches dans les barres et
+   * persiste le choix. Défaut = affiché ; on n'écrit '0' que pour la
+   * négation (la clé absente compte donc comme « affiché »).
+   */
+  const toggleShowBarNames = () => {
+    setShowBarNames((v) => {
+      const next = !v
+      try {
+        localStorage.setItem(LS_SHOW_BAR_NAMES, next ? '1' : '0')
+      } catch {
+        // localStorage indisponible — on continue, l'état reste en mémoire.
+      }
+      return next
+    })
+  }
+
   /** Décalle la fenêtre temporelle de N jours (négatif = passé). */
   const shiftWindow = (days: number) => {
     setWindow((w) => {
@@ -508,6 +542,26 @@ export default function App() {
 
         {/* Actions globales — alignées à droite, icônes seules */}
         <div className="ml-auto flex items-center gap-1 shrink-0">
+          {/* v1.13 — Toggle d'affichage du nom des tâches dans les barres.
+              ACTIF par défaut : fond bleu pâle quand affiché, neutre quand
+              masqué (icône barrée Tt pour signifier "texte masqué"). */}
+          <button
+            className={[
+              'w-7 h-7 text-xs rounded border border-slate-300',
+              showBarNames
+                ? 'bg-blue-100 text-blue-700 border-blue-300'
+                : 'hover:bg-slate-100',
+            ].join(' ')}
+            onClick={toggleShowBarNames}
+            title={
+              showBarNames
+                ? 'Masquer le nom des tâches dans les barres'
+                : 'Afficher le nom des tâches dans les barres'
+            }
+            aria-pressed={showBarNames}
+          >
+            Tt
+          </button>
           {/* v1.11 — Toggle d'affichage des dates de début/fin sur les barres.
               État actif (showDates=true) souligné par un fond bleu pâle. */}
           <button
@@ -568,6 +622,7 @@ export default function App() {
               onMoveTask={handleMoveTask}
               onResizeTask={handleResizeTask}
               showDates={showDates}
+              showBarNames={showBarNames}
             />
           </div>
         ) : (

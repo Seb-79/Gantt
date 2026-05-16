@@ -16,6 +16,20 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach } from 'vitest'
 import { cleanup } from '@testing-library/react'
 
+// v1.12 — jsdom ne fournit pas ResizeObserver. GanttChart en a besoin pour
+// mesurer la largeur du panneau (et étendre la grille au dézoom max). Stub
+// minimal : se contente d'exister, on ne vérifie pas le redimensionnement
+// dans les tests unitaires.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  class ResizeObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver =
+    ResizeObserverStub as unknown as typeof ResizeObserver
+}
+
 afterEach(() => {
   cleanup()
 })

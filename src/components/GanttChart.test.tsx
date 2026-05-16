@@ -274,6 +274,38 @@ describe('GanttChart — affichage des dates (v1.11)', () => {
   })
 })
 
+describe('GanttChart — nom dans les barres (v1.13)', () => {
+  // Par défaut le nom de la tâche est écrit dans la barre quand la largeur
+  // est suffisante. Avec showBarNames={false}, le span de nom interne
+  // disparaît (la barre reste rendue, ainsi que le `title` au survol).
+  it('affiche le nom par défaut et le masque avec showBarNames={false}', () => {
+    const tasks = [
+      mkTask({
+        id: 't1',
+        name: 'Ma tâche très visible',
+        start_date: '2026-05-04',
+        end_date: '2026-05-20', // largeur largement > 60 px
+      }),
+    ]
+    const baseProps = {
+      windowStart: '2026-05-01',
+      windowEnd: '2026-05-31',
+      dayWidth: 20,
+      tasks,
+      collaborators: COLLABS,
+    }
+    const { container, rerender } = render(<GanttChart {...baseProps} />)
+    // Le span de nom interne (pointer-events-none, présent dans la barre)
+    // contient le texte exact de la tâche.
+    expect(
+      container.querySelector('span.pointer-events-none')?.textContent,
+    ).toBe('Ma tâche très visible')
+
+    rerender(<GanttChart {...baseProps} showBarNames={false} />)
+    expect(container.querySelector('span.pointer-events-none')).toBeNull()
+  })
+})
+
 describe('GanttChart — flèches prédécesseurs', () => {
   it('rend un <path> dans le SVG pour chaque prédécesseur référencé', () => {
     const tasks: Task[] = [

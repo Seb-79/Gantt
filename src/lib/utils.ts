@@ -237,6 +237,35 @@ export function snapForwardToWorkingDay(iso: string): string {
 }
 
 /**
+ * v1.9 — Si la date ISO tombe un week-end, la recule au VENDREDI précédent ;
+ * sinon la renvoie inchangée. Utilisé quand on RÉDUIT la durée d'une tâche
+ * par drag : on préfère qu'elle se termine un vendredi plutôt qu'un samedi.
+ *
+ * @param iso  Date ISO YYYY-MM-DD.
+ * @returns    Date ISO d'un jour ouvré (= iso ou reculée au vendredi précédent).
+ */
+export function snapBackwardToWorkingDay(iso: string): string {
+  let cur = isoToDate(iso)
+  while (isWeekendDay(cur)) cur = addDays(cur, -1)
+  return dateToIso(cur)
+}
+
+/**
+ * v1.9 — Nombre de jours CALENDAIRES entre deux dates ISO (peut être négatif).
+ *   daysBetweenIso('2026-05-18', '2026-05-20') === 2
+ *   daysBetweenIso('2026-05-20', '2026-05-18') === -2
+ *
+ * Utile pour borner un drag (ex. ne pas réduire une barre en-deçà de 1 jour).
+ *
+ * @param startIso  Date de référence YYYY-MM-DD.
+ * @param endIso    Date à comparer YYYY-MM-DD.
+ * @returns         endIso - startIso en jours calendaires.
+ */
+export function daysBetweenIso(startIso: string, endIso: string): number {
+  return differenceInCalendarDays(isoToDate(endIso), isoToDate(startIso))
+}
+
+/**
  * v1.9 — Compte les jours OUVRÉS (lundi-vendredi) inclus dans l'intervalle
  * [startIso, endIso]. Inverse de `addWorkingDays` :
  *   workingDaysBetween(s, addWorkingDays(s, n)) === n   (pour s jour ouvré)

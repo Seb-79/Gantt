@@ -484,6 +484,182 @@ export function deleteCollaborator(db, id) {
 }
 
 // -----------------------------------------------------------------------------
+// v1.9 — DATES OUVRÉES (helpers JS — équivalents de src/lib/utils.ts)
+// -----------------------------------------------------------------------------
+// Ces helpers sont dupliqués côté serveur pour la CASCADE des successeurs
+// après une mise à jour de tâche (cf. propagateToSuccessors). On ne dépend
+// pas de date-fns ici : tout est en string ISO YYYY-MM-DD et arithmétique
+// simple de Date pour rester self-contained dans le DAL.
+
+/**
+ * v1.9 — Indique si une date ISO tombe un week-end (samedi/dimanche),
+ * en se basant sur le fuseau LOCAL du serveur (cohérent avec le client).
+ *
+ * @param {string} iso   YYYY-MM-DD
+ * @returns {boolean}
+ */
+function isWeekendIso(iso) {
+  // 'T00:00:00' force une interprétation en heure locale (sans 'Z'),
+  // évitant les décalages de fuseau qui pourraient déplacer le jour.
+  const dow = new Date(iso + 'T00:00:00').getDay()
+  return dow === 0 || dow === 6
+}
+
+/**
+ * v1.9 — Avance ou recule une date ISO de N jours calendaires.
+ *
+ * @param {string} iso    YYYY-MM-DD
+ * @param {number} days   Entier (négatif autorisé).
+ * @returns {string}      YYYY-MM-DD
+ */
+function addDaysIsoServer(iso, days) {
+  const d = new Date(iso + 'T00:00:00')
+  d.setDate(d.getDate() + days)
+  // toISOString peut décaler le jour si fuseau négatif → on reformate
+  // manuellement via getFullYear/getMonth/getDate (locaux).
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${dd}`
+}
+
+/**
+ * v1.9 — Si iso est un week-end, le pousse au lundi suivant (sinon inchangé).
+ *
+ * @param {string} iso  YYYY-MM-DD
+ * @returns {string}
+ */
+function snapForwardToWorkingDayServer(iso) {
+  let cur = iso
+  while (isWeekendIso(cur)) cur = addDaysIsoServer(cur, 1)
+  return cur
+}
+
+/**
+ * v1.9 — Compte les jours OUVRÉS inclus dans [start, end].
+ *   workingDaysBetweenServer('2026-05-18','2026-05-20') === 3
+ *
+ * @param {string} start  YYYY-MM-DD
+ * @param {string} end    YYYY-MM-DD
+ * @returns {number}
+ */
+function workingDaysBetweenServer(start, end) {
+  if (!start || !end || end < start) return 0
+  let count = 0
+  let cur = start
+  while (cur <= end) {
+    if (!isWeekendIso(cur)) count++
+    cur = addDaysIsoServer(cur, 1)
+  }
+  return count
+}
+
+/**
+ * v1.9 — Ajoute `charge` jours OUVRÉS à partir de start et renvoie la
+ * date de fin (incluse). Cohérent avec `addWorkingDays` côté client.
+ *
+ * @param {string} start   YYYY-MM-DD
+ * @param {number} charge  Nombre de jours ouvrés (≥ 1).
+ * @returns {string}       YYYY-MM-DD (fin incluse).
+ */
+function addWorkingDaysServer(start, charge) {
+  if (charge <= 1) return start
+  let cur = start
+  let count = isWeekendIso(cur) ? 0 : 1
+  while (count < charge) {
+    cur = addDaysIsoServer(cur, 1)
+    if (!isWeekendIso(cur)) count++
+  }
+  return cur
+}
+
+// -----------------------------------------------------------------------------
+// v1.9 — CASCADE des successeurs
+// -----------------------------------------------------------------------------
+
+/**
+ * v1.9 — Après modification d'une tâche X (start_date / end_date),
+ * propage la nouvelle date de fin à tous ses successeurs Y dont
+ * `predecessor_id = X.id` ET dont la date de début se retrouverait
+ * AVANT la nouvelle fin de X (= violation de la contrainte de
+ * dépendance). On préserve la "charge" (jours ouvrés) de chaque
+ * successeur en recalculant son end_date à partir du nouveau start.
+ *
+ * Si Y.start_date est DÉJÀ ≥ X.end_date (décalage volontaire saisi par
+ * l'utilisateur), Y est laissé inchangé : le décalage est conservé.
+ *
+ * La propagation est itérative et borne les visites (anti-cycle), de
+ * sorte qu'une chaîne X → Y → Z → … est traitée en une passe.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} rootId  Id de la tâche dont on vient de modifier les dates.
+ */
+/**
+ * v1.9 — Calcule les nouvelles dates d'un successeur poussé à `targetStart`,
+ * en préservant sa charge (jours ouvrés). Extrait pour limiter la complexité
+ * cyclomatique de `propagateToSuccessors` (cf. sonarjs/cognitive-complexity).
+ *
+ * @param {{kind:string, start_date:string, end_date:string}} succ
+ * @param {string} targetStart  Nouvelle date de début (jour ouvré).
+ * @returns {{newStart:string, newEnd:string}}
+ */
+function computeShiftedDates(succ, targetStart) {
+  if (succ.kind === 'milestone') {
+    return { newStart: targetStart, newEnd: targetStart }
+  }
+  const charge = Math.max(
+    1,
+    workingDaysBetweenServer(succ.start_date, succ.end_date),
+  )
+  return {
+    newStart: targetStart,
+    newEnd: addWorkingDaysServer(targetStart, charge),
+  }
+}
+
+function propagateToSuccessors(db, rootId) {
+  const fetch = db.prepare(
+    `SELECT id, kind, start_date, end_date FROM tasks WHERE id = ?`,
+  )
+  const fetchSuccessors = db.prepare(
+    `SELECT id, kind, start_date, end_date, parent_id
+       FROM tasks
+       WHERE predecessor_id = ?`,
+  )
+  const updateDates = db.prepare(
+    `UPDATE tasks SET start_date = ?, end_date = ? WHERE id = ?`,
+  )
+
+  const queue = [rootId]
+  const seen = new Set()
+  while (queue.length > 0) {
+    const curId = queue.shift()
+    if (seen.has(curId)) continue
+    seen.add(curId)
+    const cur = fetch.get(curId)
+    if (!cur) continue
+    // Cible : le successeur doit démarrer à >= cur.end_date.
+    // On snape sur un jour ouvré pour rester cohérent avec la convention
+    // v1.9 (les barres tombent toujours sur des jours ouvrés).
+    const targetStart = snapForwardToWorkingDayServer(cur.end_date)
+
+    for (const succ of fetchSuccessors.all(curId)) {
+      // Décalage volontaire : si le successeur démarre déjà ≥ cur.end_date,
+      // on respecte la saisie utilisateur et on ne touche à rien.
+      if (succ.start_date >= cur.end_date) continue
+      const { newStart, newEnd } = computeShiftedDates(succ, targetStart)
+      if (newStart === succ.start_date && newEnd === succ.end_date) continue
+      updateDates.run(newStart, newEnd, succ.id)
+      // Propage à la phase parente (les dates de la phase doivent refléter
+      // MIN/MAX des enfants).
+      recomputeAncestorPhases(db, succ.id)
+      // Continue la cascade : les successeurs de succ seront contrôlés à leur tour.
+      queue.push(succ.id)
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
 // v1.6 — PHASES : recalcul automatique des dates depuis les enfants
 // -----------------------------------------------------------------------------
 
@@ -729,6 +905,16 @@ export function updateTask(db, id, patch) {
     // aussi recalculer l'ancien parent.
     if (current.parent_id && current.parent_id !== next.parent_id) {
       recomputeAncestorPhases(db, current.parent_id)
+    }
+    // v1.9 — Cascade aux successeurs : si la date de fin (ou de début) de
+    // cette tâche a changé, certains successeurs peuvent se retrouver à
+    // démarrer AVANT la nouvelle fin → on les repousse pour préserver la
+    // dépendance, en conservant leur charge en jours ouvrés.
+    if (
+      current.end_date !== next.end_date ||
+      current.start_date !== next.start_date
+    ) {
+      propagateToSuccessors(db, id)
     }
     const version = bumpVersion(db)
     return { version, changed: true }

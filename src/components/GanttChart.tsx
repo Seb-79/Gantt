@@ -18,11 +18,13 @@ import {
   addWorkingDays,
   buildDateRange,
   dateToX,
+  daysBetweenIso,
   descendantIds,
   effectiveTaskColor,
   groupByMonth,
   isWeekendDay,
   rangeToWidth,
+  snapBackwardToWorkingDay,
   snapForwardToWorkingDay,
   workingDaysBetween,
 } from '../lib/utils'
@@ -156,17 +158,27 @@ export default function GanttChart({
     function onMove(e: MouseEvent) {
       if (!resizing) return
       const rawDelta = (e.clientX - resizing.startX) / dayWidth
-      // Borné à ≥ 0 (drag vers la droite uniquement, cf. spec).
-      const delta = Math.max(0, Math.round(rawDelta))
+      let delta = Math.round(rawDelta)
+      if (resizing.mode === 'move') {
+        // Spec : le DÉPLACEMENT par le corps de la barre se fait uniquement
+        // vers la droite (impossible de remonter dans le passé par geste).
+        delta = Math.max(0, delta)
+      } else {
+        // Spec v1.9 — Le redimensionnement de la fin peut aller dans les
+        // DEUX sens : à droite pour allonger, à gauche pour raccourcir.
+        // Borne inférieure : new_end >= start_date (au moins 1 jour de barre).
+        const minDelta = -daysBetweenIso(resizing.origStart, resizing.origEnd)
+        delta = Math.max(minDelta, delta)
+      }
       if (delta !== resizing.deltaDays) {
         setResizing({ ...resizing, deltaDays: delta })
       }
     }
-    /** Au relâchement, applique la modification si delta > 0. */
+    /** Au relâchement, applique la modification si delta != 0. */
     function onUp() {
       if (!resizing) return
       const r = resizing
-      if (r.deltaDays > 0 && onResizeTask) {
+      if (r.deltaDays !== 0 && onResizeTask) {
         if (r.mode === 'move') {
           // Conserve la charge (durée en jours ouvrés) : on recalcule end_date
           // à partir du nouveau start aligné sur un jour ouvré.
@@ -180,11 +192,21 @@ export default function GanttChart({
             end_date: newEnd,
           })
         } else {
-          // resize-end : seule la fin bouge, snap sur jour ouvré.
-          const newEnd = snapForwardToWorkingDay(
-            addDaysIso(r.origEnd, r.deltaDays),
-          )
-          onResizeTask(r.taskId, { end_date: newEnd })
+          // resize-end : seule la fin bouge. Snap selon le sens du drag :
+          //   • delta > 0 (allongement) → jour ouvré suivant
+          //   • delta < 0 (raccourcissement) → jour ouvré précédent
+          // (sinon, raccourcir et tomber sur un samedi rallongerait au lundi
+          //  d'après, ce qui contrarie le geste de l'utilisateur).
+          const target = addDaysIso(r.origEnd, r.deltaDays)
+          let newEnd =
+            r.deltaDays < 0
+              ? snapBackwardToWorkingDay(target)
+              : snapForwardToWorkingDay(target)
+          // Clamp final : new_end ne peut pas descendre sous start_date.
+          if (newEnd < r.origStart) newEnd = r.origStart
+          if (newEnd !== r.origEnd) {
+            onResizeTask(r.taskId, { end_date: newEnd })
+          }
         }
       }
       setResizing(null)

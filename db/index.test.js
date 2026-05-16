@@ -178,6 +178,98 @@ describe('updateTask', () => {
   })
 })
 
+describe('v1.9 — cascade aux successeurs', () => {
+  let db
+  beforeEach(() => {
+    db = initDb(':memory:')
+    // X : lundi 18 → vendredi 22 mai (5 jours ouvrés).
+    createTask(db, {
+      id: 'X',
+      name: 'X',
+      start_date: '2026-05-18',
+      end_date: '2026-05-22',
+    })
+    // Y : prédécesseur=X → start initialisé à la fin de X.
+    // Charge 3 j ouvrés (vendredi → mardi en sautant le w-e).
+    createTask(db, {
+      id: 'Y',
+      name: 'Y',
+      start_date: '2026-05-22',
+      end_date: '2026-05-26',
+      predecessor_id: 'X',
+    })
+  })
+
+  /** Helper pour récupérer une tâche par id depuis l'état courant. */
+  function get(id) {
+    return getFullState(db).tasks.find((t) => t.id === id)
+  }
+
+  it('allonger X : Y est repoussé en conservant sa charge', () => {
+    // X passe de 22 mai à 27 mai (mer) → +3 jours ouvrés.
+    updateTask(db, 'X', { end_date: '2026-05-27' })
+    const y = get('Y')
+    // Y démarre à la nouvelle fin de X (mercredi 27, jour ouvré).
+    expect(y.start_date).toBe('2026-05-27')
+    // Charge conservée = 3 jours ouvrés → mer + 2 = vendredi 29 mai.
+    expect(y.end_date).toBe('2026-05-29')
+  })
+
+  it("raccourcir X : Y n'est PAS reculé (décalage volontaire respecté)", () => {
+    // X réduit au mercredi 20 mai → fin antérieure à Y.start (22 mai).
+    // Comme Y.start (22) >= nouvelle fin de X (20), on ne touche pas à Y.
+    updateTask(db, 'X', { end_date: '2026-05-20' })
+    const y = get('Y')
+    expect(y.start_date).toBe('2026-05-22')
+    expect(y.end_date).toBe('2026-05-26')
+  })
+
+  it('chaîne X → Y → Z : la cascade se propage récursivement', () => {
+    // Z : prédécesseur = Y, charge 2 j ouvrés.
+    createTask(db, {
+      id: 'Z',
+      name: 'Z',
+      start_date: '2026-05-26',
+      end_date: '2026-05-27',
+      predecessor_id: 'Y',
+    })
+    // X étendu de 22 mai (ven) à 29 mai (ven, +5 j ouvrés).
+    updateTask(db, 'X', { end_date: '2026-05-29' })
+    const y = get('Y')
+    const z = get('Z')
+    // Y poussé à 29 mai (ven), charge=3 j → fin mardi 2 juin.
+    expect(y.start_date).toBe('2026-05-29')
+    expect(y.end_date).toBe('2026-06-02')
+    // Z poussé à 2 juin (mar), charge=2 j → fin mercredi 3 juin.
+    expect(z.start_date).toBe('2026-06-02')
+    expect(z.end_date).toBe('2026-06-03')
+  })
+
+  it('la nouvelle fin de X qui tombe un week-end est snappée au lundi pour Y', () => {
+    // X.end = samedi 23 mai (cas pathologique : saisie manuelle).
+    updateTask(db, 'X', { end_date: '2026-05-23' })
+    const y = get('Y')
+    // Y.start (22) < X.end (23) → pousser ; snap au lundi 25 mai.
+    expect(y.start_date).toBe('2026-05-25')
+  })
+
+  it('jalon successeur : end suit start (pas de charge à propager)', () => {
+    // M : jalon avec prédécesseur = X.
+    createTask(db, {
+      id: 'M',
+      name: 'M',
+      kind: 'milestone',
+      start_date: '2026-05-22',
+      end_date: '2026-05-22',
+      predecessor_id: 'X',
+    })
+    updateTask(db, 'X', { end_date: '2026-05-27' })
+    const m = get('M')
+    expect(m.start_date).toBe('2026-05-27')
+    expect(m.end_date).toBe('2026-05-27')
+  })
+})
+
 describe('deleteTask', () => {
   let db
   beforeEach(() => {

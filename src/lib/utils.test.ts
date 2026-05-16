@@ -10,6 +10,7 @@ import {
   clampDayWidth,
   dateToIso,
   dateToX,
+  daysBetweenIso,
   defaultWindow,
   descendantIds,
   effectiveTaskColor,
@@ -20,6 +21,7 @@ import {
   maxIso,
   mondayOnOrBefore,
   rangeToWidth,
+  snapBackwardToWorkingDay,
   snapForwardToWorkingDay,
   sortTasksHierarchically,
   todayIso,
@@ -333,6 +335,35 @@ describe('addDaysIso (v1.9)', () => {
 
   it('traverse le changement de mois', () => {
     expect(addDaysIso('2026-05-30', 5)).toBe('2026-06-04')
+  })
+})
+
+describe('snapBackwardToWorkingDay (v1.9)', () => {
+  it('jour ouvré inchangé', () => {
+    expect(snapBackwardToWorkingDay('2026-05-18')).toBe('2026-05-18') // lundi
+    expect(snapBackwardToWorkingDay('2026-05-22')).toBe('2026-05-22') // vendredi
+  })
+
+  it('samedi → vendredi précédent', () => {
+    expect(snapBackwardToWorkingDay('2026-05-23')).toBe('2026-05-22')
+  })
+
+  it('dimanche → vendredi précédent', () => {
+    expect(snapBackwardToWorkingDay('2026-05-24')).toBe('2026-05-22')
+  })
+})
+
+describe('daysBetweenIso (v1.9)', () => {
+  it('intervalle positif', () => {
+    expect(daysBetweenIso('2026-05-18', '2026-05-20')).toBe(2)
+  })
+
+  it('intervalle négatif', () => {
+    expect(daysBetweenIso('2026-05-20', '2026-05-18')).toBe(-2)
+  })
+
+  it('même jour = 0', () => {
+    expect(daysBetweenIso('2026-05-18', '2026-05-18')).toBe(0)
   })
 })
 

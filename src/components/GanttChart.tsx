@@ -30,6 +30,7 @@ import {
   snapForwardToWorkingDay,
   workingDaysBetween,
 } from '../lib/utils'
+import { useHorizontalPan } from '../lib/useHorizontalPan'
 import type { Collaborator, Task } from '../lib/types'
 
 /**
@@ -115,6 +116,13 @@ interface Props {
    * obtenir un planning purement graphique (barres + couleurs sans texte).
    */
   showBarNames?: boolean
+  /**
+   * v1.19 — Callback de décalage de la fenêtre temporelle (jours signés).
+   * Si fourni, le panneau du planning accepte un drag-pan à la souris
+   * (« grab & pull » : drag droite → passé, drag gauche → futur). Si
+   * absent, le panneau reste statique (boutons de navigation seuls).
+   */
+  onShiftWindow?: (days: number) => void
 }
 
 /**
@@ -132,7 +140,23 @@ export default function GanttChart({
   onResizeTask,
   showDates = false,
   showBarNames = true,
+  onShiftWindow,
 }: Props) {
+  // v1.19 — Pan horizontal à la souris (cf. useHorizontalPan). Branché sur
+  // le panneau scrollable de droite. Mousedown sur une BARRE est intercepté
+  // par handleBarMouseDown via stopPropagation → aucune collision avec le
+  // drag de redimensionnement existant.
+  const { onMouseDown: handlePanMouseDown, isPanning } = useHorizontalPan(
+    dayWidth,
+    onShiftWindow,
+  )
+  // v1.19 — Curseur du panneau scrollable selon le contexte du pan :
+  // « grab » au repos, « grabbing » pendant un drag actif, vide si l'app
+  // n'a pas fourni de callback (pas de pan activé). Extrait pour éviter
+  // un ternaire imbriqué dans le JSX (cf. sonarjs/no-nested-conditional).
+  let panCursorClass = ''
+  if (onShiftWindow)
+    panCursorClass = isPanning ? 'cursor-grabbing' : 'cursor-grab'
   // -------------------------------------------------------------------------
   // v1.12 — Mesure de la largeur visible du panneau droit (scroll container)
   // -------------------------------------------------------------------------
@@ -530,8 +554,14 @@ export default function GanttChart({
       {/* COLONNE DROITE — calendrier scrollable                              */}
       {/* ------------------------------------------------------------------ */}
       {/* v1.12 — ref pour mesurer la largeur visible et combler le vide à
-          droite lorsqu'on dézoome au maximum (cf. effectiveEndIso). */}
-      <div ref={scrollRef} className="flex-1 overflow-x-auto">
+          droite lorsqu'on dézoome au maximum (cf. effectiveEndIso).
+          v1.19 — onMouseDown branché sur ce panneau pour le pan souris ;
+          les barres consomment leur mousedown via stopPropagation. */}
+      <div
+        ref={scrollRef}
+        onMouseDown={handlePanMouseDown}
+        className={['flex-1 overflow-x-auto', panCursorClass].join(' ')}
+      >
         <div style={{ width: totalWidth }}>
           {/* HEADER ligne 1 — mois */}
           <div className="flex h-7 border-b border-slate-200 bg-slate-100">
@@ -579,8 +609,17 @@ export default function GanttChart({
             </div>
           )}
 
-          {/* CORPS — grille + barres */}
+          {/* CORPS — grille + barres.
+              v1.19 — Calque SVG des flèches RENDU EN PREMIER → arrière-plan.
+              Les barres et étiquettes de dates (rendues ensuite) le couvrent,
+              éliminant les chevauchements illisibles entre dates et flèches. */}
           <div className="relative">
+            <PredecessorArrows
+              tasks={tasks}
+              windowStart={windowStart}
+              dayWidth={dayWidth}
+              totalWidth={totalWidth}
+            />
             {tasks.map((t) => (
               <div
                 key={t.id}
@@ -624,16 +663,6 @@ export default function GanttChart({
                     )}
               </div>
             ))}
-
-            {/* v1.6 — Calque SVG superposé pour tracer les flèches
-                prédécesseur → successeur. pointer-events-none pour ne pas
-                gêner le clic / drag sur les barres. */}
-            <PredecessorArrows
-              tasks={tasks}
-              windowStart={windowStart}
-              dayWidth={dayWidth}
-              totalWidth={totalWidth}
-            />
           </div>
         </div>
       </div>
@@ -765,11 +794,18 @@ function PredecessorArrows({
  * absolument positionnés, à intégrer directement dans la `div` de la
  * ligne (qui est en `position: relative`).
  *
- * @param leftPx   Position X (px) du bord gauche de la barre.
- * @param widthPx  Largeur (px) de la barre.
- * @param startIso Date de début ISO de la tâche.
- * @param endIso   Date de fin ISO de la tâche.
- * @param single   true → n'affiche qu'une seule date (jalon, à droite).
+ * v1.19 — Possibilité de masquer la date de début (`hideStart`) : utilisé
+ * pour les tâches avec prédécesseur, où la date de début se superpose à
+ * la pointe de flèche entrante ET fait doublon avec la date de fin du
+ * prédécesseur déjà affichée. La flèche reste l'indicateur visuel suffisant.
+ *
+ * @param leftPx    Position X (px) du bord gauche de la barre.
+ * @param widthPx   Largeur (px) de la barre.
+ * @param startIso  Date de début ISO de la tâche.
+ * @param endIso    Date de fin ISO de la tâche.
+ * @param single    true → n'affiche qu'une seule date (jalon, à droite).
+ * @param hideStart true → n'affiche que la date de fin (cas des tâches avec
+ *                  prédécesseur ; la flèche fait l'indicateur de début).
  */
 function renderDateLabels(
   leftPx: number,
@@ -777,21 +813,30 @@ function renderDateLabels(
   startIso: string,
   endIso: string,
   single = false,
+  hideStart = false,
 ) {
-  // Style commun : très petit, gris pâle, sans interception d'événement
-  // (sinon ces étiquettes intercepteraient le drag de la barre).
+  // v1.19 — Style noir gras sur fond blanc semi-opaque : reste lisible
+  // au-dessus des cellules week-end grisées ET au-dessus des flèches
+  // prédécesseur qui passent désormais SOUS les barres (cf. PredecessorArrows
+  // déplacé avant la map des tâches). Le fond mini-pill masque le segment
+  // de flèche qui croise l'étiquette, supprimant le chevauchement illisible
+  // signalé en v1.18.
   const baseStyle: React.CSSProperties = {
     position: 'absolute',
-    top: ROW_HEIGHT / 2 - 6,
-    fontSize: 9,
-    lineHeight: '12px',
-    color: '#94a3b8', // slate-400 — volontairement discret
+    top: ROW_HEIGHT / 2 - 7,
+    fontSize: 10,
+    lineHeight: '14px',
+    fontWeight: 600,
+    color: '#0f172a', // slate-900
     pointerEvents: 'none',
     whiteSpace: 'nowrap',
+    background: 'rgba(255,255,255,0.92)',
+    padding: '0 3px',
+    borderRadius: 2,
   }
   return (
     <>
-      {!single && (
+      {!single && !hideStart && (
         <span
           style={{
             ...baseStyle,
@@ -878,8 +923,11 @@ function renderBar(
             }}
           />
         </div>
-        {showDates &&
-          renderDateLabels(left, width, task.start_date, task.end_date)}
+        {/* v1.19 — Pas de labels de dates sur les phases : elles sont
+            auto-calculées depuis les enfants (= déjà affichées sur les
+            barres enfant), et la 1re/dernière date de la phase coïncide
+            visuellement avec celle de son 1er/dernier enfant juste en
+            dessous, créant un doublon illisible (cf. capture v1.19). */}
       </>
     )
   }
@@ -948,7 +996,17 @@ function renderBar(
         )}
       </div>
       {showDates &&
-        renderDateLabels(left, width, task.start_date, task.end_date)}
+        renderDateLabels(
+          left,
+          width,
+          task.start_date,
+          task.end_date,
+          false,
+          // v1.19 — Masque la date de début si la tâche a un prédécesseur :
+          // évite la collision avec la pointe de flèche entrante et le doublon
+          // avec la date de fin du prédécesseur.
+          !!task.predecessor_id,
+        )}
     </>
   )
 }
@@ -1065,13 +1123,17 @@ function renderInteractiveTaskBar(
         )}
       </div>
       {/* v1.11 — Dates de début/fin discrètes à l'extérieur des bords. Pendant
-          un drag, on suit le preview pour qu'elles bougent en cohérence. */}
+          un drag, on suit le preview pour qu'elles bougent en cohérence.
+          v1.19 — Cache la date de début pour les tâches avec prédécesseur
+          (évite collision avec la flèche entrante + doublon avec pred.end). */}
       {showDates &&
         renderDateLabels(
           baseLeft + previewOffset,
           baseWidth + previewExtraWidth,
           task.start_date,
           task.end_date,
+          false,
+          !!task.predecessor_id,
         )}
     </>
   )

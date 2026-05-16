@@ -369,20 +369,94 @@ export default function App() {
     }
   }
 
-  /** Sauvegarde du formulaire (création ou édition). */
-  const handleSaveTask = (patch: Partial<Task>) => {
-    if (editing) {
-      mutate('PATCH', `/api/tasks/${editing.id}`, patch)
+  /**
+   * v1.22 — Applique une série de déplacements de tâches sur le serveur
+   * (un PATCH par tâche, séquentiel pour respecter l'ordre topologique
+   * produit par `replanTasks` : prédécesseurs avant successeurs). Puis
+   * resynchronise l'état local via `fetchState`. Réutilisé par
+   * `handleApplyReplan` (modal d'aperçu) et `handleSaveTask` (auto-replan
+   * après enregistrement).
+   *
+   * @param moves  Déplacements à appliquer (issus de `replanTasks`).
+   */
+  const submitReplanMoves = useCallback(
+    async (moves: ReplanMove[]) => {
+      if (moves.length === 0) return
+      setStatus('loading')
+      try {
+        for (const m of moves) {
+          const res = await fetch(`/api/tasks/${m.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              start_date: m.newStart,
+              end_date: m.newEnd,
+            }),
+          })
+          if (!res.ok) {
+            throw new Error(await formatApiError(res))
+          }
+        }
+        await fetchState()
+      } catch (err) {
+        console.error('[replan]', err)
+        setStatus('error')
+        alert(`Erreur pendant la replanification : ${(err as Error).message}`)
+      }
+    },
+    [fetchState],
+  )
+
+  /**
+   * Sauvegarde du formulaire (création ou édition).
+   *
+   * v1.22 — Quand `options.replan === true` (cas par défaut depuis la case
+   * « Replanifier après enregistrement » du `TaskEditor` en mode édition),
+   * un Replan complet est lancé automatiquement après le PATCH : on relit
+   * l'état frais depuis l'API (pour ne pas dépendre du cycle de re-render
+   * React) puis on applique les déplacements proposés par `replanTasks`,
+   * sans passer par la modal d'aperçu. Le réseau est synchronisé via le
+   * badge de statut habituel.
+   *
+   * @param patch    Champs édités à PATCHer ou POSTer.
+   * @param options  { replan?: boolean } — uniquement consulté en édition.
+   */
+  const handleSaveTask = async (
+    patch: Partial<Task>,
+    options: { replan?: boolean } = {},
+  ) => {
+    const wasEditing = editing
+    setEditing(null)
+    setCreating(false)
+    if (wasEditing) {
+      await mutate('PATCH', `/api/tasks/${wasEditing.id}`, patch)
     } else {
       // v1.8 — Une nouvelle tâche appartient toujours au projet courant.
-      mutate('POST', '/api/tasks', {
+      await mutate('POST', '/api/tasks', {
         id: makeId('t'),
         ...patch,
         project_id: currentProjectId ?? undefined,
       })
     }
-    setEditing(null)
-    setCreating(false)
+    // v1.22 — Replan automatique uniquement à l'édition (la case n'est pas
+    // proposée à la création). On va chercher l'état le plus frais via
+    // l'API plutôt que `state` du closure (qui peut être en retard d'un
+    // tick par rapport au PATCH qu'on vient d'envoyer).
+    if (wasEditing && options.replan) {
+      try {
+        const url = currentProjectId
+          ? `/api/state?project_id=${encodeURIComponent(currentProjectId)}`
+          : '/api/state'
+        const res = await fetch(url)
+        if (!res.ok) return
+        const data: GanttState = await res.json()
+        const moves = replanTasks(sortTasksHierarchically(data.tasks))
+        await submitReplanMoves(moves)
+      } catch (err) {
+        console.error('[auto-replan]', err)
+        setStatus('error')
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -574,36 +648,16 @@ export default function App() {
   }
 
   /**
-   * v1.18 — Applique séquentiellement chaque déplacement de l'aperçu via
-   * `PATCH /api/tasks/:id`. L'ordre est celui produit par `replanTasks`
-   * (prédécesseurs avant successeurs) : la cascade côté serveur s'aligne
-   * alors avec les dates proposées sans les écraser.
+   * v1.18 — Applique les déplacements de l'aperçu (modal Replan). Délègue à
+   * `submitReplanMoves` (cf. plus haut) pour mutualiser le code de cascade
+   * de PATCH + resync. La modal est fermée AVANT la 1re requête pour ne pas
+   * laisser un état "Appliquer" cliquable pendant la propagation.
    */
   const handleApplyReplan = async () => {
     if (!replanPreview || replanPreview.length === 0) return
     const moves = replanPreview
     setReplanPreview(null)
-    setStatus('loading')
-    try {
-      for (const m of moves) {
-        const res = await fetch(`/api/tasks/${m.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            start_date: m.newStart,
-            end_date: m.newEnd,
-          }),
-        })
-        if (!res.ok) {
-          throw new Error(await formatApiError(res))
-        }
-      }
-      await fetchState()
-    } catch (err) {
-      console.error('[replan]', err)
-      setStatus('error')
-      alert(`Erreur pendant la replanification : ${(err as Error).message}`)
-    }
+    await submitReplanMoves(moves)
   }
 
   /** Décalle la fenêtre temporelle de N jours (négatif = passé). */

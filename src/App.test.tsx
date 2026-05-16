@@ -768,6 +768,78 @@ describe("App — bandeau d'incohérence (v1.21)", () => {
   })
 })
 
+// =============================================================================
+// v1.22 — Auto-replan après enregistrement d'une tâche
+// =============================================================================
+// Vérifie que :
+//   • cocher la case (par défaut) → un Replan complet est déclenché en
+//     cascade derrière le PATCH d'édition (séquence PATCH-edit → GET state
+//     → PATCH-replan(s) → GET state),
+//   • décocher la case → seul le PATCH d'édition est envoyé, AUCUN replan.
+// =============================================================================
+
+describe("App — auto-replan après modification d'une tâche (v1.22)", () => {
+  // Réutilise le scénario de surcharge Alice (`mkOverloadedState` plus haut)
+  // : 2 tâches qui se chevauchent sur le même collab → le PATCH d'édition
+  // est suivi d'un PATCH sur la tâche poussée par le Replan automatique.
+  it("case cochée par défaut : un Replan suit le PATCH d'édition", async () => {
+    const { calls } = setupFetchMock(mkOverloadedState())
+    render(<App />)
+    await waitFor(() => screen.getByRole('combobox'))
+
+    // Ouvre l'éditeur pour t1a en cliquant sur la ligne (drag handle).
+    const row = document.querySelector(
+      '[draggable="true"][title="Recherche audience"]',
+    ) as HTMLElement
+    fireEvent.click(row)
+    await screen.findByRole('heading', { name: /Modifier/ })
+
+    // Case cochée par défaut → simple « Enregistrer ».
+    fireEvent.click(screen.getByRole('button', { name: /Enregistrer/ }))
+
+    // On attend qu'un PATCH d'auto-replan parte sur t1b (la tâche en surcharge,
+    // déplacée par le Replan automatique). Ne pas tester l'URL exacte du
+    // PATCH d'édition (peu intéressant ici) — on veut surtout la cascade.
+    await waitFor(() => {
+      const replanPatches = calls.filter(
+        (c) => c.method === 'PATCH' && c.url === '/api/tasks/t1b',
+      )
+      expect(replanPatches.length).toBeGreaterThan(0)
+      const body = JSON.parse(replanPatches[0].body!)
+      expect(body.start_date).toBe('2026-06-01')
+    })
+  })
+
+  it("case décochée : aucun replan, seul le PATCH d'édition part", async () => {
+    const { calls } = setupFetchMock(mkOverloadedState())
+    render(<App />)
+    await waitFor(() => screen.getByRole('combobox'))
+
+    const row = document.querySelector(
+      '[draggable="true"][title="Recherche audience"]',
+    ) as HTMLElement
+    fireEvent.click(row)
+    await screen.findByRole('heading', { name: /Modifier/ })
+
+    // Décoche la case.
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: /Replanifier le projet/ }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Enregistrer/ }))
+
+    // Donne le temps aux fetch éventuels d'arriver, puis assert NÉGATIF.
+    await waitFor(() => {
+      expect(
+        calls.find((c) => c.method === 'PATCH' && c.url === '/api/tasks/t1a'),
+      ).toBeDefined()
+    })
+    // Aucun PATCH n'est parti sur t1b (= aucun replan déclenché).
+    expect(
+      calls.find((c) => c.method === 'PATCH' && c.url === '/api/tasks/t1b'),
+    ).toBeUndefined()
+  })
+})
+
 describe('App — robustesse réseau', () => {
   it('erreur HTTP sur /api/state → status passe à error sans crash', async () => {
     // v1.17 — Le composant log volontairement l'erreur via console.error.

@@ -364,3 +364,100 @@ describe('TaskEditor — couleur', () => {
     expect(onSave.mock.calls[0][0].color).toBeNull()
   })
 })
+
+// =============================================================================
+// v1.22 — Case « Replanifier après enregistrement »
+// =============================================================================
+// Vérifie que la case est cochée par défaut, visible UNIQUEMENT en mode
+// édition, et qu'elle est transmise au caller via `options.replan` lors de
+// l'appel à `onSave`.
+// =============================================================================
+
+describe('TaskEditor — case "Replanifier après enregistrement" (v1.22)', () => {
+  it('affiche la case en mode édition, cochée par défaut', () => {
+    render(
+      <TaskEditor
+        task={mkTask()}
+        collaborators={COLLABS}
+        tasks={[]}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    const checkbox = screen.getByRole('checkbox', {
+      name: /Replanifier le projet/,
+    }) as HTMLInputElement
+    expect(checkbox).toBeInTheDocument()
+    expect(checkbox.checked).toBe(true)
+  })
+
+  it("ne s'affiche PAS en mode création", () => {
+    render(
+      <TaskEditor
+        task={null}
+        defaults={{ start_date: '2026-05-01' }}
+        collaborators={COLLABS}
+        tasks={[]}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    expect(
+      screen.queryByRole('checkbox', { name: /Replanifier le projet/ }),
+    ).toBeNull()
+  })
+
+  it('transmet `replan: true` par défaut au caller', () => {
+    const onSave = vi.fn()
+    render(
+      <TaskEditor
+        task={mkTask()}
+        collaborators={COLLABS}
+        tasks={[]}
+        onSave={onSave}
+        onClose={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Enregistrer/ }))
+    expect(onSave).toHaveBeenCalledTimes(1)
+    expect(onSave.mock.calls[0][1]).toEqual({ replan: true })
+  })
+
+  it('transmet `replan: false` quand la case est décochée', () => {
+    const onSave = vi.fn()
+    render(
+      <TaskEditor
+        task={mkTask()}
+        collaborators={COLLABS}
+        tasks={[]}
+        onSave={onSave}
+        onClose={vi.fn()}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: /Replanifier le projet/ }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Enregistrer/ }))
+    expect(onSave.mock.calls[0][1]).toEqual({ replan: false })
+  })
+
+  it("ne passe PAS d'options en mode création (pas de case affichée)", () => {
+    const onSave = vi.fn()
+    render(
+      <TaskEditor
+        task={null}
+        defaults={{ start_date: '2026-05-01' }}
+        collaborators={COLLABS}
+        tasks={[]}
+        onSave={onSave}
+        onClose={vi.fn()}
+      />,
+    )
+    fireEvent.change(screen.getByLabelText(/Nom/), {
+      target: { value: 'Nouvelle' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Créer' }))
+    expect(onSave).toHaveBeenCalledTimes(1)
+    expect(onSave.mock.calls[0][1]).toBeUndefined()
+  })
+})

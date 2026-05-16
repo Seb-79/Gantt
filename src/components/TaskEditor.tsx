@@ -44,8 +44,15 @@ interface Props {
   collaborators: Collaborator[]
   /** Liste des tâches existantes (pour les menus parent / prédécesseur). */
   tasks: Task[]
-  /** Callback de validation. Reçoit les champs édités. */
-  onSave: (patch: Partial<Task>) => void
+  /**
+   * Callback de validation. Reçoit les champs édités.
+   *
+   * v1.22 — Deuxième paramètre `options.replan` : si `true`, le caller doit
+   * relancer un Replan complet juste après la sauvegarde. La case à cocher
+   * « Replanifier après enregistrement » (visible uniquement en mode édition)
+   * pilote cette intention. Défaut côté UI = coché → `true`.
+   */
+  onSave: (patch: Partial<Task>, options?: { replan?: boolean }) => void
   /** Callback fermeture sans sauver. */
   onClose: () => void
   /** Callback suppression (uniquement en mode édition). */
@@ -87,6 +94,14 @@ export default function TaskEditor({
   const [priority, setPriority] = useState<number | null>(null)
   /** Message d'erreur de validation à afficher dans le modal (null = OK). */
   const [error, setError] = useState<string | null>(null)
+  /**
+   * v1.22 — Coché par défaut en mode édition : à l'enregistrement, le caller
+   * relance un Replan complet sur le projet pour préserver les invariants
+   * (charge, prédécesseurs, priorités). Décocher la case permet à
+   * l'utilisateur de figer son geste (typiquement quand il veut placer une
+   * tâche dans le passé sans que l'algo la repousse).
+   */
+  const [replanAfterSave, setReplanAfterSave] = useState<boolean>(true)
 
   // Réinitialisation de l'état local à chaque ouverture (changement de
   // task ou defaults). setState dans l'effect est ici intentionnel —
@@ -326,25 +341,30 @@ export default function TaskEditor({
       return
     }
     setError(null)
-    onSave({
-      name: name.trim(),
-      kind,
-      start_date: startDate,
-      end_date: finalEnd,
-      progress,
-      // v1.6 — Une phase n'a ni collaborateur ni prédécesseur (forcés à null
-      // côté DAL aussi, mais on doublonne ici pour ne pas envoyer de bruit).
-      collaborator_id: kind === 'phase' ? null : collabId || null,
-      parent_id: parentId || null,
-      predecessor_id: kind === 'phase' ? null : predecessorId || null,
-      // v1.10 — Délai en jours ouvrés (uniquement si prédécesseur défini ;
-      // sinon le DAL le force à 0).
-      predecessor_lag: kind === 'phase' || !predecessorId ? 0 : lag,
-      // v1.18 — Priorité (1..5) ou null. Une phase n'a pas de priorité.
-      priority: kind === 'phase' ? null : priority,
-      // color: '' (vide) → null (= hériter automatiquement)
-      color: color || null,
-    })
+    onSave(
+      {
+        name: name.trim(),
+        kind,
+        start_date: startDate,
+        end_date: finalEnd,
+        progress,
+        // v1.6 — Une phase n'a ni collaborateur ni prédécesseur (forcés à null
+        // côté DAL aussi, mais on doublonne ici pour ne pas envoyer de bruit).
+        collaborator_id: kind === 'phase' ? null : collabId || null,
+        parent_id: parentId || null,
+        predecessor_id: kind === 'phase' ? null : predecessorId || null,
+        // v1.10 — Délai en jours ouvrés (uniquement si prédécesseur défini ;
+        // sinon le DAL le force à 0).
+        predecessor_lag: kind === 'phase' || !predecessorId ? 0 : lag,
+        // v1.18 — Priorité (1..5) ou null. Une phase n'a pas de priorité.
+        priority: kind === 'phase' ? null : priority,
+        // color: '' (vide) → null (= hériter automatiquement)
+        color: color || null,
+      },
+      // v1.22 — N'envoie l'option `replan` qu'en mode édition (la case n'est
+      // visible que là). À la création, le caller décidera lui-même.
+      task ? { replan: replanAfterSave } : undefined,
+    )
   }
 
   return (
@@ -656,6 +676,29 @@ export default function TaskEditor({
             )}
           </div>
         </div>
+
+        {/* v1.22 — Case « Replanifier après enregistrement », visible UNIQUEMENT
+            en mode édition. Cochée par défaut : à l'enregistrement, le caller
+            relance un Replan complet pour préserver les invariants métier
+            (charge collab, prédécesseurs, priorités). Décocher = figer son
+            geste — typiquement quand on a délibérément déplacé une tâche
+            dans le passé et qu'on ne veut pas la voir poussée. */}
+        {task && (
+          <label className="flex items-center gap-2 pt-2 text-sm text-slate-700 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-slate-300 accent-amber-500"
+              checked={replanAfterSave}
+              onChange={(e) => setReplanAfterSave(e.target.checked)}
+            />
+            <span>
+              🔄 Replanifier le projet après enregistrement
+              <span className="ml-1 text-xs text-slate-500">
+                (recommandé pour préserver charge et prédécesseurs)
+              </span>
+            </span>
+          </label>
+        )}
 
         <div className="flex justify-between pt-2">
           {task && onDelete ? (

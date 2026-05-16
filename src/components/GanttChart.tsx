@@ -13,6 +13,7 @@
 // =============================================================================
 
 import { useEffect, useMemo, useState } from 'react'
+import { format, parseISO } from 'date-fns'
 import {
   addDaysIso,
   addWorkingDays,
@@ -29,6 +30,18 @@ import {
   workingDaysBetween,
 } from '../lib/utils'
 import type { Collaborator, Task } from '../lib/types'
+
+/**
+ * v1.11 — Formatte une date ISO 'YYYY-MM-DD' en libellé court 'dd/MM'
+ * (sans l'année), pour l'affichage discret des bornes des barres dans
+ * le planning.
+ *
+ * @param iso  Date ISO YYYY-MM-DD.
+ * @returns    Chaîne au format 'dd/MM' (ex. '16/05').
+ */
+function formatShortDate(iso: string): string {
+  return format(parseISO(iso), 'dd/MM')
+}
 
 /**
  * Zone de drop calculée selon la position verticale du curseur dans la
@@ -75,6 +88,12 @@ interface Props {
     taskId: string,
     patch: { start_date?: string; end_date?: string },
   ) => void
+  /**
+   * v1.11 — Si true, affiche discrètement les dates de début et de fin
+   * de chaque barre (format 'dd/MM', sans l'année). Pour les jalons,
+   * seule la date du jalon est affichée.
+   */
+  showDates?: boolean
 }
 
 /**
@@ -90,6 +109,7 @@ export default function GanttChart({
   onTaskClick,
   onMoveTask,
   onResizeTask,
+  showDates = false,
 }: Props) {
   // Précalcul de la liste des jours et des groupes de mois (recalcul uniquement
   // si la fenêtre temporelle change).
@@ -327,9 +347,12 @@ export default function GanttChart({
       {/* ------------------------------------------------------------------ */}
       {/* COLONNE GAUCHE — libellés des tâches                                */}
       {/* ------------------------------------------------------------------ */}
-      <div className="shrink-0 w-72 border-r border-slate-300 bg-slate-50">
+      {/* v1.11 — Largeur compactée (w-60 = 240px, contre w-72 = 288px avant)
+          pour libérer de l'espace au profit du planning. Les paddings
+          internes (px-2 / pl: 8+indent) sont resserrés en cohérence. */}
+      <div className="shrink-0 w-60 border-r border-slate-300 bg-slate-50">
         {/* Header (2 lignes pour matcher la hauteur du header de droite) */}
-        <div className="h-14 border-b border-slate-300 flex items-center px-3 font-semibold text-slate-700 text-sm">
+        <div className="h-14 border-b border-slate-300 flex items-center px-2 font-semibold text-slate-700 text-sm">
           Tâches
         </div>
         {tasks.map((t) => {
@@ -351,11 +374,11 @@ export default function GanttChart({
               key={t.id}
               draggable
               className={[
-                'relative flex items-center border-b border-slate-200 px-3 text-sm cursor-pointer',
+                'relative flex items-center border-b border-slate-200 px-2 text-sm cursor-pointer',
                 isDragged ? 'opacity-40' : 'hover:bg-slate-100',
                 hover === 'inside' ? 'bg-blue-50' : '',
               ].join(' ')}
-              style={{ height: ROW_HEIGHT, paddingLeft: 12 + indent }}
+              style={{ height: ROW_HEIGHT, paddingLeft: 8 + indent }}
               onClick={() => {
                 // Ne pas ouvrir l'éditeur si on relâche un drag sur la même ligne.
                 if (draggedId) return
@@ -508,8 +531,9 @@ export default function GanttChart({
                       resizing,
                       handleBarMouseDown,
                       !!onResizeTask,
+                      showDates,
                     )
-                  : renderBar(t, windowStart, dayWidth, collabById)}
+                  : renderBar(t, windowStart, dayWidth, collabById, showDates)}
               </div>
             ))}
 
@@ -647,6 +671,63 @@ function PredecessorArrows({
 }
 
 /**
+ * v1.11 — Petites étiquettes de dates discrètes positionnées juste à
+ * l'extérieur des bords gauche / droit d'une barre. Format 'dd/MM'
+ * (jour/mois sans année). Rendues comme un fragment de spans
+ * absolument positionnés, à intégrer directement dans la `div` de la
+ * ligne (qui est en `position: relative`).
+ *
+ * @param leftPx   Position X (px) du bord gauche de la barre.
+ * @param widthPx  Largeur (px) de la barre.
+ * @param startIso Date de début ISO de la tâche.
+ * @param endIso   Date de fin ISO de la tâche.
+ * @param single   true → n'affiche qu'une seule date (jalon, à droite).
+ */
+function renderDateLabels(
+  leftPx: number,
+  widthPx: number,
+  startIso: string,
+  endIso: string,
+  single = false,
+) {
+  // Style commun : très petit, gris pâle, sans interception d'événement
+  // (sinon ces étiquettes intercepteraient le drag de la barre).
+  const baseStyle: React.CSSProperties = {
+    position: 'absolute',
+    top: ROW_HEIGHT / 2 - 6,
+    fontSize: 9,
+    lineHeight: '12px',
+    color: '#94a3b8', // slate-400 — volontairement discret
+    pointerEvents: 'none',
+    whiteSpace: 'nowrap',
+  }
+  return (
+    <>
+      {!single && (
+        <span
+          style={{
+            ...baseStyle,
+            // Aligné à droite contre le bord gauche de la barre.
+            left: leftPx - 4,
+            transform: 'translateX(-100%)',
+          }}
+        >
+          {formatShortDate(startIso)}
+        </span>
+      )}
+      <span
+        style={{
+          ...baseStyle,
+          left: leftPx + widthPx + 4,
+        }}
+      >
+        {formatShortDate(endIso)}
+      </span>
+    </>
+  )
+}
+
+/**
  * Rend la représentation visuelle d'une tâche : barre rectangulaire avec
  * progress bar interne, ou losange pour un jalon.
  *
@@ -654,12 +735,14 @@ function PredecessorArrows({
  * @param windowStart  Borne gauche du calendrier (YYYY-MM-DD).
  * @param dayWidth     Largeur d'un jour en pixels.
  * @param collabById   Map id → collaborateur (pour résoudre les couleurs).
+ * @param showDates    v1.11 — Si true, ajoute les libellés de dates (dd/MM).
  */
 function renderBar(
   task: Task,
   windowStart: string,
   dayWidth: number,
   collabById: Map<string, Collaborator>,
+  showDates: boolean,
 ) {
   const color = effectiveTaskColor(task, Array.from(collabById.values()))
   const left = dateToX(task.start_date, windowStart, dayWidth)
@@ -669,94 +752,114 @@ function renderBar(
   if (task.kind === 'phase') {
     const width = rangeToWidth(task.start_date, task.end_date, dayWidth)
     return (
-      <div
-        className="absolute pointer-events-none"
-        style={{
-          left,
-          top: ROW_HEIGHT / 2 - 5,
-          width,
-          height: 10,
-        }}
-        title={`Phase « ${task.name} » — ${task.start_date} → ${task.end_date}`}
-      >
-        {/* Barre principale */}
-        <div className="absolute inset-x-0 top-0 h-1.5 bg-slate-800 rounded-sm" />
-        {/* Chevron gauche (triangle pointant vers le bas) */}
+      <>
         <div
-          className="absolute left-0 top-0"
+          className="absolute pointer-events-none"
           style={{
-            width: 0,
-            height: 0,
-            borderLeft: '5px solid transparent',
-            borderRight: '5px solid transparent',
-            borderTop: '8px solid #1e293b', // slate-800
+            left,
+            top: ROW_HEIGHT / 2 - 5,
+            width,
+            height: 10,
           }}
-        />
-        {/* Chevron droit */}
-        <div
-          className="absolute right-0 top-0"
-          style={{
-            width: 0,
-            height: 0,
-            borderLeft: '5px solid transparent',
-            borderRight: '5px solid transparent',
-            borderTop: '8px solid #1e293b',
-          }}
-        />
-      </div>
+          title={`Phase « ${task.name} » — ${task.start_date} → ${task.end_date}`}
+        >
+          {/* Barre principale */}
+          <div className="absolute inset-x-0 top-0 h-1.5 bg-slate-800 rounded-sm" />
+          {/* Chevron gauche (triangle pointant vers le bas) */}
+          <div
+            className="absolute left-0 top-0"
+            style={{
+              width: 0,
+              height: 0,
+              borderLeft: '5px solid transparent',
+              borderRight: '5px solid transparent',
+              borderTop: '8px solid #1e293b', // slate-800
+            }}
+          />
+          {/* Chevron droit */}
+          <div
+            className="absolute right-0 top-0"
+            style={{
+              width: 0,
+              height: 0,
+              borderLeft: '5px solid transparent',
+              borderRight: '5px solid transparent',
+              borderTop: '8px solid #1e293b',
+            }}
+          />
+        </div>
+        {showDates &&
+          renderDateLabels(left, width, task.start_date, task.end_date)}
+      </>
     )
   }
 
   if (task.kind === 'milestone') {
     // Losange centré sur la date du jalon.
     const size = Math.max(12, Math.min(20, dayWidth - 2))
+    const diamondLeft = left + dayWidth / 2 - size / 2
     return (
-      <div
-        className="absolute"
-        style={{
-          left: left + dayWidth / 2 - size / 2,
-          top: (ROW_HEIGHT - size) / 2,
-          width: size,
-          height: size,
-          backgroundColor: color,
-          transform: 'rotate(45deg)',
-          borderRadius: 2,
-        }}
-        title={`${task.name} — ${task.start_date}`}
-      />
+      <>
+        <div
+          className="absolute"
+          style={{
+            left: diamondLeft,
+            top: (ROW_HEIGHT - size) / 2,
+            width: size,
+            height: size,
+            backgroundColor: color,
+            transform: 'rotate(45deg)',
+            borderRadius: 2,
+          }}
+          title={`${task.name} — ${task.start_date}`}
+        />
+        {/* v1.11 — Jalon : une seule date (start == end), à droite du losange. */}
+        {showDates &&
+          renderDateLabels(
+            diamondLeft,
+            size,
+            task.start_date,
+            task.start_date,
+            true,
+          )}
+      </>
     )
   }
 
   const width = rangeToWidth(task.start_date, task.end_date, dayWidth)
   return (
-    <div
-      className="absolute rounded shadow-sm overflow-hidden flex items-center"
-      style={{
-        left,
-        top: 4,
-        width,
-        height: ROW_HEIGHT - 8,
-        backgroundColor: color + '33', // 20% d'opacité — fond clair
-        border: `1px solid ${color}`,
-      }}
-      title={`${task.name} — ${task.start_date} → ${task.end_date} (${task.progress}%)`}
-    >
-      {/* Barre de progression */}
+    <>
       <div
-        className="absolute inset-y-0 left-0"
+        className="absolute rounded shadow-sm overflow-hidden flex items-center"
         style={{
-          width: `${task.progress}%`,
-          backgroundColor: color,
-          opacity: 0.7,
+          left,
+          top: 4,
+          width,
+          height: ROW_HEIGHT - 8,
+          backgroundColor: color + '33', // 20% d'opacité — fond clair
+          border: `1px solid ${color}`,
         }}
-      />
-      {/* Libellé interne (visible si la barre est assez large) */}
-      {width > 60 && (
-        <span className="relative px-2 text-[11px] font-medium text-slate-800 truncate">
-          {task.name}
-        </span>
-      )}
-    </div>
+        title={`${task.name} — ${task.start_date} → ${task.end_date} (${task.progress}%)`}
+      >
+        {/* Barre de progression */}
+        <div
+          className="absolute inset-y-0 left-0"
+          style={{
+            width: `${task.progress}%`,
+            backgroundColor: color,
+            opacity: 0.7,
+          }}
+        />
+        {/* Libellé interne (visible si la barre est assez large) */}
+        {width > 60 && (
+          <span className="relative px-2 text-[11px] font-medium text-slate-800 truncate">
+            {task.name}
+          </span>
+        )}
+      </div>
+      {showDates &&
+        renderDateLabels(left, width, task.start_date, task.end_date)}
+    </>
   )
 }
 
@@ -781,6 +884,7 @@ function renderBar(
  * @param resizing       État courant du drag (null = pas de drag).
  * @param onMouseDown    Handler à appeler au mousedown sur la barre.
  * @param enabled        true si le drag est actif (onResizeTask fourni).
+ * @param showDates      v1.11 — Affiche les dates de début/fin (dd/MM).
  */
 function renderInteractiveTaskBar(
   task: Task,
@@ -794,6 +898,7 @@ function renderInteractiveTaskBar(
   } | null,
   onMouseDown: (e: React.MouseEvent<HTMLDivElement>, task: Task) => void,
   enabled: boolean,
+  showDates: boolean,
 ) {
   const color = effectiveTaskColor(task, Array.from(collabById.values()))
   const baseLeft = dateToX(task.start_date, windowStart, dayWidth)
@@ -814,57 +919,68 @@ function renderInteractiveTaskBar(
   const cursor = enabled ? 'grab' : 'pointer'
 
   return (
-    <div
-      className="absolute rounded shadow-sm overflow-hidden flex items-center"
-      style={{
-        left: baseLeft + previewOffset,
-        top: 4,
-        width: baseWidth + previewExtraWidth,
-        height: ROW_HEIGHT - 8,
-        backgroundColor: color + '33', // 20% d'opacité — fond clair
-        border: `1px solid ${color}`,
-        cursor,
-        opacity: active ? 0.6 : 1,
-        // Empêche la sélection de texte / drag natif HTML5 pendant le drag.
-        userSelect: 'none',
-      }}
-      title={
-        enabled
-          ? `${task.name} — ${task.start_date} → ${task.end_date} (${task.progress}%)\nGlisser : décaler ; glisser le bord droit : allonger.`
-          : `${task.name} — ${task.start_date} → ${task.end_date} (${task.progress}%)`
-      }
-      onMouseDown={enabled ? (e) => onMouseDown(e, task) : undefined}
-    >
-      {/* Barre de progression */}
+    <>
       <div
-        className="absolute inset-y-0 left-0 pointer-events-none"
+        className="absolute rounded shadow-sm overflow-hidden flex items-center"
         style={{
-          width: `${task.progress}%`,
-          backgroundColor: color,
-          opacity: 0.7,
+          left: baseLeft + previewOffset,
+          top: 4,
+          width: baseWidth + previewExtraWidth,
+          height: ROW_HEIGHT - 8,
+          backgroundColor: color + '33', // 20% d'opacité — fond clair
+          border: `1px solid ${color}`,
+          cursor,
+          opacity: active ? 0.6 : 1,
+          // Empêche la sélection de texte / drag natif HTML5 pendant le drag.
+          userSelect: 'none',
         }}
-      />
-      {/* Libellé interne (visible si la barre est assez large) */}
-      {baseWidth + previewExtraWidth > 60 && (
-        <span className="relative px-2 text-[11px] font-medium text-slate-800 truncate pointer-events-none">
-          {task.name}
-        </span>
-      )}
-      {/* Poignée de redimensionnement (bord droit, 6 px) — visible uniquement
-          si le drag est activé. Curseur dédié pour signaler la zone. */}
-      {enabled && (
+        title={
+          enabled
+            ? `${task.name} — ${task.start_date} → ${task.end_date} (${task.progress}%)\nGlisser : décaler ; glisser le bord droit : allonger.`
+            : `${task.name} — ${task.start_date} → ${task.end_date} (${task.progress}%)`
+        }
+        onMouseDown={enabled ? (e) => onMouseDown(e, task) : undefined}
+      >
+        {/* Barre de progression */}
         <div
-          className="absolute top-0 right-0 h-full"
+          className="absolute inset-y-0 left-0 pointer-events-none"
           style={{
-            width: 6,
-            cursor: 'ew-resize',
-            // Léger fond au survol pour rendre la poignée découvrable.
-            background:
-              'linear-gradient(to right, transparent, rgba(0,0,0,0.08))',
+            width: `${task.progress}%`,
+            backgroundColor: color,
+            opacity: 0.7,
           }}
-          aria-hidden="true"
         />
-      )}
-    </div>
+        {/* Libellé interne (visible si la barre est assez large) */}
+        {baseWidth + previewExtraWidth > 60 && (
+          <span className="relative px-2 text-[11px] font-medium text-slate-800 truncate pointer-events-none">
+            {task.name}
+          </span>
+        )}
+        {/* Poignée de redimensionnement (bord droit, 6 px) — visible uniquement
+            si le drag est activé. Curseur dédié pour signaler la zone. */}
+        {enabled && (
+          <div
+            className="absolute top-0 right-0 h-full"
+            style={{
+              width: 6,
+              cursor: 'ew-resize',
+              // Léger fond au survol pour rendre la poignée découvrable.
+              background:
+                'linear-gradient(to right, transparent, rgba(0,0,0,0.08))',
+            }}
+            aria-hidden="true"
+          />
+        )}
+      </div>
+      {/* v1.11 — Dates de début/fin discrètes à l'extérieur des bords. Pendant
+          un drag, on suit le preview pour qu'elles bougent en cohérence. */}
+      {showDates &&
+        renderDateLabels(
+          baseLeft + previewOffset,
+          baseWidth + previewExtraWidth,
+          task.start_date,
+          task.end_date,
+        )}
+    </>
   )
 }

@@ -34,6 +34,9 @@ const POLL_INTERVAL = 5000
 /** Clé localStorage utilisée pour mémoriser le projet ouvert d'une session à l'autre. */
 const LS_CURRENT_PROJECT = 'gantt.currentProjectId'
 
+/** v1.11 — Clé localStorage pour mémoriser l'affichage des dates de barres. */
+const LS_SHOW_DATES = 'gantt.showDates'
+
 /** État réseau pour le badge en haut à droite. */
 type NetStatus = 'idle' | 'loading' | 'ok' | 'error'
 
@@ -65,6 +68,18 @@ export default function App() {
   const [editing, setEditing] = useState<Task | null>(null)
   /** true = modal en mode création. */
   const [creating, setCreating] = useState(false)
+  /**
+   * v1.11 — Affichage des dates de début/fin sur les barres du planning
+   * (format 'dd/MM'). Persisté en localStorage pour conserver le choix
+   * d'une session à l'autre.
+   */
+  const [showDates, setShowDates] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(LS_SHOW_DATES) === '1'
+    } catch {
+      return false
+    }
+  })
 
   /** Référence sur le bloc Gantt — utilisée pour la capture PNG. */
   const ganttRef = useRef<HTMLDivElement | null>(null)
@@ -329,6 +344,22 @@ export default function App() {
     mutate('PATCH', `/api/tasks/${taskId}`, patch)
   }
 
+  /**
+   * v1.11 — Bascule l'affichage des dates des barres et persiste le choix
+   * en localStorage.
+   */
+  const toggleShowDates = () => {
+    setShowDates((v) => {
+      const next = !v
+      try {
+        localStorage.setItem(LS_SHOW_DATES, next ? '1' : '0')
+      } catch {
+        // localStorage indisponible — on continue, l'état reste en mémoire.
+      }
+      return next
+    })
+  }
+
   /** Décalle la fenêtre temporelle de N jours (négatif = passé). */
   const shiftWindow = (days: number) => {
     setWindow((w) => {
@@ -477,6 +508,25 @@ export default function App() {
 
         {/* Actions globales — alignées à droite, icônes seules */}
         <div className="ml-auto flex items-center gap-1 shrink-0">
+          {/* v1.11 — Toggle d'affichage des dates de début/fin sur les barres.
+              État actif (showDates=true) souligné par un fond bleu pâle. */}
+          <button
+            className={[
+              'w-7 h-7 text-sm rounded border border-slate-300',
+              showDates
+                ? 'bg-blue-100 text-blue-700 border-blue-300'
+                : 'hover:bg-slate-100',
+            ].join(' ')}
+            onClick={toggleShowDates}
+            title={
+              showDates
+                ? 'Masquer les dates sur les barres'
+                : 'Afficher les dates de début/fin sur les barres'
+            }
+            aria-pressed={showDates}
+          >
+            📅
+          </button>
           <button
             className="h-7 px-2 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700"
             onClick={() => setCreating(true)}
@@ -517,6 +567,7 @@ export default function App() {
               onTaskClick={setEditing}
               onMoveTask={handleMoveTask}
               onResizeTask={handleResizeTask}
+              showDates={showDates}
             />
           </div>
         ) : (

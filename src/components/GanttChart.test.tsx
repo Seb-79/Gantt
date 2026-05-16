@@ -98,7 +98,9 @@ describe('GanttChart — rendu de base', () => {
 })
 
 describe('GanttChart — indentation hiérarchique', () => {
-  it('indente chaque niveau de 16 px (parent=0, enfant=16, petit-enfant=32)', () => {
+  // v1.11 — Padding de base réduit de 12 → 8 px (compaction de la colonne
+  // gauche), l'incrément d'indentation par niveau reste de 16 px.
+  it('indente chaque niveau de 16 px (parent=8, enfant=24, petit-enfant=40)', () => {
     const tasks: Task[] = [
       mkTask({ id: 'p1', name: 'Phase A', kind: 'phase' }),
       mkTask({ id: 'p1a', name: 'Sous-phase', kind: 'phase', parent_id: 'p1' }),
@@ -118,9 +120,9 @@ describe('GanttChart — indentation hiérarchique', () => {
       container.querySelector(
         `[draggable="true"][title="${name}"]`,
       ) as HTMLElement
-    expect(rowFor('Phase A').style.paddingLeft).toBe('12px')
-    expect(rowFor('Sous-phase').style.paddingLeft).toBe('28px')
-    expect(rowFor('Activité').style.paddingLeft).toBe('44px')
+    expect(rowFor('Phase A').style.paddingLeft).toBe('8px')
+    expect(rowFor('Sous-phase').style.paddingLeft).toBe('24px')
+    expect(rowFor('Activité').style.paddingLeft).toBe('40px')
   })
 })
 
@@ -239,6 +241,36 @@ describe('GanttChart — drag & drop', () => {
     fireEvent.drop(rowB, { dataTransfer, clientY: 0 })
     expect(onMoveTask).toHaveBeenCalled()
     expect(onMoveTask.mock.calls[0][0]).toBe('t1')
+  })
+})
+
+describe('GanttChart — affichage des dates (v1.11)', () => {
+  // Quand showDates est faux ou absent, aucun libellé 'dd/MM' ne doit
+  // apparaître à droite des barres. Quand il est vrai, on doit retrouver
+  // au moins les bornes de la tâche au format jour/mois (sans année).
+  it('masque les dates par défaut et les affiche avec showDates=true', () => {
+    const tasks = [
+      mkTask({
+        id: 't1',
+        name: 'T1',
+        start_date: '2026-05-04',
+        end_date: '2026-05-08',
+      }),
+    ]
+    const baseProps = {
+      windowStart: '2026-05-01',
+      windowEnd: '2026-05-31',
+      dayWidth: 20,
+      tasks,
+      collaborators: COLLABS,
+    }
+    const { container, rerender } = render(<GanttChart {...baseProps} />)
+    expect(container.textContent ?? '').not.toContain('04/05')
+    expect(container.textContent ?? '').not.toContain('08/05')
+
+    rerender(<GanttChart {...baseProps} showDates />)
+    expect(container.textContent ?? '').toContain('04/05')
+    expect(container.textContent ?? '').toContain('08/05')
   })
 })
 

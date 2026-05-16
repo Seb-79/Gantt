@@ -40,6 +40,9 @@ const LS_SHOW_DATES = 'gantt.showDates'
 /** v1.13 — Clé localStorage pour mémoriser l'affichage du nom dans les barres. */
 const LS_SHOW_BAR_NAMES = 'gantt.showBarNames'
 
+/** v1.13.1 — Clé localStorage pour mémoriser le niveau de zoom (dayWidth, px). */
+const LS_DAY_WIDTH = 'gantt.dayWidth'
+
 /** État réseau pour le badge en haut à droite. */
 type NetStatus = 'idle' | 'loading' | 'ok' | 'error'
 
@@ -63,8 +66,35 @@ export default function App() {
   )
   /** Statut réseau pour feedback visuel. */
   const [status, setStatus] = useState<NetStatus>('idle')
-  /** Largeur d'un jour en pixels — pilote le zoom. */
-  const [dayWidth, setDayWidth] = useState(DEFAULT_DAY_WIDTH)
+  /**
+   * Largeur d'un jour en pixels — pilote le zoom.
+   * v1.13.1 — Initialisé depuis localStorage si présent (valeur clampée
+   * pour rester dans [MIN_DAY_WIDTH, MAX_DAY_WIDTH] et survivre à un
+   * changement de bornes en code).
+   */
+  const [dayWidth, setDayWidth] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem(LS_DAY_WIDTH)
+      if (raw === null) return DEFAULT_DAY_WIDTH
+      const parsed = Number(raw)
+      if (!Number.isFinite(parsed)) return DEFAULT_DAY_WIDTH
+      return clampDayWidth(parsed)
+    } catch {
+      return DEFAULT_DAY_WIDTH
+    }
+  })
+
+  // v1.13.1 — Persistance du zoom : à chaque changement, on l'écrit en
+  // localStorage. Stocker en dehors du setter laisse la liberté d'écrire
+  // dayWidth depuis n'importe où (slider, +, −, raccourci futur) sans
+  // dupliquer la logique de persistance.
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_DAY_WIDTH, String(dayWidth))
+    } catch {
+      // localStorage indisponible — on continue.
+    }
+  }, [dayWidth])
   /** Bornes du calendrier visible (4 mois par défaut depuis aujourd'hui). */
   const [{ startIso, endIso }, setWindow] = useState(() => defaultWindow())
   /** Tâche en cours d'édition (null = pas de modal). */
@@ -560,7 +590,7 @@ export default function App() {
             }
             aria-pressed={showBarNames}
           >
-            Tt
+            T
           </button>
           {/* v1.11 — Toggle d'affichage des dates de début/fin sur les barres.
               État actif (showDates=true) souligné par un fond bleu pâle. */}

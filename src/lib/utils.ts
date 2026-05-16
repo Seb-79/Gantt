@@ -795,37 +795,64 @@ function pushTimelineInterval(
   timeline.set(collabId, intervals)
 }
 
-export function replanTasks(tasks: Task[]): ReplanMove[] {
-  const tasksById = new Map(tasks.map((t) => [t.id, t]))
-  const order = buildReplanOrder(tasks)
+/**
+ * v1.21 — Place UNE tâche dans le timeline en cherchant le 1er créneau libre,
+ * met à jour `proposed` et `timeline`. Extrait pour limiter la complexité
+ * cognitive de `replanTasks` (cf. sonarjs/cognitive-complexity).
+ *
+ * @param t          Tâche à placer (kind='task' garanti par le caller).
+ * @param tasksById  Index id → tâche du projet.
+ * @param proposed   Dates déjà proposées (sera mutée).
+ * @param timeline   Map id-collab → intervalles fixés (sera mutée).
+ */
+function placeTaskInTimeline(
+  t: Task,
+  tasksById: Map<string, Task>,
+  proposed: Map<string, { start: string; end: string }>,
+  timeline: Map<string, Array<[string, string]>>,
+): void {
+  const charge = Math.max(1, workingDaysBetween(t.start_date, t.end_date))
+  const earliest = computeReplanEarliestStart(t, tasksById, proposed)
+  const intervals = t.collaborator_id
+    ? timeline.get(t.collaborator_id) || []
+    : []
+  const newStart = t.collaborator_id
+    ? findFreeSlot(intervals, earliest, charge)
+    : earliest
+  const newEnd = addWorkingDays(newStart, charge)
+  proposed.set(t.id, { start: newStart, end: newEnd })
+  if (t.collaborator_id) {
+    pushTimelineInterval(timeline, t.collaborator_id, newStart, newEnd)
+  }
+}
 
-  // Dates proposées par tâche (init = dates actuelles).
-  const proposed = new Map<string, { start: string; end: string }>()
+/**
+ * v1.21 — Pré-remplit la timeline des collaborateurs avec les tâches LOCKÉES
+ * (= non concernées en mode partiel). Ces tâches gardent leurs dates et
+ * bloquent les créneaux correspondants. Extrait de `replanTasks` pour
+ * limiter la complexité cognitive.
+ */
+function prefillLockedIntervals(
+  tasks: Task[],
+  concernedIds: Set<string>,
+  timeline: Map<string, Array<[string, string]>>,
+): void {
   for (const t of tasks) {
-    proposed.set(t.id, { start: t.start_date, end: t.end_date })
+    if (t.kind !== 'task' || !t.collaborator_id) continue
+    if (concernedIds.has(t.id)) continue
+    pushTimelineInterval(timeline, t.collaborator_id, t.start_date, t.end_date)
   }
+}
 
-  // Timeline (intervalles fixés) par collaborateur — bornes INCLUSIVES en
-  // jours ouvrés (compatibles avec `findFreeSlot`).
-  const timeline = new Map<string, Array<[string, string]>>()
-
-  for (const t of order) {
-    const charge = Math.max(1, workingDaysBetween(t.start_date, t.end_date))
-    const earliest = computeReplanEarliestStart(t, tasksById, proposed)
-    const intervals = t.collaborator_id
-      ? timeline.get(t.collaborator_id) || []
-      : []
-    const newStart = t.collaborator_id
-      ? findFreeSlot(intervals, earliest, charge)
-      : earliest
-    const newEnd = addWorkingDays(newStart, charge)
-    proposed.set(t.id, { start: newStart, end: newEnd })
-    if (t.collaborator_id) {
-      pushTimelineInterval(timeline, t.collaborator_id, newStart, newEnd)
-    }
-  }
-
-  // Ne renvoie QUE les tâches dont les dates changent réellement.
+/**
+ * v1.21 — Construit la liste finale des `ReplanMove` en ne gardant QUE les
+ * tâches dont les dates proposées diffèrent des dates d'origine. Extrait
+ * pour limiter la complexité cognitive de `replanTasks`.
+ */
+function buildReplanMoves(
+  order: Task[],
+  proposed: Map<string, { start: string; end: string }>,
+): ReplanMove[] {
   const moves: ReplanMove[] = []
   for (const t of order) {
     const p = proposed.get(t.id)
@@ -842,6 +869,357 @@ export function replanTasks(tasks: Task[]): ReplanMove[] {
     })
   }
   return moves
+}
+
+export function replanTasks(
+  tasks: Task[],
+  concernedIds?: Set<string>,
+): ReplanMove[] {
+  // v1.21 — `concernedIds` actif → replan PARTIEL : seules les tâches
+  // listées peuvent voir leurs dates modifiées. Les autres sont LOCKÉES à
+  // leurs dates actuelles ET ajoutées au timeline du collaborateur (=
+  // obstacles à contourner). Si `concernedIds` est `undefined`, le replan
+  // est COMPLET (comportement historique : toutes les tâches `task` sont
+  // candidates au déplacement).
+  const isPartial = !!concernedIds
+  const isConcerned = (id: string) =>
+    !isPartial || (concernedIds as Set<string>).has(id)
+
+  const tasksById = new Map(tasks.map((t) => [t.id, t]))
+  const order = buildReplanOrder(tasks)
+
+  // Dates proposées par tâche (init = dates actuelles).
+  const proposed = new Map<string, { start: string; end: string }>()
+  for (const t of tasks) {
+    proposed.set(t.id, { start: t.start_date, end: t.end_date })
+  }
+
+  // Timeline (intervalles fixés) par collaborateur — bornes INCLUSIVES en
+  // jours ouvrés (compatibles avec `findFreeSlot`).
+  const timeline = new Map<string, Array<[string, string]>>()
+  if (isPartial) {
+    prefillLockedIntervals(tasks, concernedIds as Set<string>, timeline)
+  }
+
+  for (const t of order) {
+    if (!isConcerned(t.id)) continue
+    placeTaskInTimeline(t, tasksById, proposed, timeline)
+  }
+
+  return buildReplanMoves(order, proposed)
+}
+
+/**
+ * v1.20 — Filtre les tâches dont AU MOINS UN ancêtre (transitif) est dans
+ * `collapsedPhases`. Les phases elles-mêmes restent toujours visibles ;
+ * seuls leurs descendants (directs ou indirects) sont masqués.
+ *
+ * Utilisé côté GanttChart pour permettre à l'utilisateur de plier/déplier
+ * une phase et masquer toute son arborescence d'enfants. La logique est
+ * uniquement visuelle : aucune donnée n'est modifiée côté serveur, et
+ * `replanTasks` continue de raisonner sur la liste complète.
+ *
+ * @param tasks            Liste hiérarchique des tâches.
+ * @param collapsedPhases  Set d'ids de phases actuellement repliées.
+ * @returns                Sous-liste des tâches à afficher (ordre préservé).
+ */
+export function filterCollapsed(
+  tasks: Task[],
+  collapsedPhases: Set<string>,
+): Task[] {
+  if (collapsedPhases.size === 0) return tasks
+  const byId = new Map<string, Task>()
+  for (const t of tasks) byId.set(t.id, t)
+  /** Vrai si un ancêtre `phase` de la tâche est replié. */
+  function hasCollapsedAncestor(t: Task): boolean {
+    let cur = t.parent_id ? byId.get(t.parent_id) : null
+    // Sécurité anti-cycle : on borne le nombre d'itérations à la taille de
+    // l'arbre (en pratique, le `parent_id` ne cycle pas dans nos données).
+    let safety = tasks.length + 1
+    while (cur && safety-- > 0) {
+      if (cur.kind === 'phase' && collapsedPhases.has(cur.id)) return true
+      cur = cur.parent_id ? byId.get(cur.parent_id) : null
+    }
+    return false
+  }
+  return tasks.filter((t) => !hasCollapsedAncestor(t))
+}
+
+// -----------------------------------------------------------------------------
+// COHÉRENCE (v1.21) — détection d'incohérences après déplacement libre
+// -----------------------------------------------------------------------------
+// Depuis la v1.21 l'utilisateur peut déplacer une activité dans le passé
+// par drag (le geste n'est plus bridé vers la droite). Les règles métier
+// ne sont donc plus garanties à tout instant : on les vérifie a posteriori
+// via cette fonction PURE et on les remonte dans un bandeau d'alerte au-
+// dessus du planning (cf. `CoherenceAlert`). « Replan » (complet ou partiel)
+// reste l'outil de remise en cohérence.
+// -----------------------------------------------------------------------------
+
+/** v1.21 — Catégorie d'incohérence détectée par `checkCoherence`. */
+export type CoherenceIssueKind = 'overload' | 'predecessor' | 'priority'
+
+/** v1.21 — Une incohérence remontée pour affichage dans le bandeau. */
+export interface CoherenceIssue {
+  /** Type de règle violée. */
+  kind: CoherenceIssueKind
+  /** `error` = bloquant logique (à corriger) ; `warning` = à examiner. */
+  severity: 'error' | 'warning'
+  /** Ids des tâches impliquées (1 ou 2, dans l'ordre où elles concernent
+   *  la règle ; pour les paires : [tâche pivot, tâche en conflit]). */
+  taskIds: string[]
+  /** Message lisible (français), prêt à afficher dans l'UI. */
+  message: string
+}
+
+/**
+ * v1.21 — Détecte les surcharges entre tâches d'un même collaborateur. Une
+ * surcharge = deux tâches `kind='task'` du même collab dont les plages
+ * `[start_date, end_date]` se chevauchent d'au moins UN jour. Les tâches sans
+ * collaborateur sont ignorées (la charge n'est imputable à personne).
+ *
+ * Tri par `start_date` puis double boucle bornée (on coupe dès que `b.start >
+ * a.end` car les intervalles sont triés). Complexité ≈ O(n²) au pire cas
+ * (toutes les tâches sur le même collab et même plage), mais en pratique
+ * O(n log n) — largement suffisant à l'échelle d'un projet.
+ *
+ * @param tasks  Toutes les tâches du projet (kind quelconque).
+ * @returns      Une issue par PAIRE en conflit (pas par tâche).
+ */
+/**
+ * v1.21 — Groupe les tâches `kind='task'` par collaborateur. Helper interne
+ * utilisé par les détecteurs d'incohérences pour limiter la complexité
+ * cognitive et factoriser le filtre commun.
+ */
+function groupTasksByCollab(tasks: Task[]): Map<string, Task[]> {
+  const byCollab = new Map<string, Task[]>()
+  for (const t of tasks) {
+    if (t.kind !== 'task' || !t.collaborator_id) continue
+    const arr = byCollab.get(t.collaborator_id) || []
+    arr.push(t)
+    byCollab.set(t.collaborator_id, arr)
+  }
+  return byCollab
+}
+
+/**
+ * v1.21 — Recherche les surcharges au sein d'une liste de tâches du même
+ * collaborateur, déjà triée par `start_date`. Le tri permet de couper la
+ * boucle dès que la 2e tâche démarre après la fin de la 1re.
+ */
+function findOverloadPairs(list: Task[]): CoherenceIssue[] {
+  const issues: CoherenceIssue[] = []
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      const a = list[i]
+      const b = list[j]
+      if (b.start_date > a.end_date) break
+      issues.push({
+        kind: 'overload',
+        severity: 'error',
+        taskIds: [a.id, b.id],
+        message: `Surcharge : « ${a.name} » et « ${b.name} » se chevauchent sur le même collaborateur.`,
+      })
+    }
+  }
+  return issues
+}
+
+function detectOverloads(tasks: Task[]): CoherenceIssue[] {
+  const byCollab = groupTasksByCollab(tasks)
+  const issues: CoherenceIssue[] = []
+  for (const list of byCollab.values()) {
+    list.sort((a, b) => a.start_date.localeCompare(b.start_date))
+    issues.push(...findOverloadPairs(list))
+  }
+  return issues
+}
+
+/**
+ * v1.21 — Détecte les violations de la contrainte de prédécesseur : une tâche
+ * dont la date de début est strictement antérieure à la fin de son prédécesseur
+ * (lag stocké ignoré ici — on signale juste l'incohérence brute, charge à
+ * « Replan » de la corriger). Le DAL serveur réaligne normalement la start
+ * sur pred.end_date lors d'un PATCH avec start_date, mais si la base est dans
+ * un état hérité d'une ancienne version (ou modifié hors API) on reste robuste.
+ *
+ * @param tasks  Toutes les tâches du projet.
+ * @returns      Une issue par tâche en violation.
+ */
+function detectPredecessorViolations(tasks: Task[]): CoherenceIssue[] {
+  const byId = new Map(tasks.map((t) => [t.id, t]))
+  const issues: CoherenceIssue[] = []
+  for (const t of tasks) {
+    if (t.kind === 'phase' || !t.predecessor_id) continue
+    const pred = byId.get(t.predecessor_id)
+    if (!pred) continue
+    if (t.start_date < pred.end_date) {
+      issues.push({
+        kind: 'predecessor',
+        severity: 'error',
+        taskIds: [t.id, pred.id],
+        message: `Prédécesseur : « ${t.name} » commence le ${t.start_date}, avant la fin de « ${pred.name} » (${pred.end_date}).`,
+      })
+    }
+  }
+  return issues
+}
+
+/**
+ * v1.21 — Détecte les violations de PRIORITÉ entre tâches d'un même
+ * collaborateur. Règle : si A et B partagent un collaborateur et ont chacune
+ * une priorité saisie (1..5), la moins prioritaire (priorité numérique la
+ * plus grande) ne doit pas commencer AVANT la plus prioritaire.
+ *
+ * Hypothèses pour limiter le bruit :
+ *   • on ne flague que lorsque les DEUX tâches ont une priorité explicite
+ *     (`priority != null`) — pour les couples « priorisé vs non priorisé »,
+ *     l'arbitrage est laissé à l'utilisateur (la convention de tri du replan
+ *     les considère équivalent à priority=6) ;
+ *   • on ne flague que lorsque les priorités diffèrent strictement ;
+ *   • les jalons et phases sont ignorés (ils n'ont pas de priorité).
+ *
+ * @param tasks  Toutes les tâches du projet.
+ * @returns      Une issue par paire en violation.
+ */
+/**
+ * v1.21 — Détecte la violation de priorité entre 2 tâches d'un même
+ * collaborateur, sous la convention « priorité numérique la plus basse =
+ * la plus prioritaire ». Renvoie `null` quand la paire est saine.
+ */
+function priorityIssueForPair(a: Task, b: Task): CoherenceIssue | null {
+  if (a.priority == null || b.priority == null) return null
+  if (a.priority === b.priority) return null
+  const high = a.priority < b.priority ? a : b
+  const low = high === a ? b : a
+  if (low.start_date >= high.start_date) return null
+  return {
+    kind: 'priority',
+    severity: 'warning',
+    taskIds: [high.id, low.id],
+    message: `Priorité : « ${low.name} » (P${low.priority}) commence avant « ${high.name} » (P${high.priority}), plus prioritaire.`,
+  }
+}
+
+function detectPriorityViolations(tasks: Task[]): CoherenceIssue[] {
+  // Filtre dès le départ pour ne garder que les tâches avec priorité saisie.
+  const prioritized = tasks.filter(
+    (t) => t.kind === 'task' && t.collaborator_id && t.priority != null,
+  )
+  const byCollab = new Map<string, Task[]>()
+  for (const t of prioritized) {
+    const arr = byCollab.get(t.collaborator_id as string) || []
+    arr.push(t)
+    byCollab.set(t.collaborator_id as string, arr)
+  }
+  const issues: CoherenceIssue[] = []
+  for (const list of byCollab.values()) {
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const issue = priorityIssueForPair(list[i], list[j])
+        if (issue) issues.push(issue)
+      }
+    }
+  }
+  return issues
+}
+
+/**
+ * v1.21 — Audit de cohérence du projet : agrège toutes les règles métier en
+ * une liste d'incohérences à afficher dans un bandeau au-dessus du planning.
+ *
+ * Fonction PURE et déterministe : aucune mutation, aucun appel réseau. Conçue
+ * pour être appelée à chaque changement de tâches (drag, save, polling) — la
+ * complexité reste largement sous la milliseconde sur des projets de quelques
+ * centaines de tâches.
+ *
+ * Règles auditées :
+ *   • `overload`    (erreur)    : 2 tâches d'un même collaborateur qui se
+ *                                 chevauchent ;
+ *   • `predecessor` (erreur)    : tâche démarrant avant la fin de son
+ *                                 prédécesseur ;
+ *   • `priority`    (warning)   : tâche moins prioritaire devançant une plus
+ *                                 prioritaire sur un même collaborateur.
+ *
+ * @param tasks  Toutes les tâches du projet (kind quelconque).
+ * @returns      Liste plate d'incohérences ; vide = projet cohérent.
+ */
+export function checkCoherence(tasks: Task[]): CoherenceIssue[] {
+  return [
+    ...detectOverloads(tasks),
+    ...detectPredecessorViolations(tasks),
+    ...detectPriorityViolations(tasks),
+  ]
+}
+
+/**
+ * v1.21 — Calcule l'ensemble des tâches « concernées » par une liste
+ * d'incohérences = tâches directement impliquées + tous leurs descendants
+ * (enfants de phases) + tous leurs successeurs transitifs (chaîne
+ * `predecessor_id`). Sert au « Replan partiel » : on ne déplace que ces
+ * tâches-là, le reste du planning est verrouillé.
+ *
+ * @param issues  Issues issues de `checkCoherence`.
+ * @param tasks   Liste complète des tâches du projet.
+ * @returns       Set d'ids à passer à `replanTasks(tasks, concernedIds)`.
+ */
+/**
+ * v1.21 — Indexe les ids des successeurs par prédécesseur. Helper interne
+ * pour `concernedTaskIds`.
+ */
+function indexSuccessorsByPredecessor(tasks: Task[]): Map<string, string[]> {
+  const byPred = new Map<string, string[]>()
+  for (const t of tasks) {
+    if (!t.predecessor_id) continue
+    const arr = byPred.get(t.predecessor_id) || []
+    arr.push(t.id)
+    byPred.set(t.predecessor_id, arr)
+  }
+  return byPred
+}
+
+/**
+ * v1.21 — BFS sur le graphe `successors` à partir d'un ensemble initial,
+ * en ajoutant chaque successeur visité à `out`. Borné pour éviter toute
+ * boucle infinie en cas de cycle (anormal mais on protège).
+ */
+function expandSuccessors(
+  out: Set<string>,
+  successors: Map<string, string[]>,
+  cap: number,
+): void {
+  const queue = [...out]
+  let safety = cap
+  while (queue.length > 0 && safety-- > 0) {
+    const id = queue.shift() as string
+    for (const succId of successors.get(id) || []) {
+      if (out.has(succId)) continue
+      out.add(succId)
+      queue.push(succId)
+    }
+  }
+}
+
+export function concernedTaskIds(
+  issues: CoherenceIssue[],
+  tasks: Task[],
+): Set<string> {
+  const out = new Set<string>()
+  for (const i of issues) {
+    for (const id of i.taskIds) out.add(id)
+  }
+  expandSuccessors(
+    out,
+    indexSuccessorsByPredecessor(tasks),
+    tasks.length * tasks.length + 1,
+  )
+  // Descendants (enfants des phases concernées). Une phase n'est jamais
+  // directement déplaçable, mais ses enfants doivent rester libres si la
+  // phase elle-même est mentionnée.
+  for (const t of tasks) {
+    if (t.parent_id && out.has(t.parent_id)) out.add(t.id)
+  }
+  return out
 }
 
 /**

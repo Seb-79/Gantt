@@ -52,6 +52,70 @@ function formatShortDate(iso: string): string {
 type DropZone = 'before' | 'inside' | 'after'
 
 /**
+ * v1.21 — Forme commune d'un drag actif sur une barre. Extrait au module
+ * pour pouvoir typer les helpers `applyMoveDrag` / `applyResizeEndDrag` sans
+ * les coupler à l'état React du composant.
+ */
+type ActiveResize = {
+  task: Task
+  mode: 'move' | 'resize-end'
+  startX: number
+  origStart: string
+  origEnd: string
+  deltaDays: number
+}
+
+/**
+ * v1.21 — Applique un drag en mode `move` : décale start ET end de la même
+ * quantité de jours ouvrés (la charge est préservée). Snap selon le sens du
+ * geste pour ne pas annuler une fraction du mouvement quand on traverse un
+ * week-end.
+ *
+ * @param r       État actif du drag.
+ * @param notify  Callback de remontée vers le parent (PATCH dates).
+ */
+function applyMoveDrag(
+  r: ActiveResize,
+  notify: (
+    id: string,
+    patch: { start_date?: string; end_date?: string },
+  ) => void,
+) {
+  const charge = Math.max(1, workingDaysBetween(r.origStart, r.origEnd))
+  const target = addDaysIso(r.origStart, r.deltaDays)
+  const newStart =
+    r.deltaDays < 0
+      ? snapBackwardToWorkingDay(target)
+      : snapForwardToWorkingDay(target)
+  const newEnd = addWorkingDays(newStart, charge)
+  notify(r.task.id, { start_date: newStart, end_date: newEnd })
+}
+
+/**
+ * v1.21 — Applique un drag en mode `resize-end` : seule la fin bouge. Snap
+ * selon le sens du geste, puis clampe à `start_date` pour garantir au moins
+ * 1 jour de barre.
+ *
+ * @param r       État actif du drag.
+ * @param notify  Callback de remontée vers le parent (PATCH end_date).
+ */
+function applyResizeEndDrag(
+  r: ActiveResize,
+  notify: (
+    id: string,
+    patch: { start_date?: string; end_date?: string },
+  ) => void,
+) {
+  const target = addDaysIso(r.origEnd, r.deltaDays)
+  let newEnd =
+    r.deltaDays < 0
+      ? snapBackwardToWorkingDay(target)
+      : snapForwardToWorkingDay(target)
+  if (newEnd < r.origStart) newEnd = r.origStart
+  if (newEnd !== r.origEnd) notify(r.task.id, { end_date: newEnd })
+}
+
+/**
  * Hauteur fixe d'une ligne (px) — synchronisée colonne gauche / barres.
  * v1.15 — Réduite de 32 → 26 px pour densifier la liste des tâches. La
  * barre interne (top:4, height: ROW_HEIGHT - 8 = 18 px) reste largement
@@ -74,8 +138,16 @@ interface Props {
   windowEnd: string
   /** Largeur d'un jour en pixels (zoom). */
   dayWidth: number
-  /** Tâches à afficher (déjà ordonnées). */
+  /** Tâches à afficher (déjà ordonnées, déjà filtrées des phases repliées). */
   tasks: Task[]
+  /**
+   * v1.20 — Liste COMPLÈTE des tâches (incl. celles cachées par le repli).
+   * Utilisée pour décider si une phase doit afficher un chevron (= a au moins
+   * un enfant dans les données, même s'il est actuellement masqué). Si non
+   * fournie, on retombe sur `tasks` (les phases sans enfant ne montrent pas
+   * de chevron).
+   */
+  allTasks?: Task[]
   /** Collaborateurs (pour résoudre les couleurs et noms). */
   collaborators: Collaborator[]
   /** Callback lors du clic sur une ligne (édition). */
@@ -123,6 +195,18 @@ interface Props {
    * absent, le panneau reste statique (boutons de navigation seuls).
    */
   onShiftWindow?: (days: number) => void
+  /**
+   * v1.20 — Set d'ids de phases actuellement repliées (info purement
+   * visuelle, utilisée par l'App pour filtrer `tasks`). Le composant s'en
+   * sert pour afficher le bon glyphe de chevron (▼ déplié / ▶ replié).
+   */
+  collapsedPhases?: Set<string>
+  /**
+   * v1.20 — Callback appelé lorsqu'on clique sur le chevron d'une phase.
+   * Si non fourni, le chevron est masqué (la fonctionnalité de repli est
+   * désactivée).
+   */
+  onToggleCollapse?: (phaseId: string) => void
 }
 
 /**
@@ -134,6 +218,7 @@ export default function GanttChart({
   windowEnd,
   dayWidth,
   tasks,
+  allTasks,
   collaborators,
   onTaskClick,
   onMoveTask,
@@ -141,7 +226,21 @@ export default function GanttChart({
   showDates = false,
   showBarNames = true,
   onShiftWindow,
+  collapsedPhases,
+  onToggleCollapse,
 }: Props) {
+  // v1.20 — Set des ids de phases ayant au moins UN enfant (direct ou non).
+  // Calculé sur `allTasks` (= liste complète) pour ne pas perdre l'info quand
+  // une phase est repliée (ses enfants sont alors absents de `tasks`).
+  // Sert à n'afficher le chevron QUE sur les phases vraiment pliables.
+  const phasesWithChildren = useMemo(() => {
+    const src = allTasks ?? tasks
+    const set = new Set<string>()
+    for (const t of src) {
+      if (t.parent_id) set.add(t.parent_id)
+    }
+    return set
+  }, [allTasks, tasks])
   // v1.19 — Pan horizontal à la souris (cf. useHorizontalPan). Branché sur
   // le panneau scrollable de droite. Mousedown sur une BARRE est intercepté
   // par handleBarMouseDown via stopPropagation → aucune collision avec le
@@ -247,14 +346,11 @@ export default function GanttChart({
    * ouvrés), soit étend sa fin (mode 'resize-end' : end_date avance).
    * Le drag est contraint à aller vers la droite (deltaDays ≥ 0).
    */
-  const [resizing, setResizing] = useState<null | {
-    taskId: string
-    mode: 'move' | 'resize-end'
-    startX: number
-    origStart: string
-    origEnd: string
-    deltaDays: number
-  }>(null)
+  // v1.19.2 — Stocke la tâche elle-même (et plus seulement son id) pour
+  // pouvoir résoudre le « clic sans drag » (deltaDays === 0) au mouseup
+  // et appeler onTaskClick(task) sans avoir à relire `tasks` au moment
+  // de l'événement (fiabilise face aux changements concurrents).
+  const [resizing, setResizing] = useState<ActiveResize | null>(null)
 
   // Écoute mousemove / mouseup au niveau document tant qu'un drag est actif.
   // Sortie via useEffect pour pouvoir détacher proprement (et éviter les
@@ -267,9 +363,14 @@ export default function GanttChart({
       const rawDelta = (e.clientX - resizing.startX) / dayWidth
       let delta = Math.round(rawDelta)
       if (resizing.mode === 'move') {
-        // Spec : le DÉPLACEMENT par le corps de la barre se fait uniquement
-        // vers la droite (impossible de remonter dans le passé par geste).
-        delta = Math.max(0, delta)
+        // v1.21 — Le déplacement par le corps de la barre est désormais BIDIRECTIONNEL :
+        // l'utilisateur peut tirer la tâche dans le passé (delta < 0). Les
+        // règles métier (prédécesseurs, charge, priorités) ne sont plus
+        // verrouillées au moment du geste mais détectées a posteriori par
+        // `checkCoherence` et signalées dans le bandeau d'alerte au-dessus
+        // du planning. « Replan » (complet ou partiel) permet ensuite de
+        // restaurer la cohérence à la demande.
+        // Pas de clamp : delta reste signé.
       } else {
         // Spec v1.9 — Le redimensionnement de la fin peut aller dans les
         // DEUX sens : à droite pour allonger, à gauche pour raccourcir.
@@ -281,40 +382,21 @@ export default function GanttChart({
         setResizing({ ...resizing, deltaDays: delta })
       }
     }
-    /** Au relâchement, applique la modification si delta != 0. */
+    /**
+     * v1.19.2 — Au relâchement :
+     *   • si la souris n'a pas bougé d'au moins 1 jour (deltaDays === 0)
+     *     → c'est un CLIC simple sur la barre → ouvre l'éditeur via
+     *       onTaskClick (cohérent avec le clic dans la colonne gauche).
+     *   • sinon → applique le déplacement / redimensionnement via onResizeTask.
+     */
     function onUp() {
       if (!resizing) return
       const r = resizing
-      if (r.deltaDays !== 0 && onResizeTask) {
-        if (r.mode === 'move') {
-          // Conserve la charge (durée en jours ouvrés) : on recalcule end_date
-          // à partir du nouveau start aligné sur un jour ouvré.
-          const charge = Math.max(1, workingDaysBetween(r.origStart, r.origEnd))
-          const newStart = snapForwardToWorkingDay(
-            addDaysIso(r.origStart, r.deltaDays),
-          )
-          const newEnd = addWorkingDays(newStart, charge)
-          onResizeTask(r.taskId, {
-            start_date: newStart,
-            end_date: newEnd,
-          })
-        } else {
-          // resize-end : seule la fin bouge. Snap selon le sens du drag :
-          //   • delta > 0 (allongement) → jour ouvré suivant
-          //   • delta < 0 (raccourcissement) → jour ouvré précédent
-          // (sinon, raccourcir et tomber sur un samedi rallongerait au lundi
-          //  d'après, ce qui contrarie le geste de l'utilisateur).
-          const target = addDaysIso(r.origEnd, r.deltaDays)
-          let newEnd =
-            r.deltaDays < 0
-              ? snapBackwardToWorkingDay(target)
-              : snapForwardToWorkingDay(target)
-          // Clamp final : new_end ne peut pas descendre sous start_date.
-          if (newEnd < r.origStart) newEnd = r.origStart
-          if (newEnd !== r.origEnd) {
-            onResizeTask(r.taskId, { end_date: newEnd })
-          }
-        }
+      if (r.deltaDays === 0) {
+        onTaskClick?.(r.task)
+      } else if (onResizeTask) {
+        if (r.mode === 'move') applyMoveDrag(r, onResizeTask)
+        else applyResizeEndDrag(r, onResizeTask)
       }
       setResizing(null)
     }
@@ -324,7 +406,7 @@ export default function GanttChart({
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
-  }, [resizing, dayWidth, onResizeTask])
+  }, [resizing, dayWidth, onResizeTask, onTaskClick])
 
   /**
    * v1.9 — Démarre un drag sur une barre de tâche. Détecte le mode
@@ -341,7 +423,7 @@ export default function GanttChart({
     const mode: 'move' | 'resize-end' =
       distFromRight <= 8 ? 'resize-end' : 'move'
     setResizing({
-      taskId: task.id,
+      task,
       mode,
       startX: e.clientX,
       origStart: task.start_date,
@@ -465,7 +547,11 @@ export default function GanttChart({
                 isDragged ? 'opacity-40' : 'hover:bg-slate-100',
                 hover === 'inside' ? 'bg-blue-50' : '',
               ].join(' ')}
-              style={{ height: ROW_HEIGHT, paddingLeft: 8 + indent }}
+              // v1.19.3 — paddingLeft de base réduit de 8 → 2 px pour
+              // récupérer de la place à gauche de la colonne Tâches. L'incrément
+              // d'indentation (16 px par niveau) reste inchangé pour conserver
+              // une hiérarchie visible.
+              style={{ height: ROW_HEIGHT, paddingLeft: 2 + indent }}
               onClick={() => {
                 // Ne pas ouvrir l'éditeur si on relâche un drag sur la même ligne.
                 if (draggedId) return
@@ -524,11 +610,36 @@ export default function GanttChart({
               {t.kind === 'milestone' && (
                 <span className="text-amber-500 mr-1">◆</span>
               )}
-              {t.kind === 'phase' && (
-                <span className="text-slate-700 mr-1" title="Phase">
-                  🗂️
-                </span>
-              )}
+              {/* v1.20 — Pour les phases :
+                  - Si elle a au moins un enfant ET que le parent expose
+                    `onToggleCollapse` → on remplace 🗂️ par un chevron
+                    cliquable (▼ déplié / ▶ replié).
+                  - Sinon → on garde le 🗂️ informatif (phase sans enfant
+                    ou fonctionnalité de repli désactivée). */}
+              {t.kind === 'phase' &&
+                (onToggleCollapse && phasesWithChildren.has(t.id) ? (
+                  <button
+                    type="button"
+                    className="text-slate-600 hover:text-slate-900 mr-1 leading-none text-[10px] select-none"
+                    title={collapsedPhases?.has(t.id) ? 'Déplier' : 'Replier'}
+                    aria-label={
+                      collapsedPhases?.has(t.id) ? 'Déplier' : 'Replier'
+                    }
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      // Empêche l'ouverture de l'éditeur ET le démarrage
+                      // d'un drag-row sur la ligne (poignée ⋮⋮).
+                      e.stopPropagation()
+                      onToggleCollapse(t.id)
+                    }}
+                  >
+                    {collapsedPhases?.has(t.id) ? '▶' : '▼'}
+                  </button>
+                ) : (
+                  <span className="text-slate-700 mr-1" title="Phase">
+                    🗂️
+                  </span>
+                ))}
               <span
                 className={[
                   'truncate flex-1',
@@ -660,6 +771,10 @@ export default function GanttChart({
                       collabById,
                       showDates,
                       showBarNames,
+                      // v1.19.2 — onTaskClick : jalon/phase deviennent cliquables
+                      // dans le planning (cohérent avec le clic sur la barre
+                      // tâche et avec le clic dans la colonne gauche).
+                      onTaskClick,
                     )}
               </div>
             ))}
@@ -717,19 +832,30 @@ function PredecessorArrows({
   return (
     <svg
       className="absolute top-0 left-0 pointer-events-none"
+      // v1.19.2 — z-index 1 : place le SVG AU-DESSUS des éléments « auto »
+      // (cellules week-end grises, barre dark des phases) tout en restant
+      // SOUS les barres de tâches (z-index 2) et les étiquettes de dates
+      // (z-index 3). Résultat : la flèche est visible quand elle traverse
+      // une phase ou une colonne week-end, sans masquer les libellés.
+      style={{ zIndex: 1 }}
       width={totalWidth}
       height={tasks.length * ROW_HEIGHT}
     >
       <defs>
+        {/* v1.19.3 — Marker en `userSpaceOnUse` : taille fixée en pixels
+            indépendamment de strokeWidth (sinon la pointe est multipliée par
+            le strokeWidth=2, donnant un triangle de 16 px de côté trop gros).
+            Nouvelles dimensions : 8 × 6 px (au lieu de 16 × 16). */}
         <marker
           id="gantt-arrow"
+          markerUnits="userSpaceOnUse"
           markerWidth="8"
-          markerHeight="8"
+          markerHeight="6"
           refX="7"
-          refY="4"
+          refY="3"
           orient="auto"
         >
-          <path d="M0,0 L8,4 L0,8 Z" fill="#94a3b8" />
+          <path d="M0,0 L8,3 L0,6 Z" fill="#475569" />
         </marker>
       </defs>
       {tasks.map((t, i) => {
@@ -776,8 +902,10 @@ function PredecessorArrows({
           <path
             key={t.id}
             d={d}
-            stroke="#94a3b8"
-            strokeWidth="1.5"
+            // v1.19.2 — slate-600 + 2 px : visible sur les colonnes WE grises
+            // et au-dessus des barres de phase (cf. zIndex SVG = 1).
+            stroke="#475569"
+            strokeWidth="2"
             fill="none"
             markerEnd="url(#gantt-arrow)"
           />
@@ -833,6 +961,8 @@ function renderDateLabels(
     background: 'rgba(255,255,255,0.92)',
     padding: '0 3px',
     borderRadius: 2,
+    // v1.19.2 — z-index 3 : au-dessus des barres (2) et des flèches (1).
+    zIndex: 3,
   }
   return (
     <>
@@ -864,12 +994,19 @@ function renderDateLabels(
  * Rend la représentation visuelle d'une tâche : barre rectangulaire avec
  * progress bar interne, ou losange pour un jalon.
  *
+ * v1.19.2 — Ajout du `onTaskClick` : phases et jalons deviennent cliquables
+ * dans le planning (les tâches sont gérées via `renderInteractiveTaskBar`).
+ * Sur ces deux types, on stoppe la propagation du mousedown pour éviter
+ * que le pan souris (cf. useHorizontalPan branché sur le panneau parent)
+ * ne se déclenche en parallèle.
+ *
  * @param task         La tâche à rendre.
  * @param windowStart  Borne gauche du calendrier (YYYY-MM-DD).
  * @param dayWidth     Largeur d'un jour en pixels.
  * @param collabById   Map id → collaborateur (pour résoudre les couleurs).
  * @param showDates    v1.11 — Si true, ajoute les libellés de dates (dd/MM).
  * @param showBarNames v1.13 — Si true, écrit le nom de la tâche dans la barre.
+ * @param onTaskClick  v1.19.2 — Callback ouverture de l'éditeur sur clic.
  */
 function renderBar(
   task: Task,
@@ -878,7 +1015,12 @@ function renderBar(
   collabById: Map<string, Collaborator>,
   showDates: boolean,
   showBarNames: boolean,
+  onTaskClick?: (task: Task) => void,
 ) {
+  // v1.19.2 — Handlers communs aux phases et jalons pour ouvrir l'éditeur
+  // au clic ET empêcher que le mousedown ne démarre un pan parent.
+  const stopMouseDown = (e: React.MouseEvent) => e.stopPropagation()
+  const handleClick = () => onTaskClick?.(task)
   const color = effectiveTaskColor(task, Array.from(collabById.values()))
   const left = dateToX(task.start_date, windowStart, dayWidth)
 
@@ -889,14 +1031,19 @@ function renderBar(
     return (
       <>
         <div
-          className="absolute pointer-events-none"
+          // v1.19.2 — Plus de pointer-events-none : la phase doit recevoir le
+          // clic pour ouvrir l'éditeur. On stoppe le mousedown pour ne pas
+          // déclencher de pan parent (cf. useHorizontalPan).
+          className="absolute cursor-pointer"
+          onClick={handleClick}
+          onMouseDown={stopMouseDown}
           style={{
             left,
             top: ROW_HEIGHT / 2 - 5,
             width,
             height: 10,
           }}
-          title={`Phase « ${task.name} » — ${task.start_date} → ${task.end_date}`}
+          title={`Phase « ${task.name} » — ${task.start_date} → ${task.end_date} — cliquer pour modifier`}
         >
           {/* Barre principale */}
           <div className="absolute inset-x-0 top-0 h-1.5 bg-slate-800 rounded-sm" />
@@ -939,7 +1086,11 @@ function renderBar(
     return (
       <>
         <div
-          className="absolute"
+          // v1.19.2 — Cliquable pour ouvrir l'éditeur. stopMouseDown évite
+          // d'amorcer un pan parent.
+          className="absolute cursor-pointer"
+          onClick={handleClick}
+          onMouseDown={stopMouseDown}
           style={{
             left: diamondLeft,
             top: (ROW_HEIGHT - size) / 2,
@@ -948,8 +1099,10 @@ function renderBar(
             backgroundColor: color,
             transform: 'rotate(45deg)',
             borderRadius: 2,
+            // v1.19.2 — au-dessus du SVG flèches (1) comme les barres tâches.
+            zIndex: 2,
           }}
-          title={`${task.name} — ${task.start_date}`}
+          title={`${task.name} — ${task.start_date} — cliquer pour modifier`}
         />
         {/* v1.11 — Jalon : une seule date (start == end), à droite du losange. */}
         {showDates &&
@@ -1041,7 +1194,7 @@ function renderInteractiveTaskBar(
   dayWidth: number,
   collabById: Map<string, Collaborator>,
   resizing: {
-    taskId: string
+    task: Task
     mode: 'move' | 'resize-end'
     deltaDays: number
   } | null,
@@ -1057,7 +1210,7 @@ function renderInteractiveTaskBar(
   // Offset visuel pendant un drag actif sur CETTE tâche : décale la barre
   // (mode='move') ou allonge sa fin (mode='resize-end'). Ne touche pas les
   // autres tâches.
-  const active = resizing && resizing.taskId === task.id ? resizing : null
+  const active = resizing && resizing.task.id === task.id ? resizing : null
   const previewOffset =
     active && active.mode === 'move' ? active.deltaDays * dayWidth : 0
   const previewExtraWidth =
@@ -1083,6 +1236,10 @@ function renderInteractiveTaskBar(
           opacity: active ? 0.6 : 1,
           // Empêche la sélection de texte / drag natif HTML5 pendant le drag.
           userSelect: 'none',
+          // v1.19.2 — z-index 2 : au-dessus du SVG flèches (1) pour que la
+          // barre cache la flèche qui passerait derrière, et sous les
+          // étiquettes de dates (3).
+          zIndex: 2,
         }}
         title={
           enabled

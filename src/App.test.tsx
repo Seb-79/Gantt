@@ -399,7 +399,7 @@ describe('App — Replan (non-régression métier)', () => {
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
 
-    fireEvent.click(screen.getByRole('button', { name: /Replan/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^🔄 Replan$/ }))
 
     expect(alertSpy).toHaveBeenCalledWith(
       expect.stringMatching(/Aucune surcharge/),
@@ -421,7 +421,7 @@ describe('App — Replan (non-régression métier)', () => {
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
 
-    fireEvent.click(screen.getByRole('button', { name: /Replan/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^🔄 Replan$/ }))
 
     // La modal s'ouvre avec « Définir le message » comme seule tâche déplacée.
     // On scope les requêtes à la modal (les libellés apparaissent aussi
@@ -450,7 +450,7 @@ describe('App — Replan (non-régression métier)', () => {
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
 
-    fireEvent.click(screen.getByRole('button', { name: /Replan/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^🔄 Replan$/ }))
     await waitFor(() => screen.getByRole('button', { name: 'Appliquer' }))
 
     fireEvent.click(screen.getByRole('button', { name: 'Annuler' }))
@@ -471,7 +471,7 @@ describe('App — Replan (non-régression métier)', () => {
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
 
-    fireEvent.click(screen.getByRole('button', { name: /Replan/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^🔄 Replan$/ }))
     await waitFor(() => screen.getByRole('button', { name: 'Appliquer' }))
     fireEvent.click(screen.getByRole('button', { name: 'Appliquer' }))
 
@@ -503,7 +503,7 @@ describe('App — Replan (non-régression métier)', () => {
       (c) => c.method === 'GET' && c.url.startsWith('/api/state'),
     ).length
 
-    fireEvent.click(screen.getByRole('button', { name: /Replan/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^🔄 Replan$/ }))
     await waitFor(() => screen.getByRole('button', { name: 'Appliquer' }))
     fireEvent.click(screen.getByRole('button', { name: 'Appliquer' }))
 
@@ -512,6 +512,258 @@ describe('App — Replan (non-régression métier)', () => {
         (c) => c.method === 'GET' && c.url.startsWith('/api/state'),
       ).length
       expect(getStateAfter).toBeGreaterThan(getStateBefore)
+    })
+  })
+})
+
+// =============================================================================
+// v1.20 — Test de non-régression MÉTIER : repli des phases dans le planning
+// =============================================================================
+
+describe('App — repli des phases (v1.20)', () => {
+  /** État avec une phase "Pré-prod" contenant 2 tâches enfants. */
+  function mkStateWithPhase(): GanttState {
+    return mkState({
+      tasks: [
+        {
+          id: 'p1',
+          name: 'Pré-prod',
+          kind: 'phase',
+          start_date: '2026-05-01',
+          end_date: '2026-05-10',
+          progress: 0,
+          collaborator_id: null,
+          color: null,
+          parent_id: null,
+          predecessor_id: null,
+          predecessor_lag: 0,
+          priority: null,
+          position: 0,
+          project_id: 'p1',
+        },
+        {
+          id: 't1',
+          name: 'Tâche enfant A',
+          kind: 'task',
+          start_date: '2026-05-01',
+          end_date: '2026-05-05',
+          progress: 0,
+          collaborator_id: null,
+          color: null,
+          parent_id: 'p1',
+          predecessor_id: null,
+          predecessor_lag: 0,
+          priority: null,
+          position: 1,
+          project_id: 'p1',
+        },
+        {
+          id: 't2',
+          name: 'Tâche enfant B',
+          kind: 'task',
+          start_date: '2026-05-06',
+          end_date: '2026-05-10',
+          progress: 0,
+          collaborator_id: null,
+          color: null,
+          parent_id: 'p1',
+          predecessor_id: null,
+          predecessor_lag: 0,
+          priority: null,
+          position: 2,
+          project_id: 'p1',
+        },
+      ],
+    })
+  }
+
+  it("clic sur le chevron d'une phase masque ses enfants dans la liste", async () => {
+    // Règle : la phase reste visible (on doit pouvoir la déplier), mais
+    // ses enfants disparaissent du panneau gauche ET du planning.
+    setupFetchMock(mkStateWithPhase())
+    render(<App />)
+    await waitFor(() => screen.getByRole('combobox'))
+
+    // État initial : les 2 enfants sont visibles.
+    expect(
+      document.querySelector('[draggable="true"][title="Tâche enfant A"]'),
+    ).toBeTruthy()
+    expect(
+      document.querySelector('[draggable="true"][title="Tâche enfant B"]'),
+    ).toBeTruthy()
+
+    // Clic sur le chevron de la phase Pré-prod.
+    const chevron = document.querySelector(
+      'button[aria-label="Replier"]',
+    ) as HTMLElement
+    expect(chevron).toBeTruthy()
+    fireEvent.click(chevron)
+
+    // Après repli : les enfants ont disparu, la phase est encore là.
+    expect(
+      document.querySelector('[draggable="true"][title="Tâche enfant A"]'),
+    ).toBeNull()
+    expect(
+      document.querySelector('[draggable="true"][title="Tâche enfant B"]'),
+    ).toBeNull()
+    expect(
+      document.querySelector('[draggable="true"][title="Pré-prod"]'),
+    ).toBeTruthy()
+    // Et le chevron a basculé en « Déplier ».
+    expect(document.querySelector('button[aria-label="Déplier"]')).toBeTruthy()
+  })
+
+  it("l'état de repli est persisté en localStorage", async () => {
+    setupFetchMock(mkStateWithPhase())
+    render(<App />)
+    await waitFor(() => screen.getByRole('combobox'))
+
+    fireEvent.click(
+      document.querySelector('button[aria-label="Replier"]') as HTMLElement,
+    )
+    const raw = localStorage.getItem('gantt.collapsedPhases')
+    expect(raw).toBeTruthy()
+    expect(JSON.parse(raw as string)).toEqual(['p1'])
+  })
+})
+
+// =============================================================================
+// v1.21 — Bandeau de cohérence et Replan partiel
+// =============================================================================
+// Suite de tests dédiée au bandeau d'alerte affiché au-dessus du planning
+// quand `checkCoherence` détecte au moins une incohérence, et au flux
+// « Replan partiel » qui n'affecte que les tâches en conflit (et leurs
+// successeurs), laissant le reste du planning intact.
+// =============================================================================
+
+describe("App — bandeau d'incohérence (v1.21)", () => {
+  it("n'affiche aucun bandeau quand le projet est cohérent", async () => {
+    setupFetchMock()
+    render(<App />)
+    await waitFor(() => screen.getByRole('combobox'))
+    expect(screen.queryByTestId('coherence-alert')).not.toBeInTheDocument()
+  })
+
+  it('affiche le bandeau quand une surcharge existe + énumère les 2 boutons', async () => {
+    setupFetchMock(mkOverloadedState())
+    render(<App />)
+    await waitFor(() => screen.getByTestId('coherence-alert'))
+    const alert = screen.getByTestId('coherence-alert')
+    // Message lisible mentionnant les deux tâches en conflit.
+    expect(
+      within(alert).getByText(/Surcharge.*Recherche audience.*Définir/),
+    ).toBeInTheDocument()
+    // Deux boutons d'action distincts.
+    expect(
+      within(alert).getByRole('button', { name: /Replan partiel/ }),
+    ).toBeInTheDocument()
+    expect(
+      within(alert).getByRole('button', { name: /Replan complet/ }),
+    ).toBeInTheDocument()
+  })
+
+  it('"Replan complet" depuis le bandeau ouvre la modal habituelle', async () => {
+    setupFetchMock(mkOverloadedState())
+    render(<App />)
+    await waitFor(() => screen.getByTestId('coherence-alert'))
+    fireEvent.click(
+      within(screen.getByTestId('coherence-alert')).getByRole('button', {
+        name: /Replan complet/,
+      }),
+    )
+    await screen.findByRole('dialog', { name: /replanification/i })
+    expect(
+      screen.getByRole('button', { name: 'Appliquer' }),
+    ).toBeInTheDocument()
+  })
+
+  it('"Replan partiel" ne déplace que les tâches concernées', async () => {
+    // Scénario : 3 tâches sur c1.
+    //   • A : 15→29 mai (référence, lockée)
+    //   • B : 25 mai → 5 juin (concernée par la surcharge avec A)
+    //   • C : 8→12 juin (lockée, sans conflit)
+    // « Replan partiel » ne doit déplacer QUE B, et la nouvelle date doit
+    // contourner A (= 1er juin), sans toucher à A ni à C.
+    const state = mkState({
+      collaborators: [
+        { id: 'c1', name: 'Alice', color: '#3b82f6', position: 0 },
+      ],
+      tasks: [
+        {
+          id: 'A',
+          name: 'A',
+          kind: 'task',
+          start_date: '2026-05-15',
+          end_date: '2026-05-29',
+          progress: 0,
+          collaborator_id: 'c1',
+          color: null,
+          parent_id: null,
+          predecessor_id: null,
+          predecessor_lag: 0,
+          priority: null,
+          position: 0,
+          project_id: 'p1',
+        },
+        {
+          id: 'B',
+          name: 'B',
+          kind: 'task',
+          start_date: '2026-05-25',
+          end_date: '2026-06-05',
+          progress: 0,
+          collaborator_id: 'c1',
+          color: null,
+          parent_id: null,
+          predecessor_id: null,
+          predecessor_lag: 0,
+          priority: null,
+          position: 1,
+          project_id: 'p1',
+        },
+        {
+          id: 'C',
+          name: 'C',
+          kind: 'task',
+          start_date: '2026-06-08',
+          end_date: '2026-06-12',
+          progress: 0,
+          collaborator_id: 'c1',
+          color: null,
+          parent_id: null,
+          predecessor_id: null,
+          predecessor_lag: 0,
+          priority: null,
+          position: 2,
+          project_id: 'p1',
+        },
+      ],
+    })
+    const { calls } = setupFetchMock(state)
+    render(<App />)
+    await waitFor(() => screen.getByTestId('coherence-alert'))
+    fireEvent.click(
+      within(screen.getByTestId('coherence-alert')).getByRole('button', {
+        name: /Replan partiel/,
+      }),
+    )
+    const dialog = await screen.findByRole('dialog', {
+      name: /replanification/i,
+    })
+    // SEULE la tâche B doit apparaître dans la modal d'aperçu.
+    expect(
+      within(dialog).getByText('B', { selector: 'td' }),
+    ).toBeInTheDocument()
+    expect(within(dialog).queryByText('A', { selector: 'td' })).toBeNull()
+    expect(within(dialog).queryByText('C', { selector: 'td' })).toBeNull()
+    // Application → un seul PATCH (sur B).
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Appliquer' }))
+    await waitFor(() => {
+      const patches = calls.filter(
+        (c) => c.method === 'PATCH' && c.url.startsWith('/api/tasks/'),
+      )
+      expect(patches).toHaveLength(1)
+      expect(patches[0].url).toBe('/api/tasks/B')
     })
   })
 })

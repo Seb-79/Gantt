@@ -99,9 +99,10 @@ describe('GanttChart — rendu de base', () => {
 })
 
 describe('GanttChart — indentation hiérarchique', () => {
-  // v1.11 — Padding de base réduit de 12 → 8 px (compaction de la colonne
-  // gauche), l'incrément d'indentation par niveau reste de 16 px.
-  it('indente chaque niveau de 16 px (parent=8, enfant=24, petit-enfant=40)', () => {
+  // v1.19.3 — Padding de base réduit de 8 → 2 px pour gagner de la place
+  // à gauche de la colonne Tâches ; l'incrément d'indentation par niveau
+  // reste de 16 px (hiérarchie toujours visible).
+  it('indente chaque niveau de 16 px (parent=2, enfant=18, petit-enfant=34)', () => {
     const tasks: Task[] = [
       mkTask({ id: 'p1', name: 'Phase A', kind: 'phase' }),
       mkTask({ id: 'p1a', name: 'Sous-phase', kind: 'phase', parent_id: 'p1' }),
@@ -121,9 +122,9 @@ describe('GanttChart — indentation hiérarchique', () => {
       container.querySelector(
         `[draggable="true"][title="${name}"]`,
       ) as HTMLElement
-    expect(rowFor('Phase A').style.paddingLeft).toBe('8px')
-    expect(rowFor('Sous-phase').style.paddingLeft).toBe('24px')
-    expect(rowFor('Activité').style.paddingLeft).toBe('40px')
+    expect(rowFor('Phase A').style.paddingLeft).toBe('2px')
+    expect(rowFor('Sous-phase').style.paddingLeft).toBe('18px')
+    expect(rowFor('Activité').style.paddingLeft).toBe('34px')
   })
 })
 
@@ -361,9 +362,331 @@ describe('GanttChart — flèches prédécesseurs', () => {
     const paths = container.querySelectorAll('svg path')
     // 1 path = la flèche prédécesseur (les markers `<defs>` n'en contiennent
     // qu'un autre identifié via id="gantt-arrow" mais c'est dans <defs>).
+    // v1.19.2 — couleur durcie (slate-600) pour le contraste sur les
+    // cellules week-end et au-dessus des barres de phase.
     const arrowPath = Array.from(paths).find(
-      (p) => p.getAttribute('stroke') === '#94a3b8',
+      (p) => p.getAttribute('stroke') === '#475569',
     )
     expect(arrowPath).toBeTruthy()
+  })
+})
+
+// =============================================================================
+// v1.20 — Tests de non-régression MÉTIER : repli/dépli des phases
+// =============================================================================
+
+describe('GanttChart — repli/dépli des phases (v1.20)', () => {
+  it('affiche un chevron ▼ sur une phase qui a des enfants ET un callback', () => {
+    // Garantit que l'affordance « repliable » apparaît uniquement quand
+    // l'app a effectivement activé la fonctionnalité.
+    const tasks: Task[] = [
+      mkTask({ id: 'p1', name: 'Pré-prod', kind: 'phase' }),
+      mkTask({ id: 't1', name: 'Recherche', parent_id: 'p1' }),
+    ]
+    const { container } = render(
+      <GanttChart
+        windowStart="2026-05-01"
+        windowEnd="2026-05-31"
+        dayWidth={20}
+        tasks={tasks}
+        collaborators={COLLABS}
+        onToggleCollapse={vi.fn()}
+      />,
+    )
+    // Le chevron est un <button> avec aria-label "Replier".
+    expect(container.querySelector('button[aria-label="Replier"]')).toBeTruthy()
+  })
+
+  it('PAS de chevron sur une phase SANS enfant (rien à replier)', () => {
+    const tasks: Task[] = [
+      mkTask({ id: 'p1', name: 'Phase vide', kind: 'phase' }),
+    ]
+    const { container } = render(
+      <GanttChart
+        windowStart="2026-05-01"
+        windowEnd="2026-05-31"
+        dayWidth={20}
+        tasks={tasks}
+        collaborators={COLLABS}
+        onToggleCollapse={vi.fn()}
+      />,
+    )
+    expect(container.querySelector('button[aria-label="Replier"]')).toBeNull()
+    // Et le pictogramme 🗂️ reste affiché à la place.
+    expect(container.textContent).toContain('🗂️')
+  })
+
+  it("clic sur le chevron appelle onToggleCollapse avec l'id de la phase", () => {
+    // Règle clé : c'est l'app qui gère le state, le composant ne fait
+    // que signaler le clic.
+    const onToggleCollapse = vi.fn()
+    const tasks: Task[] = [
+      mkTask({ id: 'p1', name: 'Pré-prod', kind: 'phase' }),
+      mkTask({ id: 't1', parent_id: 'p1' }),
+    ]
+    const { container } = render(
+      <GanttChart
+        windowStart="2026-05-01"
+        windowEnd="2026-05-31"
+        dayWidth={20}
+        tasks={tasks}
+        collaborators={COLLABS}
+        onToggleCollapse={onToggleCollapse}
+      />,
+    )
+    const chevron = container.querySelector(
+      'button[aria-label="Replier"]',
+    ) as HTMLElement
+    fireEvent.click(chevron)
+    expect(onToggleCollapse).toHaveBeenCalledTimes(1)
+    expect(onToggleCollapse).toHaveBeenCalledWith('p1')
+  })
+
+  it("clic sur le chevron N'ouvre PAS l'éditeur de la phase", () => {
+    // Le chevron stopPropagation : sinon, replier déclencherait aussi
+    // l'éditeur (clic sur la ligne) — confus pour l'utilisateur.
+    const onToggleCollapse = vi.fn()
+    const onTaskClick = vi.fn()
+    const tasks: Task[] = [
+      mkTask({ id: 'p1', name: 'Pré-prod', kind: 'phase' }),
+      mkTask({ id: 't1', parent_id: 'p1' }),
+    ]
+    const { container } = render(
+      <GanttChart
+        windowStart="2026-05-01"
+        windowEnd="2026-05-31"
+        dayWidth={20}
+        tasks={tasks}
+        collaborators={COLLABS}
+        onTaskClick={onTaskClick}
+        onToggleCollapse={onToggleCollapse}
+      />,
+    )
+    const chevron = container.querySelector(
+      'button[aria-label="Replier"]',
+    ) as HTMLElement
+    fireEvent.click(chevron)
+    expect(onToggleCollapse).toHaveBeenCalledTimes(1)
+    expect(onTaskClick).not.toHaveBeenCalled()
+  })
+
+  it('phase repliée → glyphe ▶ (et aria-label « Déplier »)', () => {
+    // L'app retire l'enfant de `tasks` (filterCollapsed), mais en lui
+    // passant la liste complète via allTasks, on continue à savoir que
+    // la phase a un enfant → le chevron reste rendu.
+    const allTasks: Task[] = [
+      mkTask({ id: 'p1', name: 'Pré-prod', kind: 'phase' }),
+      mkTask({ id: 't1', parent_id: 'p1' }),
+    ]
+    const visible = allTasks.filter((t) => t.id !== 't1') // phase repliée
+    const { container } = render(
+      <GanttChart
+        windowStart="2026-05-01"
+        windowEnd="2026-05-31"
+        dayWidth={20}
+        tasks={visible}
+        allTasks={allTasks}
+        collaborators={COLLABS}
+        collapsedPhases={new Set(['p1'])}
+        onToggleCollapse={vi.fn()}
+      />,
+    )
+    expect(container.querySelector('button[aria-label="Déplier"]')).toBeTruthy()
+    expect(
+      container.querySelector('button[aria-label="Déplier"]')?.textContent,
+    ).toBe('▶')
+  })
+})
+
+// =============================================================================
+// v1.19.2 — Tests de non-régression MÉTIER : click sur barre du planning
+// =============================================================================
+// Règle : cliquer sur la barre/le losange/la phase dans le planning ouvre
+// l'éditeur (équivalent au clic dans la colonne gauche). Sans collision avec
+// les autres gestes (drag pour redimensionner, pan parent).
+
+describe("GanttChart — click sur barre du planning ouvre l'éditeur", () => {
+  it('clic sur une barre tâche → onTaskClick avec la tâche', () => {
+    // Garantit l'accessibilité par défaut depuis le planning (et plus
+    // uniquement depuis la colonne de gauche).
+    const onTaskClick = vi.fn()
+    const tasks = [
+      mkTask({
+        id: 't1',
+        name: 'Ouvre-moi',
+        start_date: '2026-05-05',
+        end_date: '2026-05-09',
+      }),
+    ]
+    const { container } = render(
+      <GanttChart
+        windowStart="2026-05-01"
+        windowEnd="2026-05-31"
+        dayWidth={20}
+        tasks={tasks}
+        collaborators={COLLABS}
+        onTaskClick={onTaskClick}
+        onResizeTask={vi.fn()}
+      />,
+    )
+    // La barre interactive est rendue dans la zone calendrier ; on la cible
+    // via son title (≠ du libellé de la colonne gauche par sa string complète).
+    const bars = container.querySelectorAll('[title^="Ouvre-moi — 2026-"]')
+    expect(bars.length).toBeGreaterThan(0)
+    // Cycle mousedown → mouseup sans mousemove (deltaDays reste à 0) = clic.
+    fireEvent.mouseDown(bars[0], { clientX: 100 })
+    fireEvent.mouseUp(window, { clientX: 100 })
+    expect(onTaskClick).toHaveBeenCalledTimes(1)
+    expect(onTaskClick.mock.calls[0][0].id).toBe('t1')
+  })
+
+  it('v1.21 — drag vers la GAUCHE (passé) déplace bien la tâche', () => {
+    // Non-régression v1.21 : l'utilisateur peut désormais ramener une tâche
+    // dans le passé par drag (la règle "rightward only" a été levée). La
+    // cohérence sera signalée par le bandeau d'alerte au-dessus du planning.
+    const onResizeTask = vi.fn()
+    const tasks = [
+      mkTask({
+        id: 't1',
+        name: 'Tire-moi en arrière',
+        // Lundi 11 mai 2026 → vendredi 15 mai (5 jours ouvrés).
+        start_date: '2026-05-11',
+        end_date: '2026-05-15',
+      }),
+    ]
+    const { container } = render(
+      <GanttChart
+        windowStart="2026-05-01"
+        windowEnd="2026-05-31"
+        dayWidth={20}
+        tasks={tasks}
+        collaborators={COLLABS}
+        onResizeTask={onResizeTask}
+      />,
+    )
+    const bar = container.querySelector(
+      '[title^="Tire-moi en arrière — 2026-"]',
+    ) as HTMLElement
+    // jsdom renvoie un DOMRect tout-à-zéro par défaut, ce qui placerait
+    // toujours la souris dans la « poignée droite » (= mode resize-end).
+    // On force ici un rect large où l'on cliquera au MILIEU, pour que
+    // `handleBarMouseDown` détecte le mode « move ».
+    bar.getBoundingClientRect = () =>
+      ({
+        left: 100,
+        right: 300,
+        top: 0,
+        bottom: 26,
+        width: 200,
+        height: 26,
+      }) as DOMRect
+    // Mousedown au milieu (clientX=200, à 100px du bord droit → mode 'move')
+    // → mousemove de -80 px (-4 jours) → mouseup.
+    fireEvent.mouseDown(bar, { clientX: 200 })
+    fireEvent.mouseMove(window, { clientX: 120 })
+    fireEvent.mouseUp(window, { clientX: 120 })
+    expect(onResizeTask).toHaveBeenCalledTimes(1)
+    const patch = onResizeTask.mock.calls[0][1]
+    // Mode 'move' : start_date ET end_date sont décalés vers le passé.
+    expect(patch.start_date).toBeDefined()
+    expect(patch.start_date < '2026-05-11').toBe(true)
+    expect(patch.end_date).toBeDefined()
+  })
+
+  it("drag horizontal > 1 jour → PAS d'ouverture éditeur, c'est un déplacement", () => {
+    // Sépare clairement le clic (édition) du drag (move/resize) : si l'user
+    // fait un déplacement, l'éditeur ne doit PAS apparaître.
+    const onTaskClick = vi.fn()
+    const onResizeTask = vi.fn()
+    const tasks = [
+      mkTask({
+        id: 't1',
+        name: 'Drag-moi',
+        start_date: '2026-05-05',
+        end_date: '2026-05-07',
+      }),
+    ]
+    const { container } = render(
+      <GanttChart
+        windowStart="2026-05-01"
+        windowEnd="2026-05-31"
+        dayWidth={20}
+        tasks={tasks}
+        collaborators={COLLABS}
+        onTaskClick={onTaskClick}
+        onResizeTask={onResizeTask}
+      />,
+    )
+    const bar = container.querySelector(
+      '[title^="Drag-moi — 2026-"]',
+    ) as HTMLElement
+    // Mousedown au milieu → mousemove de plus de dayWidth → mouseup.
+    fireEvent.mouseDown(bar, { clientX: 50 })
+    fireEvent.mouseMove(window, { clientX: 130 }) // +80 px = +4 jours
+    fireEvent.mouseUp(window, { clientX: 130 })
+    expect(onTaskClick).not.toHaveBeenCalled()
+    expect(onResizeTask).toHaveBeenCalled()
+  })
+
+  it('clic sur un jalon (losange) → onTaskClick avec le jalon', () => {
+    const onTaskClick = vi.fn()
+    const tasks = [
+      mkTask({
+        id: 'm1',
+        name: 'Mon jalon',
+        kind: 'milestone',
+        start_date: '2026-05-10',
+        end_date: '2026-05-10',
+      }),
+    ]
+    const { container } = render(
+      <GanttChart
+        windowStart="2026-05-01"
+        windowEnd="2026-05-31"
+        dayWidth={20}
+        tasks={tasks}
+        collaborators={COLLABS}
+        onTaskClick={onTaskClick}
+      />,
+    )
+    // Le losange est l'élément avec rotate(45deg).
+    const all = container.querySelectorAll('[title^="Mon jalon"]')
+    const diamond = Array.from(all).find(
+      (el) => (el as HTMLElement).style.transform === 'rotate(45deg)',
+    )!
+    fireEvent.click(diamond)
+    expect(onTaskClick).toHaveBeenCalledTimes(1)
+    expect(onTaskClick.mock.calls[0][0].id).toBe('m1')
+  })
+
+  it('clic sur une phase (barre dark) → onTaskClick avec la phase', () => {
+    const onTaskClick = vi.fn()
+    const tasks = [
+      mkTask({
+        id: 'p1',
+        name: 'Ma phase',
+        kind: 'phase',
+        start_date: '2026-05-05',
+        end_date: '2026-05-15',
+      }),
+    ]
+    const { container } = render(
+      <GanttChart
+        windowStart="2026-05-01"
+        windowEnd="2026-05-31"
+        dayWidth={20}
+        tasks={tasks}
+        collaborators={COLLABS}
+        onTaskClick={onTaskClick}
+      />,
+    )
+    // Le conteneur de la phase est l'élément avec le title commençant par
+    // "Phase « Ma phase »…".
+    const phase = container.querySelector(
+      '[title^="Phase « Ma phase »"]',
+    ) as HTMLElement
+    fireEvent.click(phase)
+    expect(onTaskClick).toHaveBeenCalledTimes(1)
+    expect(onTaskClick.mock.calls[0][0].id).toBe('p1')
   })
 })

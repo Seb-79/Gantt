@@ -29,6 +29,7 @@ import {
   isWeekendDay,
   workloadCellStyle,
 } from '../lib/utils'
+import { useHorizontalPan } from '../lib/useHorizontalPan'
 import type { Collaborator, Task } from '../lib/types'
 
 /** Hauteur d'une ligne (px) — alignée sur la vue Gantt pour la cohérence. */
@@ -56,6 +57,12 @@ interface Props {
    * charge partielle = jaune appuyé). Par défaut `false` (palette bleue).
    */
   highlightUnderload?: boolean
+  /**
+   * v1.19 — Callback de décalage de la fenêtre temporelle (jours signés),
+   * activé quand l'utilisateur drag-glisse à la souris sur le panneau du
+   * plan de charge. Même sémantique que dans GanttChart.
+   */
+  onShiftWindow?: (days: number) => void
 }
 
 /**
@@ -70,7 +77,18 @@ export default function WorkloadChart({
   tasks,
   collaborators,
   highlightUnderload = false,
+  onShiftWindow,
 }: Props) {
+  // v1.19 — Pan horizontal à la souris (cf. useHorizontalPan).
+  const { onMouseDown: handlePanMouseDown, isPanning } = useHorizontalPan(
+    dayWidth,
+    onShiftWindow,
+  )
+  // v1.19 — Curseur du panneau scrollable. Extrait pour éviter un ternaire
+  // imbriqué dans le JSX (cf. sonarjs/no-nested-conditional).
+  let panCursorClass = ''
+  if (onShiftWindow)
+    panCursorClass = isPanning ? 'cursor-grabbing' : 'cursor-grab'
   // -------------------------------------------------------------------------
   // Mesure de la largeur visible (cf. GanttChart v1.12) pour étendre la
   // grille au dézoom max et combler la zone droite.
@@ -167,7 +185,12 @@ export default function WorkloadChart({
       {/* ------------------------------------------------------------------ */}
       {/* COLONNE DROITE — calendrier scrollable + grille de charge           */}
       {/* ------------------------------------------------------------------ */}
-      <div ref={scrollRef} className="flex-1 overflow-x-auto">
+      {/* v1.19 — onMouseDown : pan horizontal de la fenêtre temporelle. */}
+      <div
+        ref={scrollRef}
+        onMouseDown={handlePanMouseDown}
+        className={['flex-1 overflow-x-auto', panCursorClass].join(' ')}
+      >
         <div style={{ width: totalWidth }}>
           {/* HEADER ligne 1 — mois */}
           <div className="flex h-7 border-b border-slate-200 bg-slate-100">

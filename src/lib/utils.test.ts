@@ -7,13 +7,16 @@ import {
   addDaysIso,
   addWorkingDays,
   buildDateRange,
+  checkCoherence,
   clampDayWidth,
+  concernedTaskIds,
   dateToIso,
   dateToX,
   daysBetweenIso,
   defaultWindow,
   descendantIds,
   effectiveTaskColor,
+  filterCollapsed,
   groupByMonth,
   groupByWeek,
   computeWorkload,
@@ -511,6 +514,64 @@ describe('descendantIds', () => {
 })
 
 // =============================================================================
+// FILTER COLLAPSED (v1.20)
+// =============================================================================
+
+describe('filterCollapsed (v1.20)', () => {
+  it('renvoie la liste inchangée si aucune phase repliée', () => {
+    const tasks: Task[] = [
+      mkTask('p1', { kind: 'phase' }),
+      mkTask('t1', { parent_id: 'p1' }),
+    ]
+    expect(filterCollapsed(tasks, new Set())).toEqual(tasks)
+  })
+
+  it("masque les enfants directs d'une phase repliée", () => {
+    // Règle clé : la phase elle-même reste visible (l\'utilisateur doit
+    // pouvoir la déplier), mais ses enfants disparaissent du rendu.
+    const tasks: Task[] = [
+      mkTask('p1', { kind: 'phase' }),
+      mkTask('t1', { parent_id: 'p1' }),
+      mkTask('t2', { parent_id: 'p1' }),
+      mkTask('other'),
+    ]
+    const visible = filterCollapsed(tasks, new Set(['p1']))
+    expect(visible.map((t) => t.id)).toEqual(['p1', 'other'])
+  })
+
+  it('masque les petits-enfants (récursif)', () => {
+    const tasks: Task[] = [
+      mkTask('p1', { kind: 'phase' }),
+      mkTask('p1a', { kind: 'phase', parent_id: 'p1' }),
+      mkTask('t1', { parent_id: 'p1a' }),
+    ]
+    const visible = filterCollapsed(tasks, new Set(['p1']))
+    // Phase repliée → on ne voit ni la sous-phase ni la tâche.
+    expect(visible.map((t) => t.id)).toEqual(['p1'])
+  })
+
+  it('plusieurs phases repliées simultanément', () => {
+    const tasks: Task[] = [
+      mkTask('pA', { kind: 'phase' }),
+      mkTask('tA1', { parent_id: 'pA' }),
+      mkTask('pB', { kind: 'phase' }),
+      mkTask('tB1', { parent_id: 'pB' }),
+      mkTask('orphan'),
+    ]
+    const visible = filterCollapsed(tasks, new Set(['pA', 'pB']))
+    expect(visible.map((t) => t.id)).toEqual(['pA', 'pB', 'orphan'])
+  })
+
+  it('un id inconnu dans le Set est ignoré silencieusement', () => {
+    // Robustesse : une phase supprimée mais dont l\'id reste en localStorage
+    // ne doit pas casser le rendu.
+    const tasks: Task[] = [mkTask('p1', { kind: 'phase' }), mkTask('t1')]
+    const visible = filterCollapsed(tasks, new Set(['p1', 'ghost-id']))
+    expect(visible.map((t) => t.id)).toEqual(['p1', 't1'])
+  })
+})
+
+// =============================================================================
 // REPLAN (v1.18)
 // =============================================================================
 
@@ -659,5 +720,297 @@ describe('replanTasks (v1.18)', () => {
     ]
     // Aucune surcharge sur tâche réelle → aucun déplacement.
     expect(replanTasks(tasks)).toEqual([])
+  })
+})
+
+// =============================================================================
+// v1.21 — Tests de cohérence et de replan partiel
+// =============================================================================
+// Encodent les RÈGLES MÉTIER ajoutées avec la possibilité de déplacer une
+// tâche dans le passé (drag bidirectionnel). Chaque test isole une règle
+// pour parler de lui-même au prochain mainteneur en cas de régression.
+// =============================================================================
+
+describe('checkCoherence — détection des incohérences', () => {
+  it('aucune incohérence sur un planning sain → liste vide', () => {
+    const tasks: Task[] = [
+      mkTask('A', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-18',
+        end_date: '2026-05-22',
+      }),
+      mkTask('B', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-25',
+        end_date: '2026-05-29',
+      }),
+    ]
+    expect(checkCoherence(tasks)).toEqual([])
+  })
+
+  it('détecte une SURCHARGE entre 2 tâches du même collaborateur', () => {
+    const tasks: Task[] = [
+      mkTask('A', {
+        name: 'Audience',
+        collaborator_id: 'c1',
+        start_date: '2026-05-15',
+        end_date: '2026-05-29',
+      }),
+      mkTask('B', {
+        name: 'Message',
+        collaborator_id: 'c1',
+        start_date: '2026-05-25',
+        end_date: '2026-06-05',
+      }),
+    ]
+    const issues = checkCoherence(tasks)
+    expect(issues).toHaveLength(1)
+    expect(issues[0].kind).toBe('overload')
+    expect(issues[0].severity).toBe('error')
+    expect(issues[0].taskIds.sort()).toEqual(['A', 'B'])
+    expect(issues[0].message).toMatch(/Audience.*Message|Message.*Audience/)
+  })
+
+  it('ne signale PAS deux tâches qui se touchent sans se chevaucher', () => {
+    // A = lun→ven, B = lundi suivant : pas de chevauchement.
+    const tasks: Task[] = [
+      mkTask('A', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-18',
+        end_date: '2026-05-22',
+      }),
+      mkTask('B', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-25',
+        end_date: '2026-05-29',
+      }),
+    ]
+    expect(checkCoherence(tasks)).toEqual([])
+  })
+
+  it('ne signale pas une surcharge entre collabs différents', () => {
+    const tasks: Task[] = [
+      mkTask('A', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-18',
+        end_date: '2026-05-22',
+      }),
+      mkTask('B', {
+        collaborator_id: 'c2',
+        start_date: '2026-05-18',
+        end_date: '2026-05-22',
+      }),
+    ]
+    expect(checkCoherence(tasks)).toEqual([])
+  })
+
+  it('détecte une violation de PRÉDÉCESSEUR (Y avant fin X)', () => {
+    const tasks: Task[] = [
+      mkTask('X', {
+        start_date: '2026-05-18',
+        end_date: '2026-05-22',
+      }),
+      mkTask('Y', {
+        predecessor_id: 'X',
+        start_date: '2026-05-15', // commence AVANT la fin de X
+        end_date: '2026-05-19',
+      }),
+    ]
+    const issues = checkCoherence(tasks)
+    const pred = issues.find((i) => i.kind === 'predecessor')
+    expect(pred).toBeDefined()
+    expect(pred?.severity).toBe('error')
+    expect(pred?.taskIds[0]).toBe('Y')
+    expect(pred?.taskIds[1]).toBe('X')
+  })
+
+  it('détecte une violation de PRIORITÉ (faible avant haute, même collab)', () => {
+    const tasks: Task[] = [
+      mkTask('Important', {
+        collaborator_id: 'c1',
+        priority: 1,
+        start_date: '2026-05-25',
+        end_date: '2026-05-29',
+      }),
+      mkTask('Secondaire', {
+        collaborator_id: 'c1',
+        priority: 3,
+        start_date: '2026-05-18', // commence AVANT « Important » alors que moins prio
+        end_date: '2026-05-22',
+      }),
+    ]
+    const issues = checkCoherence(tasks)
+    expect(issues).toHaveLength(1)
+    expect(issues[0].kind).toBe('priority')
+    expect(issues[0].severity).toBe('warning')
+  })
+
+  it("n'inflige pas de faux positif quand une seule tâche a une priorité", () => {
+    const tasks: Task[] = [
+      mkTask('A', {
+        collaborator_id: 'c1',
+        priority: 1,
+        start_date: '2026-05-25',
+        end_date: '2026-05-29',
+      }),
+      mkTask('B', {
+        collaborator_id: 'c1',
+        priority: null,
+        start_date: '2026-05-18',
+        end_date: '2026-05-22',
+      }),
+    ]
+    expect(checkCoherence(tasks)).toEqual([])
+  })
+
+  it('agrège plusieurs incohérences dans le même appel', () => {
+    const tasks: Task[] = [
+      mkTask('A', {
+        name: 'A',
+        collaborator_id: 'c1',
+        start_date: '2026-05-18',
+        end_date: '2026-05-25',
+      }),
+      mkTask('B', {
+        name: 'B',
+        collaborator_id: 'c1',
+        start_date: '2026-05-22',
+        end_date: '2026-05-29',
+      }),
+      mkTask('X', {
+        start_date: '2026-06-01',
+        end_date: '2026-06-05',
+      }),
+      mkTask('Y', {
+        predecessor_id: 'X',
+        start_date: '2026-05-29',
+        end_date: '2026-06-01',
+      }),
+    ]
+    const issues = checkCoherence(tasks)
+    expect(issues.some((i) => i.kind === 'overload')).toBe(true)
+    expect(issues.some((i) => i.kind === 'predecessor')).toBe(true)
+  })
+})
+
+describe('replanTasks — variante PARTIELLE (concernedIds)', () => {
+  it('replan complet sans `concernedIds` : comportement v1.18 inchangé', () => {
+    // Référence : surcharge identique au scénario du brief Replan v1.18.
+    const tasks: Task[] = [
+      mkTask('t1a', {
+        name: 'Recherche audience',
+        collaborator_id: 'c1',
+        start_date: '2026-05-15',
+        end_date: '2026-05-29',
+      }),
+      mkTask('t1b', {
+        name: 'Définir le message',
+        collaborator_id: 'c1',
+        start_date: '2026-05-25',
+        end_date: '2026-06-05',
+      }),
+    ]
+    const moves = replanTasks(tasks)
+    expect(moves.map((m) => m.id)).toEqual(['t1b'])
+    expect(moves[0].newStart).toBe('2026-06-01')
+  })
+
+  it('`concernedIds` vide ⇒ aucun déplacement (toutes les tâches lockées)', () => {
+    const tasks: Task[] = [
+      mkTask('A', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-15',
+        end_date: '2026-05-29',
+      }),
+      mkTask('B', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-25',
+        end_date: '2026-06-05',
+      }),
+    ]
+    expect(replanTasks(tasks, new Set())).toEqual([])
+  })
+
+  it('replan partiel : SEULES les tâches listées peuvent être déplacées', () => {
+    // 3 tâches s'empilent sur c1 : A (15→29), B (25→6/5), C (1/6→10/6).
+    // Si concerned = {B}, seule B doit bouger. A et C restent figées.
+    const tasks: Task[] = [
+      mkTask('A', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-15',
+        end_date: '2026-05-29',
+      }),
+      mkTask('B', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-25',
+        end_date: '2026-06-05',
+      }),
+      mkTask('C', {
+        collaborator_id: 'c1',
+        start_date: '2026-06-01',
+        end_date: '2026-06-10',
+      }),
+    ]
+    const moves = replanTasks(tasks, new Set(['B']))
+    // Seule B est listée. A et C restent en place, font OBSTACLE.
+    expect(moves.map((m) => m.id)).toEqual(['B'])
+    // B doit attendre la fin de C (= 10/06, jour ouvré suivant = 11/06).
+    expect(moves[0].newStart).toBe('2026-06-11')
+  })
+
+  it('replan partiel : un descendant transitif (successeur) bouge si concerné', () => {
+    // X → Y (Y a X comme prédécesseur). Si on inclut Y dans concerned mais pas X,
+    // Y peut bouger pour satisfaire la contrainte.
+    const tasks: Task[] = [
+      mkTask('X', {
+        start_date: '2026-05-18',
+        end_date: '2026-05-22',
+      }),
+      mkTask('Y', {
+        predecessor_id: 'X',
+        start_date: '2026-05-15',
+        end_date: '2026-05-19',
+      }),
+    ]
+    const moves = replanTasks(tasks, new Set(['Y']))
+    expect(moves.map((m) => m.id)).toEqual(['Y'])
+    // Y doit démarrer au plus tôt à X.end (= 22/05, vendredi).
+    expect(moves[0].newStart >= '2026-05-22').toBe(true)
+  })
+})
+
+describe('concernedTaskIds — fermeture transitive', () => {
+  it('inclut les tâches mentionnées dans les issues', () => {
+    const tasks: Task[] = [mkTask('A'), mkTask('B'), mkTask('C')]
+    const issues: ReturnType<typeof checkCoherence> = [
+      {
+        kind: 'overload',
+        severity: 'error',
+        taskIds: ['A', 'B'],
+        message: 'x',
+      },
+    ]
+    const set = concernedTaskIds(issues, tasks)
+    expect([...set].sort()).toEqual(['A', 'B'])
+  })
+
+  it('propage aux successeurs transitifs (chaîne X → Y → Z)', () => {
+    const tasks: Task[] = [
+      mkTask('X'),
+      mkTask('Y', { predecessor_id: 'X' }),
+      mkTask('Z', { predecessor_id: 'Y' }),
+    ]
+    const set = concernedTaskIds(
+      [
+        {
+          kind: 'overload',
+          severity: 'error',
+          taskIds: ['X'],
+          message: 'x',
+        },
+      ],
+      tasks,
+    )
+    expect([...set].sort()).toEqual(['X', 'Y', 'Z'])
   })
 })

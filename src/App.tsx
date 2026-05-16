@@ -16,10 +16,14 @@ import { toPng } from 'html-to-image'
 import GanttChart from './components/GanttChart'
 import TaskEditor from './components/TaskEditor'
 import WorkloadChart from './components/WorkloadChart'
+import CoherenceAlert from './components/CoherenceAlert'
 import {
+  checkCoherence,
   clampDayWidth,
+  concernedTaskIds,
   defaultWindow,
   DEFAULT_DAY_WIDTH,
+  filterCollapsed,
   makeId,
   MAX_DAY_WIDTH,
   MIN_DAY_WIDTH,
@@ -51,6 +55,9 @@ const LS_VIEW = 'gantt.view'
 
 /** v1.17 — Clé localStorage pour mémoriser la mise en évidence des sous-charges. */
 const LS_HIGHLIGHT_UNDERLOAD = 'gantt.highlightUnderload'
+
+/** v1.20 — Clé localStorage pour mémoriser les phases repliées (JSON: string[]). */
+const LS_COLLAPSED_PHASES = 'gantt.collapsedPhases'
 
 /** v1.16 — Vues disponibles dans l'app : planning ou plan de charge. */
 type View = 'gantt' | 'workload'
@@ -171,6 +178,25 @@ export default function App() {
    * par "Annuler" (la modal se ferme sans envoyer de PATCH).
    */
   const [replanPreview, setReplanPreview] = useState<ReplanMove[] | null>(null)
+  /**
+   * v1.20 — Set d'ids de phases actuellement repliées. Persisté en
+   * localStorage (clé `gantt.collapsedPhases`, JSON string[]). Quand une
+   * phase est dans ce set, ses enfants (et petits-enfants) sont masqués
+   * dans la liste des tâches ET dans le planning. La phase elle-même reste
+   * visible (avec un chevron pour la déplier). N'altère ni les données
+   * serveur ni la logique de replan : effet purement visuel.
+   */
+  const [collapsedPhases, setCollapsedPhases] = useState<Set<string>>(() => {
+    const raw = lsGet(LS_COLLAPSED_PHASES)
+    if (!raw) return new Set()
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (!Array.isArray(parsed)) return new Set()
+      return new Set(parsed.filter((x): x is string => typeof x === 'string'))
+    } catch {
+      return new Set()
+    }
+  })
 
   /** Référence sur le bloc Gantt — utilisée pour la capture PNG. */
   const ganttRef = useRef<HTMLDivElement | null>(null)
@@ -189,6 +215,28 @@ export default function App() {
   const orderedTasks = useMemo(
     () => (state ? sortTasksHierarchically(state.tasks) : []),
     [state],
+  )
+
+  /**
+   * v1.20 — Liste des tâches RÉELLEMENT affichées : `orderedTasks` filtrées
+   * des descendants des phases repliées. `replanTasks` continue d'utiliser
+   * `orderedTasks` (la replanification raisonne sur l'ensemble complet,
+   * indépendamment du repli visuel).
+   */
+  const visibleTasks = useMemo(
+    () => filterCollapsed(orderedTasks, collapsedPhases),
+    [orderedTasks, collapsedPhases],
+  )
+
+  /**
+   * v1.21 — Audit de cohérence du projet courant. Recalculé à chaque
+   * changement de `orderedTasks` (drag, save, polling). Pur, déterministe,
+   * < 1 ms à l'échelle d'un projet. Quand la liste est vide, le bandeau
+   * `CoherenceAlert` se cache automatiquement.
+   */
+  const coherenceIssues = useMemo(
+    () => checkCoherence(orderedTasks),
+    [orderedTasks],
   )
 
   /** Objet du projet courant (résolu depuis `state.projects`). */
@@ -475,15 +523,51 @@ export default function App() {
   }
 
   /**
-   * v1.18 — Ouvre la modal d'aperçu de replanification. Calcule les
-   * déplacements via la fonction pure `replanTasks` ; si aucun déplacement
-   * n'est nécessaire, affiche un simple alert et n'ouvre pas la modal.
+   * v1.20 — Bascule l'état replié/déplié d'une phase. Persiste le set
+   * mis à jour en localStorage. Aucune mutation côté serveur.
+   *
+   * @param phaseId  Id de la phase à basculer.
    */
-  const handleOpenReplan = () => {
+  const toggleCollapse = useCallback((phaseId: string) => {
+    setCollapsedPhases((prev) => {
+      const next = new Set(prev)
+      if (next.has(phaseId)) next.delete(phaseId)
+      else next.add(phaseId)
+      lsSet(LS_COLLAPSED_PHASES, JSON.stringify([...next]))
+      return next
+    })
+  }, [])
+
+  /**
+   * v1.18 / v1.21 — Ouvre la modal d'aperçu de replanification.
+   *
+   *   • `scope='full'`    : toutes les tâches sont candidates au déplacement
+   *                         (comportement historique).
+   *   • `scope='partial'` : seules les tâches concernées par les incohérences
+   *                         actuelles (et leurs successeurs transitifs) sont
+   *                         déplaçables ; les autres restent verrouillées
+   *                         comme obstacles dans le timeline.
+   *
+   * Calcule les déplacements via la fonction pure `replanTasks` ; si aucun
+   * déplacement n'est nécessaire, affiche un alert et n'ouvre pas la modal.
+   *
+   * @param scope  Portée du replan (cf. ci-dessus).
+   */
+  const handleOpenReplan = (scope: 'full' | 'partial' = 'full') => {
     if (!state) return
-    const moves = replanTasks(orderedTasks)
+    const moves =
+      scope === 'partial'
+        ? replanTasks(
+            orderedTasks,
+            concernedTaskIds(coherenceIssues, orderedTasks),
+          )
+        : replanTasks(orderedTasks)
     if (moves.length === 0) {
-      alert('Aucune surcharge détectée — rien à replanifier.')
+      alert(
+        scope === 'partial'
+          ? 'Aucun déplacement nécessaire — les incohérences ne peuvent pas être résolues sans déverrouiller d’autres tâches (essayez « Replan complet »).'
+          : 'Aucune surcharge détectée — rien à replanifier.',
+      )
       return
     }
     setReplanPreview(moves)
@@ -751,7 +835,7 @@ export default function App() {
               des déplacements ; appliqué seulement après confirmation. */}
           <button
             className="h-7 px-2 text-sm rounded bg-amber-500 text-white hover:bg-amber-600"
-            onClick={handleOpenReplan}
+            onClick={() => handleOpenReplan('full')}
             title="Replanifier automatiquement les tâches en surcharge"
             disabled={!state}
           >
@@ -784,18 +868,32 @@ export default function App() {
       <main className="flex-1 p-4 overflow-auto">
         {state ? (
           <div ref={ganttRef}>
+            {/* v1.21 — Bandeau d'alerte des incohérences (au-dessus du planning).
+                Auto-masqué quand `coherenceIssues` est vide. N'apparaît que sur
+                la vue Gantt pour ne pas surcharger le plan de charge. */}
+            {view === 'gantt' && (
+              <CoherenceAlert
+                issues={coherenceIssues}
+                onReplanFull={() => handleOpenReplan('full')}
+                onReplanPartial={() => handleOpenReplan('partial')}
+              />
+            )}
             {view === 'gantt' ? (
               <GanttChart
                 windowStart={startIso}
                 windowEnd={endIso}
                 dayWidth={dayWidth}
-                tasks={orderedTasks}
+                tasks={visibleTasks}
+                allTasks={orderedTasks}
                 collaborators={state.collaborators}
                 onTaskClick={setEditing}
                 onMoveTask={handleMoveTask}
                 onResizeTask={handleResizeTask}
                 showDates={showDates}
                 showBarNames={showBarNames}
+                onShiftWindow={shiftWindow}
+                collapsedPhases={collapsedPhases}
+                onToggleCollapse={toggleCollapse}
               />
             ) : (
               <WorkloadChart
@@ -805,6 +903,7 @@ export default function App() {
                 tasks={orderedTasks}
                 collaborators={state.collaborators}
                 highlightUnderload={highlightUnderload}
+                onShiftWindow={shiftWindow}
               />
             )}
           </div>

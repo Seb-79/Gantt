@@ -1440,8 +1440,12 @@ export const DEMO_STATE = {
       id: 't3b',
       name: 'Voix off',
       kind: 'task',
+      // v1.18.1 — fin alignée sur un jour ouvré (vendredi 14/08), au lieu
+      // du samedi 15/08 qui faisait apparaître la tâche dans l'aperçu Replan
+      // alors qu'aucune surcharge ne la concernait (Replan ramène toujours
+      // la fin sur un jour ouvré via addWorkingDays).
       start_date: '2026-08-05',
-      end_date: '2026-08-15',
+      end_date: '2026-08-14',
       progress: 0,
       collaborator_id: 'c1',
       parent_id: 't3',

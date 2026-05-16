@@ -12,7 +12,14 @@
 // =============================================================================
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
+import {
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+  act,
+  cleanup,
+} from '@testing-library/react'
 import App from './App'
 import type { GanttState } from './lib/types'
 
@@ -100,6 +107,16 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // v1.17 — Démonter EXPLICITEMENT avant de retirer le stub de `fetch`.
+  // Sans cela, le `cleanup()` global de `setup.ts` (registré en premier
+  // donc exécuté en dernier dans l'ordre LIFO de vitest) tourne après
+  // `vi.unstubAllGlobals()` : le composant est encore monté avec un
+  // polling actif, la 2e requête de `fetchState` déclenchée par la
+  // mise à jour de `currentProjectId` tombe sur le vrai `undici.fetch`
+  // (qui n'accepte pas les URLs relatives) et pollue le stderr avec un
+  // `Failed to parse URL`. Démonter d'abord stoppe l'effet React et son
+  // setInterval avant le détachement du mock.
+  cleanup()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   vi.useRealTimers()
@@ -313,6 +330,10 @@ describe('App — gestion des projets', () => {
 
 describe('App — robustesse réseau', () => {
   it('erreur HTTP sur /api/state → status passe à error sans crash', async () => {
+    // v1.17 — Le composant log volontairement l'erreur via console.error.
+    // On le silence le temps du test pour ne pas polluer le stderr de la
+    // suite (l'erreur reste assertée via le badge "Erreur réseau").
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const failing = vi.fn(async () => new Response('{}', { status: 500 }))
     vi.stubGlobal('fetch', failing)
     render(<App />)
@@ -320,5 +341,8 @@ describe('App — robustesse réseau', () => {
     await waitFor(() => {
       expect(screen.getByTitle('Erreur réseau')).toBeInTheDocument()
     })
+    // Vérifie que l'erreur a bien été loguée (preuve que le chemin
+    // d'erreur a été emprunté), tout en l'isolant du flux stderr.
+    expect(errSpy).toHaveBeenCalled()
   })
 })

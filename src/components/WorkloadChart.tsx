@@ -50,6 +50,12 @@ interface Props {
   tasks: Task[]
   /** Collaborateurs visibles (1 ligne par collab, même sans tâche). */
   collaborators: Collaborator[]
+  /**
+   * v1.17 — Si `true`, met en évidence les sous-charges (`sum < 1` sur les
+   * jours ouvrés) avec une palette jaune (cellule libre = jaune pâle,
+   * charge partielle = jaune appuyé). Par défaut `false` (palette bleue).
+   */
+  highlightUnderload?: boolean
 }
 
 /**
@@ -63,6 +69,7 @@ export default function WorkloadChart({
   dayWidth,
   tasks,
   collaborators,
+  highlightUnderload = false,
 }: Props) {
   // -------------------------------------------------------------------------
   // Mesure de la largeur visible (cf. GanttChart v1.12) pour étendre la
@@ -225,7 +232,7 @@ export default function WorkloadChart({
                     // de chiffre, même si une tâche couvre ce jour-là.
                     const cellClasses = weekend
                       ? 'bg-slate-50 text-slate-300'
-                      : workloadCellStyle(sum)
+                      : workloadCellStyle(sum, highlightUnderload)
                     // Format affiché : entier "1", "2" ; sinon on n'écrit
                     // rien (les 0 restent visuellement neutres). On évite
                     // un ternaire imbriqué pour rester sonar-friendly.

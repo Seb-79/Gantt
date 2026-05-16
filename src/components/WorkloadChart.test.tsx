@@ -106,6 +106,24 @@ describe('WorkloadChart — rendu de base', () => {
     expect(container.querySelector('.bg-emerald-300')?.textContent).toBe('1')
   })
 
+  it('highlightUnderload met les jours libres (sum < 1) en jaune (v1.17)', () => {
+    // Alice n'a aucune tâche → tous ses jours ouvrés affichables sont à 0.
+    // Lundi 11/05 et mardi 12/05 sont ouvrés et doivent passer au jaune.
+    const { container } = render(
+      <WorkloadChart
+        windowStart="2026-05-11"
+        windowEnd="2026-05-12"
+        dayWidth={20}
+        tasks={[]}
+        collaborators={COLLABS}
+        highlightUnderload
+      />,
+    )
+    // Au moins 2 cellules jaune-pâle (une par collaborateur × jour ouvré).
+    const yellowCells = container.querySelectorAll('.bg-yellow-200')
+    expect(yellowCells.length).toBeGreaterThanOrEqual(2)
+  })
+
   it('grise les week-ends sans y mettre de chiffre', () => {
     // Tâche qui couvre samedi 16/05 et dimanche 17/05.
     const tasks: Task[] = [

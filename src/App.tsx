@@ -47,11 +47,45 @@ const LS_DAY_WIDTH = 'gantt.dayWidth'
 /** v1.16 — Clé localStorage pour mémoriser l'onglet actif (Gantt / Charge). */
 const LS_VIEW = 'gantt.view'
 
+/** v1.17 — Clé localStorage pour mémoriser la mise en évidence des sous-charges. */
+const LS_HIGHLIGHT_UNDERLOAD = 'gantt.highlightUnderload'
+
 /** v1.16 — Vues disponibles dans l'app : planning ou plan de charge. */
 type View = 'gantt' | 'workload'
 
 /** État réseau pour le badge en haut à droite. */
 type NetStatus = 'idle' | 'loading' | 'ok' | 'error'
+
+/**
+ * v1.17 — Helpers `localStorage` à try/catch unique. Centralisent la
+ * gestion du mode privé strict (Safari, etc.) qui peut lever sur read/write,
+ * et réduisent la complexité cognitive des initialiseurs `useState` et
+ * des toggles côté `App`.
+ *
+ * @param key       Clé localStorage.
+ * @param fallback  Valeur retournée si la clé est absente ou inaccessible.
+ * @returns         La chaîne stockée, ou `fallback`.
+ */
+function lsGet(key: string, fallback: string | null = null): string | null {
+  try {
+    const v = localStorage.getItem(key)
+    return v ?? fallback
+  } catch {
+    return fallback
+  }
+}
+
+/**
+ * v1.17 — Écrit une valeur dans `localStorage` en silenciant les erreurs
+ * (mode privé strict). Utilisé par les toggles persistants.
+ */
+function lsSet(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // localStorage indisponible — on continue, l'état reste en mémoire.
+  }
+}
 
 export default function App() {
   /** État serveur (projets + collaborateurs + tâches du projet courant + version). */
@@ -62,14 +96,8 @@ export default function App() {
    * autorité : si l'id stocké n'existe plus (projet supprimé ailleurs),
    * la réponse `/api/state` renvoie le 1er projet et on se resynchronise.
    */
-  const [currentProjectId, setCurrentProjectId] = useState<string | null>(
-    () => {
-      try {
-        return localStorage.getItem(LS_CURRENT_PROJECT)
-      } catch {
-        return null
-      }
-    },
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(() =>
+    lsGet(LS_CURRENT_PROJECT),
   )
   /** Statut réseau pour feedback visuel. */
   const [status, setStatus] = useState<NetStatus>('idle')
@@ -80,15 +108,11 @@ export default function App() {
    * changement de bornes en code).
    */
   const [dayWidth, setDayWidth] = useState<number>(() => {
-    try {
-      const raw = localStorage.getItem(LS_DAY_WIDTH)
-      if (raw === null) return DEFAULT_DAY_WIDTH
-      const parsed = Number(raw)
-      if (!Number.isFinite(parsed)) return DEFAULT_DAY_WIDTH
-      return clampDayWidth(parsed)
-    } catch {
-      return DEFAULT_DAY_WIDTH
-    }
+    const raw = lsGet(LS_DAY_WIDTH)
+    if (raw === null) return DEFAULT_DAY_WIDTH
+    const parsed = Number(raw)
+    if (!Number.isFinite(parsed)) return DEFAULT_DAY_WIDTH
+    return clampDayWidth(parsed)
   })
 
   // v1.13.1 — Persistance du zoom : à chaque changement, on l'écrit en
@@ -96,11 +120,7 @@ export default function App() {
   // dayWidth depuis n'importe où (slider, +, −, raccourci futur) sans
   // dupliquer la logique de persistance.
   useEffect(() => {
-    try {
-      localStorage.setItem(LS_DAY_WIDTH, String(dayWidth))
-    } catch {
-      // localStorage indisponible — on continue.
-    }
+    lsSet(LS_DAY_WIDTH, String(dayWidth))
   }, [dayWidth])
   /** Bornes du calendrier visible (4 mois par défaut depuis aujourd'hui). */
   const [{ startIso, endIso }, setWindow] = useState(() => defaultWindow())
@@ -113,13 +133,9 @@ export default function App() {
    * (format 'dd/MM'). Persisté en localStorage pour conserver le choix
    * d'une session à l'autre.
    */
-  const [showDates, setShowDates] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(LS_SHOW_DATES) === '1'
-    } catch {
-      return false
-    }
-  })
+  const [showDates, setShowDates] = useState<boolean>(
+    () => lsGet(LS_SHOW_DATES) === '1',
+  )
   /**
    * v1.13 — Affichage du nom de la tâche à l'intérieur des barres. Activé
    * par défaut (planning textuel) ; on peut le désactiver pour obtenir un
@@ -127,25 +143,25 @@ export default function App() {
    * en localStorage : seule la valeur '0' inhibe (toute autre valeur =
    * défaut "affiché", y compris l'absence de clé).
    */
-  const [showBarNames, setShowBarNames] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(LS_SHOW_BAR_NAMES) !== '0'
-    } catch {
-      return true
-    }
-  })
+  const [showBarNames, setShowBarNames] = useState<boolean>(
+    () => lsGet(LS_SHOW_BAR_NAMES) !== '0',
+  )
   /**
    * v1.16 — Onglet actif. Par défaut « gantt » (planning) ; bascule vers
    * « workload » pour afficher le plan de charge par collaborateur.
    * Persisté en localStorage pour revenir sur la même vue à l'ouverture.
    */
-  const [view, setView] = useState<View>(() => {
-    try {
-      return localStorage.getItem(LS_VIEW) === 'workload' ? 'workload' : 'gantt'
-    } catch {
-      return 'gantt'
-    }
-  })
+  const [view, setView] = useState<View>(() =>
+    lsGet(LS_VIEW) === 'workload' ? 'workload' : 'gantt',
+  )
+  /**
+   * v1.17 — Met en évidence les sous-charges (< 1 jour) en jaune sur la
+   * vue Plan de charge, de manière symétrique au rouge appliqué aux
+   * surcharges. Optionnel et désactivé par défaut (palette bleue d'origine).
+   */
+  const [highlightUnderload, setHighlightUnderload] = useState<boolean>(
+    () => lsGet(LS_HIGHLIGHT_UNDERLOAD) === '1',
+  )
 
   /** Référence sur le bloc Gantt — utilisée pour la capture PNG. */
   const ganttRef = useRef<HTMLDivElement | null>(null)
@@ -221,11 +237,7 @@ export default function App() {
         data.current_project_id !== currentProjectId
       ) {
         setCurrentProjectId(data.current_project_id)
-        try {
-          localStorage.setItem(LS_CURRENT_PROJECT, data.current_project_id)
-        } catch {
-          // localStorage indisponible (mode privé strict) → on ignore
-        }
+        lsSet(LS_CURRENT_PROJECT, data.current_project_id)
       }
       setStatus('ok')
     } catch (err) {
@@ -323,11 +335,7 @@ export default function App() {
   /** Change de projet courant et persiste le choix. */
   const handleSelectProject = (id: string) => {
     setCurrentProjectId(id)
-    try {
-      localStorage.setItem(LS_CURRENT_PROJECT, id)
-    } catch {
-      // localStorage indisponible — on continue, l'id reste en mémoire.
-    }
+    lsSet(LS_CURRENT_PROJECT, id)
     // Reset du drapeau de cadrage initial pour qu'on recale la fenêtre
     // temporelle sur les tâches du nouveau projet.
     initialWindowSet.current = false
@@ -417,11 +425,7 @@ export default function App() {
   const toggleShowDates = () => {
     setShowDates((v) => {
       const next = !v
-      try {
-        localStorage.setItem(LS_SHOW_DATES, next ? '1' : '0')
-      } catch {
-        // localStorage indisponible — on continue, l'état reste en mémoire.
-      }
+      lsSet(LS_SHOW_DATES, next ? '1' : '0')
       return next
     })
   }
@@ -434,11 +438,7 @@ export default function App() {
   const toggleShowBarNames = () => {
     setShowBarNames((v) => {
       const next = !v
-      try {
-        localStorage.setItem(LS_SHOW_BAR_NAMES, next ? '1' : '0')
-      } catch {
-        // localStorage indisponible — on continue, l'état reste en mémoire.
-      }
+      lsSet(LS_SHOW_BAR_NAMES, next ? '1' : '0')
       return next
     })
   }
@@ -450,11 +450,19 @@ export default function App() {
    */
   const selectView = (next: View) => {
     setView(next)
-    try {
-      localStorage.setItem(LS_VIEW, next)
-    } catch {
-      // localStorage indisponible — on continue.
-    }
+    lsSet(LS_VIEW, next)
+  }
+
+  /**
+   * v1.17 — Bascule l'option « sous-charges en jaune » sur la vue Charge
+   * et persiste le choix.
+   */
+  const toggleHighlightUnderload = () => {
+    setHighlightUnderload((v) => {
+      const next = !v
+      lsSet(LS_HIGHLIGHT_UNDERLOAD, next ? '1' : '0')
+      return next
+    })
   }
 
   /** Décalle la fenêtre temporelle de N jours (négatif = passé). */
@@ -485,43 +493,7 @@ export default function App() {
           📊
         </h1>
 
-        {/* v1.16 — Onglets de vue (Gantt | Plan de charge). Compact,
-            sur la même ligne que tout le reste du header : 2 boutons
-            collés (group rounded), l'onglet actif en fond bleu pâle. */}
-        <div
-          className="flex items-center rounded border border-slate-300 overflow-hidden shrink-0"
-          role="tablist"
-          aria-label="Vue"
-        >
-          <button
-            className={[
-              'h-7 px-2 text-xs font-medium',
-              view === 'gantt'
-                ? 'bg-blue-100 text-blue-700'
-                : 'bg-white text-slate-700 hover:bg-slate-100',
-            ].join(' ')}
-            onClick={() => selectView('gantt')}
-            role="tab"
-            aria-selected={view === 'gantt'}
-            title="Vue planning Gantt"
-          >
-            Gantt
-          </button>
-          <button
-            className={[
-              'h-7 px-2 text-xs font-medium border-l border-slate-300',
-              view === 'workload'
-                ? 'bg-blue-100 text-blue-700'
-                : 'bg-white text-slate-700 hover:bg-slate-100',
-            ].join(' ')}
-            onClick={() => selectView('workload')}
-            role="tab"
-            aria-selected={view === 'workload'}
-            title="Vue plan de charge par collaborateur"
-          >
-            Charge
-          </button>
-        </div>
+        <ViewTabs view={view} onChange={selectView} />
 
         {/* v1.8 — Sélecteur de projet + actions CRUD */}
         {state && (
@@ -643,6 +615,29 @@ export default function App() {
 
         {/* Actions globales — alignées à droite, icônes seules */}
         <div className="ml-auto flex items-center gap-1 shrink-0">
+          {/* v1.17 — Toggle « sous-charges en jaune » : ne s'affiche que
+              sur l'onglet Plan de charge (effet visible uniquement sur les
+              cellules). Fond jaune pâle quand actif pour rappeler la palette
+              qu'il déclenche. */}
+          {view === 'workload' && (
+            <button
+              className={[
+                'w-7 h-7 text-sm rounded border border-slate-300',
+                highlightUnderload
+                  ? 'bg-yellow-200 text-yellow-900 border-yellow-400'
+                  : 'hover:bg-slate-100',
+              ].join(' ')}
+              onClick={toggleHighlightUnderload}
+              title={
+                highlightUnderload
+                  ? 'Masquer la mise en évidence des sous-charges'
+                  : 'Mettre en évidence les sous-charges (< 1 j) en jaune'
+              }
+              aria-pressed={highlightUnderload}
+            >
+              🟡
+            </button>
+          )}
           {/* v1.16 — Les toggles "nom" et "dates" ne concernent que la vue
               Gantt (rendu des barres). On les masque sur la vue Charge. */}
           {view === 'gantt' && (
@@ -742,6 +737,7 @@ export default function App() {
                 dayWidth={dayWidth}
                 tasks={orderedTasks}
                 collaborators={state.collaborators}
+                highlightUnderload={highlightUnderload}
               />
             )}
           </div>
@@ -816,6 +812,58 @@ async function formatApiError(res: Response): Promise<string> {
     for (const d of details) lines.push(formatErrorDetail(d))
   }
   return lines.join('\n')
+}
+
+/**
+ * v1.16 — Onglets compacts « Gantt | Charge » utilisés dans le header.
+ * Extrait de `App` pour alléger sa complexité cognitive.
+ *
+ * @param view      Onglet actuellement sélectionné.
+ * @param onChange  Callback appelé avec la nouvelle vue lors d'un clic.
+ */
+function ViewTabs({
+  view,
+  onChange,
+}: {
+  view: View
+  onChange: (v: View) => void
+}) {
+  return (
+    <div
+      className="flex items-center rounded border border-slate-300 overflow-hidden shrink-0"
+      role="tablist"
+      aria-label="Vue"
+    >
+      <button
+        className={[
+          'h-7 px-2 text-xs font-medium',
+          view === 'gantt'
+            ? 'bg-blue-100 text-blue-700'
+            : 'bg-white text-slate-700 hover:bg-slate-100',
+        ].join(' ')}
+        onClick={() => onChange('gantt')}
+        role="tab"
+        aria-selected={view === 'gantt'}
+        title="Vue planning Gantt"
+      >
+        Gantt
+      </button>
+      <button
+        className={[
+          'h-7 px-2 text-xs font-medium border-l border-slate-300',
+          view === 'workload'
+            ? 'bg-blue-100 text-blue-700'
+            : 'bg-white text-slate-700 hover:bg-slate-100',
+        ].join(' ')}
+        onClick={() => onChange('workload')}
+        role="tab"
+        aria-selected={view === 'workload'}
+        title="Vue plan de charge par collaborateur"
+      >
+        Charge
+      </button>
+    </div>
+  )
 }
 
 /**

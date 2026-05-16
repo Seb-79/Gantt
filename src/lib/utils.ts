@@ -482,12 +482,31 @@ export function computeWorkload(
  *   • `]0    ; 0.5[`     → bleu pâle  (sous-charge)
  *   • `0`                → cellule neutre (vide)
  *
- * @param sum  Charge cumulée du jour (peut dépasser 1 en cas de surcharge).
- * @returns    Classes Tailwind concaténables (pas d'espace en début/fin).
+ * v1.17 — Option `highlightUnderload` : quand `true`, toutes les charges
+ * strictement inférieures à 1 (y compris `0`) basculent sur une palette
+ * jaune pour mettre en évidence les disponibilités, dans le même esprit
+ * que le rouge pour les surcharges :
+ *
+ *   • `]0 ; 1[`          → jaune appuyé    (charge partielle)
+ *   • `0`                → jaune pâle      (totalement libre)
+ *
+ * Les états `= 1` (vert) et `> 1` (rouge) restent inchangés — l'option ne
+ * concerne que la zone « sous-charge ».
+ *
+ * @param sum                Charge cumulée du jour (peut dépasser 1).
+ * @param highlightUnderload v1.17 — Si true, palette jaune pour sum < 1.
+ * @returns                  Classes Tailwind concaténables.
  */
-export function workloadCellStyle(sum: number): string {
+export function workloadCellStyle(
+  sum: number,
+  highlightUnderload = false,
+): string {
   if (sum > 1) return 'bg-red-500 text-white'
   if (sum === 1) return 'bg-emerald-300 text-emerald-900'
+  if (highlightUnderload) {
+    if (sum > 0) return 'bg-yellow-400 text-yellow-900'
+    return 'bg-yellow-200 text-yellow-800'
+  }
   if (sum >= 0.75) return 'bg-blue-400 text-white'
   if (sum >= 0.5) return 'bg-blue-200 text-blue-900'
   if (sum > 0) return 'bg-blue-100 text-blue-900'

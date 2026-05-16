@@ -239,6 +239,17 @@ describe('workloadCellStyle (v1.16)', () => {
     expect(workloadCellStyle(1)).toContain('bg-emerald-300')
     expect(workloadCellStyle(2)).toContain('bg-red-500')
   })
+
+  // v1.17 — highlightUnderload : toutes les charges < 1 basculent au jaune
+  // (sans toucher aux états plein (= 1) et surcharge (> 1)).
+  it('highlightUnderload → sous-charges en jaune, sans toucher au plein/rouge', () => {
+    expect(workloadCellStyle(0, true)).toContain('bg-yellow-200')
+    expect(workloadCellStyle(0.5, true)).toContain('bg-yellow-400')
+    expect(workloadCellStyle(0.99, true)).toContain('bg-yellow-400')
+    // 1 et 2 restent inchangés malgré le flag.
+    expect(workloadCellStyle(1, true)).toContain('bg-emerald-300')
+    expect(workloadCellStyle(2, true)).toContain('bg-red-500')
+  })
 })
 
 describe('groupByWeek', () => {

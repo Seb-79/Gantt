@@ -81,6 +81,10 @@ export default function TaskEditor({
    *  de cette tâche. 0 = enchaînement immédiat. Visible uniquement quand
    *  un prédécesseur est sélectionné. */
   const [lag, setLag] = useState<number>(0)
+  /** v1.18 — Priorité facultative pour le « Replan » : 1..5, ou `null` quand
+   *  rien n'est saisi (la tâche est alors moins prioritaire que toute valeur
+   *  1..5 saisie sur une autre tâche du même collaborateur). */
+  const [priority, setPriority] = useState<number | null>(null)
   /** Message d'erreur de validation à afficher dans le modal (null = OK). */
   const [error, setError] = useState<string | null>(null)
 
@@ -112,6 +116,13 @@ export default function TaskEditor({
     // par défaut. À l'ouverture, on fait confiance au backend qui garantit
     // déjà l'invariant start = pred.end + lag.
     setLag(Math.max(0, Math.floor(Number(src.predecessor_lag) || 0)))
+    // v1.18 — priorité : on n'accepte que 1..5 ; tout le reste devient null.
+    const rawPrio = src.priority
+    setPriority(
+      typeof rawPrio === 'number' && rawPrio >= 1 && rawPrio <= 5
+        ? Math.floor(rawPrio)
+        : null,
+    )
     setError(null)
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [task, defaults])
@@ -329,6 +340,8 @@ export default function TaskEditor({
       // v1.10 — Délai en jours ouvrés (uniquement si prédécesseur défini ;
       // sinon le DAL le force à 0).
       predecessor_lag: kind === 'phase' || !predecessorId ? 0 : lag,
+      // v1.18 — Priorité (1..5) ou null. Une phase n'a pas de priorité.
+      priority: kind === 'phase' ? null : priority,
       // color: '' (vide) → null (= hériter automatiquement)
       color: color || null,
     })
@@ -552,6 +565,38 @@ export default function TaskEditor({
           </div>
         )}
 
+        {/* v1.18 — Priorité facultative (1..5) pour la replanification.
+            Masquée pour les phases (qui n'ont pas de collaborateur, donc
+            jamais en surcharge). 1 = la plus prioritaire ; vide = pas de
+            priorité (= passe après toute valeur 1..5 saisie). */}
+        {kind !== 'phase' && (
+          <label className="block text-sm">
+            <span className="text-slate-600">
+              Priorité
+              <span className="ml-1 text-xs text-slate-400">
+                (facultatif — utilisée par « Replan » pour départager les tâches
+                d'un collaborateur en surcharge)
+              </span>
+            </span>
+            <select
+              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+              value={priority === null ? '' : String(priority)}
+              onChange={(e) => {
+                const v = e.target.value
+                setPriority(v === '' ? null : Number(v))
+              }}
+              title="1 = la plus prioritaire, 5 = la moins. Vide = pas de priorité (passe après toute valeur saisie)."
+            >
+              <option value="">— aucune —</option>
+              <option value="1">1 (la plus prioritaire)</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5 (la moins prioritaire)</option>
+            </select>
+          </label>
+        )}
+
         {/* COULEUR — éditable, par défaut = couleur effective */}
         <div className="block text-sm">
           <span className="text-slate-600">Couleur de la barre</span>
@@ -575,6 +620,7 @@ export default function TaskEditor({
                     parent_id: null,
                     predecessor_id: null,
                     predecessor_lag: 0,
+                    priority: null,
                     position: 0,
                     project_id: '',
                   },

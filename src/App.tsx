@@ -23,11 +23,13 @@ import {
   makeId,
   MAX_DAY_WIDTH,
   MIN_DAY_WIDTH,
+  replanTasks,
   sortTasksHierarchically,
   todayIso,
   windowFromTasks,
 } from './lib/utils'
-import type { GanttState, Task } from './lib/types'
+import type { ReplanMove } from './lib/utils'
+import type { Collaborator, GanttState, Task } from './lib/types'
 
 /** Intervalle (ms) du polling de synchronisation. */
 const POLL_INTERVAL = 5000
@@ -162,6 +164,13 @@ export default function App() {
   const [highlightUnderload, setHighlightUnderload] = useState<boolean>(
     () => lsGet(LS_HIGHLIGHT_UNDERLOAD) === '1',
   )
+  /**
+   * v1.18 — Aperçu de replanification en attente d'approbation. `null` quand
+   * la modal est fermée, sinon contient la liste des déplacements proposés
+   * par `replanTasks` (cf. utils.ts). Validée par "Appliquer", abandonnée
+   * par "Annuler" (la modal se ferme sans envoyer de PATCH).
+   */
+  const [replanPreview, setReplanPreview] = useState<ReplanMove[] | null>(null)
 
   /** Référence sur le bloc Gantt — utilisée pour la capture PNG. */
   const ganttRef = useRef<HTMLDivElement | null>(null)
@@ -465,6 +474,54 @@ export default function App() {
     })
   }
 
+  /**
+   * v1.18 — Ouvre la modal d'aperçu de replanification. Calcule les
+   * déplacements via la fonction pure `replanTasks` ; si aucun déplacement
+   * n'est nécessaire, affiche un simple alert et n'ouvre pas la modal.
+   */
+  const handleOpenReplan = () => {
+    if (!state) return
+    const moves = replanTasks(orderedTasks)
+    if (moves.length === 0) {
+      alert('Aucune surcharge détectée — rien à replanifier.')
+      return
+    }
+    setReplanPreview(moves)
+  }
+
+  /**
+   * v1.18 — Applique séquentiellement chaque déplacement de l'aperçu via
+   * `PATCH /api/tasks/:id`. L'ordre est celui produit par `replanTasks`
+   * (prédécesseurs avant successeurs) : la cascade côté serveur s'aligne
+   * alors avec les dates proposées sans les écraser.
+   */
+  const handleApplyReplan = async () => {
+    if (!replanPreview || replanPreview.length === 0) return
+    const moves = replanPreview
+    setReplanPreview(null)
+    setStatus('loading')
+    try {
+      for (const m of moves) {
+        const res = await fetch(`/api/tasks/${m.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            start_date: m.newStart,
+            end_date: m.newEnd,
+          }),
+        })
+        if (!res.ok) {
+          throw new Error(await formatApiError(res))
+        }
+      }
+      await fetchState()
+    } catch (err) {
+      console.error('[replan]', err)
+      setStatus('error')
+      alert(`Erreur pendant la replanification : ${(err as Error).message}`)
+    }
+  }
+
   /** Décalle la fenêtre temporelle de N jours (négatif = passé). */
   const shiftWindow = (days: number) => {
     setWindow((w) => {
@@ -690,6 +747,16 @@ export default function App() {
           >
             + Tâche
           </button>
+          {/* v1.18 — Replan : analyse les surcharges et propose un aperçu
+              des déplacements ; appliqué seulement après confirmation. */}
+          <button
+            className="h-7 px-2 text-sm rounded bg-amber-500 text-white hover:bg-amber-600"
+            onClick={handleOpenReplan}
+            title="Replanifier automatiquement les tâches en surcharge"
+            disabled={!state}
+          >
+            🔄 Replan
+          </button>
           <button
             className="w-7 h-7 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
             onClick={handleScreenshot}
@@ -749,6 +816,16 @@ export default function App() {
       {/* ---------------------------------------------------------------- */}
       {/* MODAL d'édition / création                                       */}
       {/* ---------------------------------------------------------------- */}
+      {/* v1.18 — Modal d'aperçu Replan (fermée si replanPreview est null). */}
+      {replanPreview && state && (
+        <ReplanPreviewModal
+          moves={replanPreview}
+          collaborators={state.collaborators}
+          onCancel={() => setReplanPreview(null)}
+          onApply={handleApplyReplan}
+        />
+      )}
+
       {(editing || creating) && state && (
         <TaskEditor
           task={editing}
@@ -862,6 +939,98 @@ function ViewTabs({
       >
         Charge
       </button>
+    </div>
+  )
+}
+
+/**
+ * v1.18 — Modal d'aperçu des déplacements proposés par « Replan ». Liste
+ * chaque tâche déplacée (nom, collaborateur, anciennes vs nouvelles dates)
+ * et propose Annuler / Appliquer. La fonction `replanTasks` est appelée en
+ * amont par le caller : on reçoit déjà les `moves` à afficher.
+ *
+ * @param moves          Déplacements à présenter.
+ * @param collaborators  Pour afficher le nom du collab à côté de chaque tâche.
+ * @param onCancel       Ferme la modal sans rien appliquer.
+ * @param onApply        Lance les PATCH (séquentiels) sur les tâches.
+ */
+function ReplanPreviewModal({
+  moves,
+  collaborators,
+  onCancel,
+  onApply,
+}: {
+  moves: ReplanMove[]
+  collaborators: Collaborator[]
+  onCancel: () => void
+  onApply: () => void
+}) {
+  // Index id → nom pour lookup rapide.
+  const collabName = new Map(collaborators.map((c) => [c.id, c.name]))
+  return (
+    <div
+      className="fixed inset-0 bg-black/40 flex items-center justify-center z-50"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-white rounded-lg shadow-xl w-full max-w-2xl p-5 space-y-3"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-semibold">
+          🔄 Replanification — {moves.length} tâche
+          {moves.length > 1 ? 's' : ''} à déplacer
+        </h2>
+        <p className="text-xs text-slate-600">
+          Les tâches ci-dessous seront décalées dans le temps pour résoudre les
+          surcharges de collaborateur, en respectant les prédécesseurs et les
+          priorités. Aucune tâche n'est avancée ; seules les dates sont
+          modifiées (la charge en jours ouvrés est préservée).
+        </p>
+        <div className="max-h-96 overflow-y-auto border border-slate-200 rounded">
+          <table className="w-full text-xs">
+            <thead className="bg-slate-50 sticky top-0">
+              <tr className="text-left text-slate-600">
+                <th className="px-2 py-1.5">Tâche</th>
+                <th className="px-2 py-1.5">Collaborateur</th>
+                <th className="px-2 py-1.5">Avant</th>
+                <th className="px-2 py-1.5">Après</th>
+              </tr>
+            </thead>
+            <tbody>
+              {moves.map((m) => (
+                <tr key={m.id} className="border-t border-slate-100">
+                  <td className="px-2 py-1.5 font-medium">{m.name}</td>
+                  <td className="px-2 py-1.5 text-slate-600">
+                    {m.collaborator_id
+                      ? (collabName.get(m.collaborator_id) ?? '—')
+                      : '—'}
+                  </td>
+                  <td className="px-2 py-1.5 text-slate-500">
+                    {m.oldStart} → {m.oldEnd}
+                  </td>
+                  <td className="px-2 py-1.5 text-emerald-700 font-medium">
+                    {m.newStart} → {m.newEnd}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            className="px-3 py-1.5 text-sm rounded border border-slate-300 hover:bg-slate-50"
+            onClick={onCancel}
+          >
+            Annuler
+          </button>
+          <button
+            className="px-3 py-1.5 text-sm rounded bg-amber-500 text-white hover:bg-amber-600"
+            onClick={onApply}
+          >
+            Appliquer
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

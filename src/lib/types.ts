@@ -61,6 +61,10 @@ export interface Task {
   /** v1.10 — Délai (jours ouvrés) entre la fin du prédécesseur et le début de
    *  cette tâche. 0 = enchaînement immédiat. Non significatif sans prédécesseur. */
   predecessor_lag: number
+  /** v1.18 — Priorité facultative pour la replanification (1 = la plus prioritaire,
+   *  5 = la moins). `null` = pas de priorité saisie (= moins prioritaire que toute
+   *  valeur 1..5). Sans effet sur l'affichage : utilisée uniquement par « Replan ». */
+  priority: number | null
   /** Position d'affichage (ordre des lignes). */
   position: number
   /** Projet de rattachement (v1.8). */

@@ -26,6 +26,7 @@ import {
   rangeToWidth,
   snapBackwardToWorkingDay,
   snapForwardToWorkingDay,
+  replanTasks,
   sortTasksHierarchically,
   todayIso,
   windowFromTasks,
@@ -51,6 +52,7 @@ function mkTask(id: string, overrides: Partial<Task> = {}): Task {
     parent_id: null,
     predecessor_id: null,
     predecessor_lag: 0,
+    priority: null,
     position: 0,
     project_id: 'p_test',
     ...overrides,
@@ -505,5 +507,157 @@ describe('descendantIds', () => {
   it('set vide pour une feuille', () => {
     const tasks: Task[] = [mkTask('A')]
     expect(descendantIds('A', tasks).size).toBe(0)
+  })
+})
+
+// =============================================================================
+// REPLAN (v1.18)
+// =============================================================================
+
+describe('replanTasks (v1.18)', () => {
+  it('aucun déplacement si aucune surcharge', () => {
+    const tasks: Task[] = [
+      mkTask('A', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-18', // lundi
+        end_date: '2026-05-22', // vendredi (5 j ouvrés)
+      }),
+      mkTask('B', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-25',
+        end_date: '2026-05-29',
+      }),
+    ]
+    expect(replanTasks(tasks)).toEqual([])
+  })
+
+  it('pousse la 2e tâche après la 1re quand elles se chevauchent pour le même collab', () => {
+    // Scénario du brief : Alice est en surcharge 25→29 mai ; la 2e tâche
+    // (« Définir le message » 25 mai → 5 juin) doit être décalée pour
+    // démarrer dès qu'Alice est libre, soit le 1er juin.
+    const tasks: Task[] = [
+      mkTask('A', {
+        // « Recherche audience » : seule tâche prioritaire (haut de liste).
+        collaborator_id: 'c1',
+        start_date: '2026-05-15', // ven 15 mai
+        end_date: '2026-05-29', // ven 29 mai (11 j ouvrés)
+      }),
+      mkTask('B', {
+        // « Définir le message » : démarre alors qu'A occupe encore Alice.
+        collaborator_id: 'c1',
+        start_date: '2026-05-25', // lun 25 mai
+        end_date: '2026-06-05', // ven 5 juin (10 j ouvrés)
+      }),
+    ]
+    const moves = replanTasks(tasks)
+    expect(moves).toHaveLength(1)
+    expect(moves[0]).toMatchObject({
+      id: 'B',
+      newStart: '2026-06-01', // lundi suivant la fin de A (ven 29 → lun 1er)
+    })
+    // La charge (jours ouvrés) est préservée : 10 j → 1er juin → ven 12 juin.
+    expect(workingDaysBetween(moves[0].newStart, moves[0].newEnd)).toBe(10)
+  })
+
+  it('la priorité 1 gagne sur une tâche sans priorité (top-of-list ignoré)', () => {
+    // B est plus bas dans la liste mais a priorité 1 → B garde sa place,
+    // A (sans priorité) est décalée.
+    const tasks: Task[] = [
+      mkTask('A', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-18',
+        end_date: '2026-05-22',
+      }),
+      mkTask('B', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-18',
+        end_date: '2026-05-20', // chevauche A
+        priority: 1,
+      }),
+    ]
+    const moves = replanTasks(tasks)
+    expect(moves.map((m) => m.id)).toEqual(['A'])
+    // A part au lundi suivant la fin de B (mer 20 → jeu 21 = jour ouvré).
+    expect(moves[0].newStart).toBe('2026-05-21')
+  })
+
+  it('tie-break sur la position dans la liste (top wins)', () => {
+    // Aucune priorité saisie, pas de lien : la 1re de la liste gagne.
+    const tasks: Task[] = [
+      mkTask('TOP', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-18',
+        end_date: '2026-05-22',
+      }),
+      mkTask('BOTTOM', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-18',
+        end_date: '2026-05-20',
+      }),
+    ]
+    const moves = replanTasks(tasks)
+    expect(moves.map((m) => m.id)).toEqual(['BOTTOM'])
+  })
+
+  it('le prédécesseur est prioritaire sur le successeur même si moins prioritaire en numérique', () => {
+    // A prédécesseur de B. A n'a pas de priorité, B a priorité 1. La topo
+    // impose A d'abord ; B est traité après et adapte ses dates.
+    const tasks: Task[] = [
+      mkTask('A', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-18',
+        end_date: '2026-05-22', // ven 22 mai
+      }),
+      mkTask('B', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-18',
+        end_date: '2026-05-20',
+        predecessor_id: 'A',
+        priority: 1,
+      }),
+    ]
+    const moves = replanTasks(tasks)
+    // A reste sur place ; B démarre dès la fin de A (lun 25 mai).
+    expect(moves.map((m) => m.id)).toEqual(['B'])
+    expect(moves[0].newStart).toBe('2026-05-25')
+  })
+
+  it('ne touche pas aux tâches de collabs différents', () => {
+    const tasks: Task[] = [
+      mkTask('A', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-18',
+        end_date: '2026-05-22',
+      }),
+      mkTask('B', {
+        collaborator_id: 'c2',
+        start_date: '2026-05-18',
+        end_date: '2026-05-22',
+      }),
+    ]
+    expect(replanTasks(tasks)).toEqual([])
+  })
+
+  it('ignore les jalons et les phases', () => {
+    const tasks: Task[] = [
+      mkTask('phase', {
+        kind: 'phase',
+        start_date: '2026-05-18',
+        end_date: '2026-05-29',
+      }),
+      mkTask('jalon', {
+        kind: 'milestone',
+        collaborator_id: 'c1',
+        start_date: '2026-05-22',
+        end_date: '2026-05-22',
+      }),
+      mkTask('A', {
+        collaborator_id: 'c1',
+        start_date: '2026-05-18',
+        end_date: '2026-05-22',
+      }),
+    ]
+    // Aucune surcharge sur tâche réelle → aucun déplacement.
+    expect(replanTasks(tasks)).toEqual([])
   })
 })

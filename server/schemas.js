@@ -54,6 +54,16 @@ const Lag = z
   .min(0, 'doit être ≥ 0')
   .max(3650, 'doit être ≤ 3650')
 
+/**
+ * v1.18 — Priorité facultative pour le « Replan » : entier 1..5 ; 1 = la plus
+ * prioritaire, 5 = la moins. `null` = « pas de priorité saisie ».
+ */
+const Priority = z
+  .number({ message: 'doit être un nombre' })
+  .int('doit être entier')
+  .min(1, 'doit être entre 1 et 5')
+  .max(5, 'doit être entre 1 et 5')
+
 // -----------------------------------------------------------------------------
 // PROJETS (v1.8)
 // -----------------------------------------------------------------------------
@@ -124,6 +134,8 @@ export const CreateTaskBody = z
     predecessor_id: NonEmptyId.nullable().optional(),
     // v1.10 — Délai en jours ouvrés entre le prédécesseur et cette tâche.
     predecessor_lag: Lag.optional(),
+    // v1.18 — Priorité facultative (1..5). `null` = « pas de priorité ».
+    priority: Priority.nullable().optional(),
     // v1.8 — Projet de rattachement (optionnel : si absent, le DAL utilise
     // le premier projet existant).
     project_id: NonEmptyId.optional(),
@@ -145,6 +157,7 @@ export const UpdateTaskBody = z
     parent_id: NonEmptyId.nullable().optional(),
     predecessor_id: NonEmptyId.nullable().optional(), // v1.2
     predecessor_lag: Lag.optional(), // v1.10
+    priority: Priority.nullable().optional(), // v1.18
   })
   .refine((v) => Object.keys(v).length > 0, {
     message: 'au moins un champ doit être fourni',

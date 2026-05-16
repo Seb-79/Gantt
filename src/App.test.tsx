@@ -46,6 +46,7 @@ function mkState(overrides: Partial<GanttState> = {}): GanttState {
         parent_id: null,
         predecessor_id: null,
         predecessor_lag: 0,
+        priority: null,
         position: 0,
         project_id: 'p1',
       },

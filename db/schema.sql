@@ -65,6 +65,11 @@ CREATE TABLE IF NOT EXISTS tasks (
   -- N = Y.start = (N+1)-ème jour ouvré depuis X.end (cf. computeSuccessorStart).
   -- Pour les tâches sans prédécesseur, vaut 0 (non significatif).
   predecessor_lag INTEGER NOT NULL DEFAULT 0,
+  -- v1.18 — Priorité facultative (1 à 5). 1 = la plus prioritaire,
+  -- 5 = la moins. NULL = "pas de priorité saisie" (= moins prioritaire que
+  -- toute valeur 1..5). Utilisée uniquement par la fonction « Replan » pour
+  -- arbitrer entre deux tâches non liées d'un même collaborateur en surcharge.
+  priority        INTEGER,
   position        INTEGER NOT NULL,
   -- v1.8 — project_id est ajouté à la table tasks pour les bases neuves ;
   -- pour les bases anciennes, c'est `ensureTaskColumns()` (db/index.js) qui

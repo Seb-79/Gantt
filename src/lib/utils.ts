@@ -553,6 +553,297 @@ export function sortTasksHierarchically(tasks: Task[]): Task[] {
   return out
 }
 
+// -----------------------------------------------------------------------------
+// REPLAN (v1.18) — replanification des tâches pour résoudre les surcharges
+// -----------------------------------------------------------------------------
+
+/**
+ * v1.18 — Une « proposition de déplacement » renvoyée par `replanTasks` :
+ * pour une tâche donnée, ses dates actuelles et les dates proposées par
+ * l'algorithme. La modal d'aperçu se contente de mapper ce tableau en lignes.
+ */
+export interface ReplanMove {
+  /** Id de la tâche concernée. */
+  id: string
+  /** Libellé (recopié pour faciliter l'affichage). */
+  name: string
+  /** Collaborateur affecté (peut être null). */
+  collaborator_id: string | null
+  /** Date de début actuelle. */
+  oldStart: string
+  /** Date de fin actuelle. */
+  oldEnd: string
+  /** Date de début proposée par la replanification. */
+  newStart: string
+  /** Date de fin proposée par la replanification. */
+  newEnd: string
+}
+
+/**
+ * v1.18 — Cherche la première date de début ≥ `earliestStart` telle que
+ * l'intervalle de travail `[start ; addWorkingDays(start, charge)]` ne
+ * chevauche AUCUN intervalle déjà occupé par le collaborateur.
+ *
+ * Les intervalles sont fournis sous la forme `[start_iso, end_iso]` (bornes
+ * INCLUSIVES). On considère qu'il y a chevauchement dès que les deux
+ * intervalles ont au moins un jour en commun.
+ *
+ * @param intervals     Intervalles déjà fixés pour le collaborateur.
+ * @param earliestStart Borne basse (souvent : `current_start` ou contrainte
+ *                      de prédécesseur), déjà snappée jour ouvré.
+ * @param charge        Durée en jours OUVRÉS de la tâche à placer.
+ * @returns             1er jour ouvré disponible (ISO YYYY-MM-DD).
+ */
+function findFreeSlot(
+  intervals: Array<[string, string]>,
+  earliestStart: string,
+  charge: number,
+): string {
+  let candidate = snapForwardToWorkingDay(earliestStart)
+  // On ré-itère tant qu'on déplace : pousser au-delà d'un intervalle peut
+  // tomber sur un autre intervalle plus loin (intervalles non triés ici,
+  // mais le caller les tient triés ; la boucle est bornée par leur nombre).
+  let moved = true
+  while (moved) {
+    moved = false
+    const candidateEnd = addWorkingDays(candidate, charge)
+    for (const [iStart, iEnd] of intervals) {
+      // Chevauchement = NON (candidateEnd < iStart OU candidate > iEnd).
+      if (candidateEnd >= iStart && candidate <= iEnd) {
+        // Pousse au 1er jour ouvré APRÈS la fin de l'intervalle bloquant.
+        candidate = snapForwardToWorkingDay(addDaysIso(iEnd, 1))
+        moved = true
+        break
+      }
+    }
+  }
+  return candidate
+}
+
+/**
+ * v1.18 — Construit l'ordre de traitement des tâches pour la replanification :
+ * tri TOPOLOGIQUE (un prédécesseur de type 'task' est traité avant ses
+ * successeurs) avec, à chaque étape, choix de la « ready » la plus prioritaire.
+ *
+ * Critère de priorité quand plusieurs tâches sont prêtes en même temps :
+ *   1. Champ `priority` : 1 = plus prioritaire, 5 = moins ; `null` est traité
+ *      comme `6` (= passe APRÈS toute valeur saisie).
+ *   2. Position dans la liste (haut en premier) — déterminée par l'ordre
+ *      d'entrée dans `tasks` (le caller passe `sortTasksHierarchically(...)`).
+ *
+ * Les jalons et phases sont ignorés : seuls les `kind === 'task'` peuvent
+ * être déplacés (un jalon suit son prédécesseur via la cascade serveur,
+ * une phase est auto-calculée depuis ses enfants).
+ *
+ * @param tasks  Liste complète des tâches du projet (déjà ordonnée
+ *               hiérarchiquement par le caller).
+ * @returns      Tâches `kind='task'` dans l'ordre où la replanification
+ *               doit les traiter.
+ */
+/**
+ * v1.18 — Construit le graphe de dépendances entre tâches `kind='task'` :
+ *   • `inDeg[id]`     = nombre de prédécesseurs de type 'task' encore à traiter
+ *   • `successors[id]` = ids des tâches qui ont cette tâche comme prédécesseur
+ *
+ * Les prédécesseurs de type 'milestone' sont ignorés (ils sont fixes : leur
+ * date ne change pas pendant la replanification). Extrait de `buildReplanOrder`
+ * pour limiter la complexité cyclomatique.
+ *
+ * @param taskKindTasks  Tâches de type 'task' à ordonner.
+ * @param tasksById      Index id → tâche (toutes kinds confondues).
+ * @returns              `{ inDeg, successors }`.
+ */
+function buildPredecessorGraph(
+  taskKindTasks: Task[],
+  tasksById: Map<string, Task>,
+): {
+  inDeg: Map<string, number>
+  successors: Map<string, string[]>
+} {
+  const inDeg = new Map<string, number>()
+  const successors = new Map<string, string[]>()
+  for (const t of taskKindTasks) inDeg.set(t.id, 0)
+  for (const t of taskKindTasks) {
+    if (!t.predecessor_id) continue
+    const pred = tasksById.get(t.predecessor_id)
+    if (!pred || pred.kind !== 'task') continue
+    inDeg.set(t.id, (inDeg.get(t.id) || 0) + 1)
+    const arr = successors.get(pred.id) || []
+    arr.push(t.id)
+    successors.set(pred.id, arr)
+  }
+  return { inDeg, successors }
+}
+
+function buildReplanOrder(tasks: Task[]): Task[] {
+  const taskKindTasks = tasks.filter((t) => t.kind === 'task')
+  const tasksById = new Map(tasks.map((t) => [t.id, t]))
+  // Position dans la liste = ordre d'entrée parmi les `task` (le hiérarchique
+  // est déjà appliqué côté caller).
+  const listPos = new Map<string, number>()
+  taskKindTasks.forEach((t, i) => listPos.set(t.id, i))
+
+  const { inDeg, successors } = buildPredecessorGraph(taskKindTasks, tasksById)
+
+  /** Comparateur stable (priorité asc, puis position asc). */
+  const cmp = (a: Task, b: Task) => {
+    const pa = a.priority ?? 6
+    const pb = b.priority ?? 6
+    if (pa !== pb) return pa - pb
+    return (listPos.get(a.id) ?? 0) - (listPos.get(b.id) ?? 0)
+  }
+
+  const ready: Task[] = taskKindTasks.filter(
+    (t) => (inDeg.get(t.id) || 0) === 0,
+  )
+  const out: Task[] = []
+  while (ready.length > 0) {
+    ready.sort(cmp)
+    const chosen = ready.shift() as Task
+    out.push(chosen)
+    for (const succId of successors.get(chosen.id) || []) {
+      const nd = (inDeg.get(succId) || 0) - 1
+      inDeg.set(succId, nd)
+      const succ = nd === 0 ? tasksById.get(succId) : null
+      if (succ) ready.push(succ)
+    }
+  }
+
+  // Garde-fou anti-cycle : si l'UI a laissé passer un cycle (ne devrait pas
+  // arriver — cf. `descendantIds`), on ajoute les tâches restantes en queue
+  // pour ne pas perdre silencieusement leur replan.
+  if (out.length < taskKindTasks.length) {
+    const seen = new Set(out.map((t) => t.id))
+    for (const t of taskKindTasks) {
+      if (!seen.has(t.id)) out.push(t)
+    }
+  }
+  return out
+}
+
+/**
+ * v1.18 — Replanifie les tâches d'un projet pour résoudre toute surcharge
+ * collaborateur. Fonction PURE : ne mute rien, retourne la liste des
+ * déplacements à appliquer (à `PATCH /api/tasks/:id` ensuite).
+ *
+ * Algorithme (greedy par ordre de priorité, déterministe) :
+ *   1. Construit un tri topologique respectant les prédécesseurs (cf.
+ *      `buildReplanOrder`), avec, à chaque étape, la « ready » la plus
+ *      prioritaire choisie en premier.
+ *   2. Pour chaque tâche, calcule la borne basse :
+ *        max(current_start, prédécesseur.proposed_end + lag).
+ *      Une tâche n'est JAMAIS déplacée vers le passé.
+ *   3. Cherche le 1er créneau libre du collaborateur ≥ cette borne, capable
+ *      d'accueillir la charge (jours ouvrés) de la tâche, sans chevaucher un
+ *      créneau déjà fixé d'une tâche plus prioritaire.
+ *   4. Fixe la tâche à ce créneau, l'ajoute au planning du collaborateur,
+ *      et continue.
+ *
+ * Les jalons et phases ne sont pas déplacés ici : leur date suivra naturellement
+ * via la cascade serveur (`propagateToSuccessors` + `recomputeAncestorPhases`)
+ * une fois les `PATCH` envoyés.
+ *
+ * @param tasks  Liste hiérarchique du projet (cf. `sortTasksHierarchically`).
+ * @returns      Tableau (potentiellement vide) des déplacements proposés.
+ */
+/**
+ * v1.18 — Calcule la borne basse de début pour une tâche en replanification :
+ * on prend le maximum entre sa date de début actuelle (= on ne recule jamais)
+ * et la contrainte de prédécesseur (= fin proposée du prédécesseur + lag).
+ *
+ * @param t          Tâche à placer.
+ * @param tasksById  Index des tâches.
+ * @param proposed   Dates déjà proposées (pour récupérer la fin du prédécesseur).
+ * @returns          Date ISO YYYY-MM-DD (déjà snappée jour ouvré).
+ */
+function computeReplanEarliestStart(
+  t: Task,
+  tasksById: Map<string, Task>,
+  proposed: Map<string, { start: string; end: string }>,
+): string {
+  let earliest = t.start_date
+  if (t.predecessor_id) {
+    const pred = tasksById.get(t.predecessor_id)
+    if (pred) {
+      const predEnd = proposed.get(pred.id)?.end ?? pred.end_date
+      const lagStart = computeSuccessorStart(predEnd, t.predecessor_lag || 0)
+      if (lagStart > earliest) earliest = lagStart
+    }
+  }
+  return snapForwardToWorkingDay(earliest)
+}
+
+/**
+ * v1.18 — Ajoute un intervalle à la timeline d'un collaborateur, en
+ * conservant l'ordre croissant des starts. Comparaison lexicographique sur
+ * ISO YYYY-MM-DD (équivalent au tri chronologique).
+ *
+ * @param timeline       Map id-collab → liste d'intervalles `[start, end]`.
+ * @param collabId       Collaborateur à mettre à jour.
+ * @param start          Début de l'intervalle (jour ouvré).
+ * @param end            Fin de l'intervalle (jour ouvré, incluse).
+ */
+function pushTimelineInterval(
+  timeline: Map<string, Array<[string, string]>>,
+  collabId: string,
+  start: string,
+  end: string,
+): void {
+  const intervals = timeline.get(collabId) || []
+  intervals.push([start, end])
+  intervals.sort((a, b) => a[0].localeCompare(b[0]))
+  timeline.set(collabId, intervals)
+}
+
+export function replanTasks(tasks: Task[]): ReplanMove[] {
+  const tasksById = new Map(tasks.map((t) => [t.id, t]))
+  const order = buildReplanOrder(tasks)
+
+  // Dates proposées par tâche (init = dates actuelles).
+  const proposed = new Map<string, { start: string; end: string }>()
+  for (const t of tasks) {
+    proposed.set(t.id, { start: t.start_date, end: t.end_date })
+  }
+
+  // Timeline (intervalles fixés) par collaborateur — bornes INCLUSIVES en
+  // jours ouvrés (compatibles avec `findFreeSlot`).
+  const timeline = new Map<string, Array<[string, string]>>()
+
+  for (const t of order) {
+    const charge = Math.max(1, workingDaysBetween(t.start_date, t.end_date))
+    const earliest = computeReplanEarliestStart(t, tasksById, proposed)
+    const intervals = t.collaborator_id
+      ? timeline.get(t.collaborator_id) || []
+      : []
+    const newStart = t.collaborator_id
+      ? findFreeSlot(intervals, earliest, charge)
+      : earliest
+    const newEnd = addWorkingDays(newStart, charge)
+    proposed.set(t.id, { start: newStart, end: newEnd })
+    if (t.collaborator_id) {
+      pushTimelineInterval(timeline, t.collaborator_id, newStart, newEnd)
+    }
+  }
+
+  // Ne renvoie QUE les tâches dont les dates changent réellement.
+  const moves: ReplanMove[] = []
+  for (const t of order) {
+    const p = proposed.get(t.id)
+    if (!p) continue
+    if (p.start === t.start_date && p.end === t.end_date) continue
+    moves.push({
+      id: t.id,
+      name: t.name,
+      collaborator_id: t.collaborator_id,
+      oldStart: t.start_date,
+      oldEnd: t.end_date,
+      newStart: p.start,
+      newEnd: p.end,
+    })
+  }
+  return moves
+}
+
 /**
  * Calcule l'ensemble des descendants d'une tâche (enfants + petits-enfants…).
  * Utilisé côté UI pour empêcher de choisir un descendant comme prédécesseur

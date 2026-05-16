@@ -29,6 +29,7 @@ function mkTask(overrides: Partial<Task> = {}): Task {
     parent_id: null,
     predecessor_id: null,
     predecessor_lag: 0,
+    priority: null,
     position: 0,
     project_id: 'p_test',
     ...overrides,

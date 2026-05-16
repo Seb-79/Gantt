@@ -174,6 +174,13 @@ function ensureTaskColumns(db) {
       )
     }
   }
+  // v1.18 — Priorité facultative (1..5, NULL par défaut). Colonne ajoutée
+  // par migration ALTER TABLE sur les bases d'avant la v1.18 ; les tâches
+  // existantes héritent de NULL (= "pas de priorité"), comportement identique
+  // au défaut nouvellement seedé.
+  if (!cols.includes('priority')) {
+    db.exec(`ALTER TABLE tasks ADD COLUMN priority INTEGER`)
+  }
   // Création de l'index APRÈS s'être assuré que la colonne existe.
   // `IF NOT EXISTS` rend l'opération idempotente (base neuve OU migrée).
   db.exec(
@@ -222,15 +229,17 @@ function ensureKindAcceptsPhase(db) {
       predecessor_id  TEXT,
       -- v1.10 — colonne préservée lors de la migration depuis l'ancien CHECK.
       predecessor_lag INTEGER NOT NULL DEFAULT 0,
+      -- v1.18 — priorité facultative, préservée lors de la migration.
+      priority        INTEGER,
       position        INTEGER NOT NULL,
       CHECK (progress BETWEEN 0 AND 100)
     );
     INSERT INTO tasks_new
       (id, name, kind, start_date, end_date, progress,
-       collaborator_id, color, parent_id, predecessor_id, predecessor_lag, position)
+       collaborator_id, color, parent_id, predecessor_id, predecessor_lag, priority, position)
     SELECT
        id, name, kind, start_date, end_date, progress,
-       collaborator_id, color, parent_id, predecessor_id, predecessor_lag, position
+       collaborator_id, color, parent_id, predecessor_id, predecessor_lag, priority, position
     FROM tasks;
     DROP TABLE tasks;
     ALTER TABLE tasks_new RENAME TO tasks;
@@ -322,7 +331,7 @@ export function getFullState(db, projectId) {
         .prepare(
           `SELECT id, name, kind, start_date, end_date, progress,
                   collaborator_id, color, parent_id, predecessor_id,
-                  predecessor_lag, position, project_id
+                  predecessor_lag, priority, position, project_id
              FROM tasks
              WHERE project_id = ?
              ORDER BY position ASC, id ASC`,
@@ -857,6 +866,22 @@ function recomputeAncestorPhases(db, startId) {
 // -----------------------------------------------------------------------------
 
 /**
+ * v1.18 — Normalise une valeur de priorité saisie : ne conserve qu'un entier
+ * dans [1, 5] ; tout le reste (undefined / null / 0 / 6+ / NaN / 'foo') est
+ * ramené à `null` (= « pas de priorité »). Garantit que le DAL ne stocke
+ * jamais de valeur incohérente, indépendamment de la validation Zod.
+ *
+ * @param {unknown} raw  Valeur reçue dans le payload.
+ * @returns {number|null}
+ */
+function normalizePriority(raw) {
+  if (raw === undefined || raw === null) return null
+  const n = Math.floor(Number(raw))
+  if (!Number.isFinite(n) || n < 1 || n > 5) return null
+  return n
+}
+
+/**
  * Calcule la prochaine position libre pour une nouvelle tâche.
  *
  * @param {import('better-sqlite3').Database} db
@@ -961,8 +986,8 @@ export function createTask(db, input) {
       `INSERT INTO tasks
         (id, name, kind, start_date, end_date, progress,
          collaborator_id, color, parent_id, predecessor_id,
-         predecessor_lag, position, project_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         predecessor_lag, priority, position, project_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.id,
       input.name,
@@ -976,6 +1001,10 @@ export function createTask(db, input) {
       input.parent_id ?? null,
       kind === 'phase' ? null : (input.predecessor_id ?? null),
       lag,
+      // v1.18 — Priorité : on n'enregistre une valeur qu'entre 1 et 5 inclus ;
+      // toute autre saisie (undefined, null, hors-bornes) est ramenée à NULL
+      // (« pas de priorité saisie »). Les phases n'ont pas de priorité.
+      kind === 'phase' ? null : normalizePriority(input.priority),
       position,
       projectId,
     )
@@ -1037,15 +1066,19 @@ export function updateTask(db, id, patch) {
       next.collaborator_id = null
       next.predecessor_id = null
       next.predecessor_lag = 0
+      next.priority = null
     }
     // Sans prédécesseur, le délai n'a pas de sens : on le force à 0.
     if (!next.predecessor_id) next.predecessor_lag = 0
+    // v1.18 — Normalise la priorité (1..5 ou null). Si le patch ne touche pas
+    // priority, on conserve la valeur en base (déjà copiée via {...current}).
+    next.priority = normalizePriority(next.priority)
 
     db.prepare(
       `UPDATE tasks
          SET name = ?, kind = ?, start_date = ?, end_date = ?, progress = ?,
              collaborator_id = ?, color = ?, parent_id = ?, predecessor_id = ?,
-             predecessor_lag = ?
+             predecessor_lag = ?, priority = ?
          WHERE id = ?`,
     ).run(
       next.name,
@@ -1058,6 +1091,7 @@ export function updateTask(db, id, patch) {
       next.parent_id,
       next.predecessor_id,
       next.predecessor_lag,
+      next.priority,
       id,
     )
     // v1.6 — Si la tâche modifiée est elle-même une phase, on recalcule ses
@@ -1464,8 +1498,8 @@ export function replaceFullState(db, state) {
       `INSERT INTO tasks
         (id, name, kind, start_date, end_date, progress,
          collaborator_id, color, parent_id, predecessor_id,
-         predecessor_lag, position, project_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         predecessor_lag, priority, position, project_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     state.tasks.forEach((t, idx) => {
       const kind = t.kind || 'task'
@@ -1485,6 +1519,8 @@ export function replaceFullState(db, state) {
         kind === 'phase' ? null : (t.predecessor_id ?? null),
         // v1.10 — délai (jours ouvrés) ; 0 par défaut.
         kind === 'phase' ? 0 : Math.max(0, Math.floor(t.predecessor_lag || 0)),
+        // v1.18 — priorité (1..5) ou null par défaut.
+        kind === 'phase' ? null : normalizePriority(t.priority),
         idx,
         t.project_id || fallbackProjectId,
       )

@@ -419,6 +419,81 @@ export function groupByWeek(
   return out
 }
 
+// -----------------------------------------------------------------------------
+// PLAN DE CHARGE (v1.16) — calcul de la charge par collaborateur et par jour
+// -----------------------------------------------------------------------------
+
+/**
+ * v1.16 — Calcule la charge journalière (en jours-personne) de chaque
+ * collaborateur, pour chaque date de la plage fournie. Règle :
+ *   • seules les tâches `kind === 'task'` comptent (les jalons et phases
+ *     n'engendrent aucune charge),
+ *   • la tâche n'est imputée qu'aux **jours ouvrés** présents dans
+ *     `[start_date, end_date]` (les week-ends restent à 0),
+ *   • on considère pour l'instant qu'un collaborateur est affecté à 100 %
+ *     (1 jour) sur chaque tâche qui lui est assignée ; donc 2 tâches qui
+ *     se chevauchent un même jour produisent une charge de 2 = surcharge.
+ *
+ * Le résultat est indexé par `collaborator_id`, avec un tableau parallèle
+ * à `dates` (un float par jour, dans le même ordre). Les collaborateurs
+ * sans tâche apparaissent quand même avec un tableau plein de 0.
+ *
+ * @param tasks         Toutes les tâches du projet courant.
+ * @param collaborators Tous les collaborateurs visibles.
+ * @param dates         Plage continue de Date (typiquement
+ *                      `buildDateRange(windowStart, windowEnd)`).
+ * @returns             Map id → tableau de longueur `dates.length`.
+ */
+export function computeWorkload(
+  tasks: Task[],
+  collaborators: Collaborator[],
+  dates: Date[],
+): Map<string, number[]> {
+  const result = new Map<string, number[]>()
+  for (const c of collaborators) {
+    result.set(c.id, new Array(dates.length).fill(0))
+  }
+  for (const t of tasks) {
+    if (t.kind !== 'task' || !t.collaborator_id) continue
+    const arr = result.get(t.collaborator_id)
+    if (!arr) continue
+    const start = isoToDate(t.start_date).getTime()
+    const end = isoToDate(t.end_date).getTime()
+    for (let i = 0; i < dates.length; i++) {
+      const d = dates[i]
+      const ts = d.getTime()
+      if (ts < start || ts > end) continue
+      if (isWeekend(d)) continue
+      arr[i] += 1
+    }
+  }
+  return result
+}
+
+/**
+ * v1.16 — Classes Tailwind à appliquer à une cellule de plan de charge
+ * selon la charge cumulée du jour. Code couleur calqué sur le projet
+ * « plan-de-charge » pour cohérence visuelle :
+ *
+ *   • `> 1`              → rouge   (SURCHARGE)
+ *   • `= 1`              → vert    (journée pleine)
+ *   • `[0.75 ; 1[`       → bleu marqué
+ *   • `[0.5  ; 0.75[`    → bleu moyen
+ *   • `]0    ; 0.5[`     → bleu pâle  (sous-charge)
+ *   • `0`                → cellule neutre (vide)
+ *
+ * @param sum  Charge cumulée du jour (peut dépasser 1 en cas de surcharge).
+ * @returns    Classes Tailwind concaténables (pas d'espace en début/fin).
+ */
+export function workloadCellStyle(sum: number): string {
+  if (sum > 1) return 'bg-red-500 text-white'
+  if (sum === 1) return 'bg-emerald-300 text-emerald-900'
+  if (sum >= 0.75) return 'bg-blue-400 text-white'
+  if (sum >= 0.5) return 'bg-blue-200 text-blue-900'
+  if (sum > 0) return 'bg-blue-100 text-blue-900'
+  return 'text-slate-300'
+}
+
 /**
  * Trie les tâches hiérarchiquement : chaque tâche enfant est placée
  * immédiatement après son parent (en respectant `position` au sein de

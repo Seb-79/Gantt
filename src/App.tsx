@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toPng } from 'html-to-image'
 import GanttChart from './components/GanttChart'
 import TaskEditor from './components/TaskEditor'
+import WorkloadChart from './components/WorkloadChart'
 import {
   clampDayWidth,
   defaultWindow,
@@ -42,6 +43,12 @@ const LS_SHOW_BAR_NAMES = 'gantt.showBarNames'
 
 /** v1.13.1 — Clé localStorage pour mémoriser le niveau de zoom (dayWidth, px). */
 const LS_DAY_WIDTH = 'gantt.dayWidth'
+
+/** v1.16 — Clé localStorage pour mémoriser l'onglet actif (Gantt / Charge). */
+const LS_VIEW = 'gantt.view'
+
+/** v1.16 — Vues disponibles dans l'app : planning ou plan de charge. */
+type View = 'gantt' | 'workload'
 
 /** État réseau pour le badge en haut à droite. */
 type NetStatus = 'idle' | 'loading' | 'ok' | 'error'
@@ -125,6 +132,18 @@ export default function App() {
       return localStorage.getItem(LS_SHOW_BAR_NAMES) !== '0'
     } catch {
       return true
+    }
+  })
+  /**
+   * v1.16 — Onglet actif. Par défaut « gantt » (planning) ; bascule vers
+   * « workload » pour afficher le plan de charge par collaborateur.
+   * Persisté en localStorage pour revenir sur la même vue à l'ouverture.
+   */
+  const [view, setView] = useState<View>(() => {
+    try {
+      return localStorage.getItem(LS_VIEW) === 'workload' ? 'workload' : 'gantt'
+    } catch {
+      return 'gantt'
     }
   })
 
@@ -424,6 +443,20 @@ export default function App() {
     })
   }
 
+  /**
+   * v1.16 — Bascule l'onglet actif et persiste le choix. Pas de no-op si
+   * `next === view` (le bouton se contente d'appeler setView(next), React
+   * détecte l'égalité référentielle).
+   */
+  const selectView = (next: View) => {
+    setView(next)
+    try {
+      localStorage.setItem(LS_VIEW, next)
+    } catch {
+      // localStorage indisponible — on continue.
+    }
+  }
+
   /** Décalle la fenêtre temporelle de N jours (négatif = passé). */
   const shiftWindow = (days: number) => {
     setWindow((w) => {
@@ -451,6 +484,44 @@ export default function App() {
         <h1 className="text-lg font-bold text-slate-800 shrink-0" title="Gantt">
           📊
         </h1>
+
+        {/* v1.16 — Onglets de vue (Gantt | Plan de charge). Compact,
+            sur la même ligne que tout le reste du header : 2 boutons
+            collés (group rounded), l'onglet actif en fond bleu pâle. */}
+        <div
+          className="flex items-center rounded border border-slate-300 overflow-hidden shrink-0"
+          role="tablist"
+          aria-label="Vue"
+        >
+          <button
+            className={[
+              'h-7 px-2 text-xs font-medium',
+              view === 'gantt'
+                ? 'bg-blue-100 text-blue-700'
+                : 'bg-white text-slate-700 hover:bg-slate-100',
+            ].join(' ')}
+            onClick={() => selectView('gantt')}
+            role="tab"
+            aria-selected={view === 'gantt'}
+            title="Vue planning Gantt"
+          >
+            Gantt
+          </button>
+          <button
+            className={[
+              'h-7 px-2 text-xs font-medium border-l border-slate-300',
+              view === 'workload'
+                ? 'bg-blue-100 text-blue-700'
+                : 'bg-white text-slate-700 hover:bg-slate-100',
+            ].join(' ')}
+            onClick={() => selectView('workload')}
+            role="tab"
+            aria-selected={view === 'workload'}
+            title="Vue plan de charge par collaborateur"
+          >
+            Charge
+          </button>
+        </div>
 
         {/* v1.8 — Sélecteur de projet + actions CRUD */}
         {state && (
@@ -572,45 +643,51 @@ export default function App() {
 
         {/* Actions globales — alignées à droite, icônes seules */}
         <div className="ml-auto flex items-center gap-1 shrink-0">
-          {/* v1.13 — Toggle d'affichage du nom des tâches dans les barres.
-              ACTIF par défaut : fond bleu pâle quand affiché, neutre quand
-              masqué (icône barrée Tt pour signifier "texte masqué"). */}
-          <button
-            className={[
-              'w-7 h-7 text-xs rounded border border-slate-300',
-              showBarNames
-                ? 'bg-blue-100 text-blue-700 border-blue-300'
-                : 'hover:bg-slate-100',
-            ].join(' ')}
-            onClick={toggleShowBarNames}
-            title={
-              showBarNames
-                ? 'Masquer le nom des tâches dans les barres'
-                : 'Afficher le nom des tâches dans les barres'
-            }
-            aria-pressed={showBarNames}
-          >
-            T
-          </button>
-          {/* v1.11 — Toggle d'affichage des dates de début/fin sur les barres.
-              État actif (showDates=true) souligné par un fond bleu pâle. */}
-          <button
-            className={[
-              'w-7 h-7 text-sm rounded border border-slate-300',
-              showDates
-                ? 'bg-blue-100 text-blue-700 border-blue-300'
-                : 'hover:bg-slate-100',
-            ].join(' ')}
-            onClick={toggleShowDates}
-            title={
-              showDates
-                ? 'Masquer les dates sur les barres'
-                : 'Afficher les dates de début/fin sur les barres'
-            }
-            aria-pressed={showDates}
-          >
-            📅
-          </button>
+          {/* v1.16 — Les toggles "nom" et "dates" ne concernent que la vue
+              Gantt (rendu des barres). On les masque sur la vue Charge. */}
+          {view === 'gantt' && (
+            <>
+              {/* v1.13 — Toggle d'affichage du nom des tâches dans les barres.
+                  ACTIF par défaut : fond bleu pâle quand affiché, neutre quand
+                  masqué (T sans fond = "texte masqué"). */}
+              <button
+                className={[
+                  'w-7 h-7 text-xs rounded border border-slate-300',
+                  showBarNames
+                    ? 'bg-blue-100 text-blue-700 border-blue-300'
+                    : 'hover:bg-slate-100',
+                ].join(' ')}
+                onClick={toggleShowBarNames}
+                title={
+                  showBarNames
+                    ? 'Masquer le nom des tâches dans les barres'
+                    : 'Afficher le nom des tâches dans les barres'
+                }
+                aria-pressed={showBarNames}
+              >
+                T
+              </button>
+              {/* v1.11 — Toggle d'affichage des dates de début/fin sur les barres.
+                  État actif (showDates=true) souligné par un fond bleu pâle. */}
+              <button
+                className={[
+                  'w-7 h-7 text-sm rounded border border-slate-300',
+                  showDates
+                    ? 'bg-blue-100 text-blue-700 border-blue-300'
+                    : 'hover:bg-slate-100',
+                ].join(' ')}
+                onClick={toggleShowDates}
+                title={
+                  showDates
+                    ? 'Masquer les dates sur les barres'
+                    : 'Afficher les dates de début/fin sur les barres'
+                }
+                aria-pressed={showDates}
+              >
+                📅
+              </button>
+            </>
+          )}
           <button
             className="h-7 px-2 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700"
             onClick={() => setCreating(true)}
@@ -637,23 +714,36 @@ export default function App() {
       </header>
 
       {/* ---------------------------------------------------------------- */}
-      {/* GANTT principal                                                   */}
+      {/* CONTENU PRINCIPAL — Gantt OU Plan de charge selon l'onglet        */}
       {/* ---------------------------------------------------------------- */}
+      {/* v1.16 — Le ganttRef enveloppe les deux vues : la capture PNG du
+          bouton 📷 fonctionne donc indifféremment sur le planning ou sur
+          le plan de charge (selon ce qui est affiché). */}
       <main className="flex-1 p-4 overflow-auto">
         {state ? (
           <div ref={ganttRef}>
-            <GanttChart
-              windowStart={startIso}
-              windowEnd={endIso}
-              dayWidth={dayWidth}
-              tasks={orderedTasks}
-              collaborators={state.collaborators}
-              onTaskClick={setEditing}
-              onMoveTask={handleMoveTask}
-              onResizeTask={handleResizeTask}
-              showDates={showDates}
-              showBarNames={showBarNames}
-            />
+            {view === 'gantt' ? (
+              <GanttChart
+                windowStart={startIso}
+                windowEnd={endIso}
+                dayWidth={dayWidth}
+                tasks={orderedTasks}
+                collaborators={state.collaborators}
+                onTaskClick={setEditing}
+                onMoveTask={handleMoveTask}
+                onResizeTask={handleResizeTask}
+                showDates={showDates}
+                showBarNames={showBarNames}
+              />
+            ) : (
+              <WorkloadChart
+                windowStart={startIso}
+                windowEnd={endIso}
+                dayWidth={dayWidth}
+                tasks={orderedTasks}
+                collaborators={state.collaborators}
+              />
+            )}
           </div>
         ) : (
           <p className="text-slate-500">Chargement…</p>

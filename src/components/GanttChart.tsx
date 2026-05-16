@@ -50,8 +50,14 @@ function formatShortDate(iso: string): string {
  */
 type DropZone = 'before' | 'inside' | 'after'
 
-/** Hauteur fixe d'une ligne (px) — synchronisée colonne gauche / barres. */
-const ROW_HEIGHT = 32
+/**
+ * Hauteur fixe d'une ligne (px) — synchronisée colonne gauche / barres.
+ * v1.15 — Réduite de 32 → 26 px pour densifier la liste des tâches. La
+ * barre interne (top:4, height: ROW_HEIGHT - 8 = 18 px) reste largement
+ * suffisante pour le texte text-[11px], et le losange des jalons s'adapte
+ * automatiquement (min/max bornés sur dayWidth).
+ */
+const ROW_HEIGHT = 26
 
 /**
  * v1.14 — Seuil (px par jour) en dessous duquel la ligne 2 du header

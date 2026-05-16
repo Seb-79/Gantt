@@ -16,6 +16,8 @@ import {
   effectiveTaskColor,
   groupByMonth,
   groupByWeek,
+  computeWorkload,
+  workloadCellStyle,
   isoToDate,
   isWeekendDay,
   makeId,
@@ -159,6 +161,83 @@ describe('groupByMonth', () => {
     expect(groups).toHaveLength(2)
     expect(groups[0].span).toBe(2) // 30, 31 mai
     expect(groups[1].span).toBe(2) // 1, 2 juin
+  })
+})
+
+describe('computeWorkload (v1.16)', () => {
+  const COLLABS: Collaborator[] = [
+    { id: 'alice', name: 'Alice', color: '#3b82f6', position: 0 },
+    { id: 'bob', name: 'Bob', color: '#10b981', position: 1 },
+  ]
+
+  it('ignore les jalons, phases et tâches sans collaborateur', () => {
+    const dates = buildDateRange('2026-05-11', '2026-05-15') // lun → ven
+    const tasks: Task[] = [
+      mkTask('milestone', {
+        kind: 'milestone',
+        collaborator_id: 'alice',
+        start_date: '2026-05-12',
+        end_date: '2026-05-12',
+      }),
+      mkTask('phase', {
+        kind: 'phase',
+        collaborator_id: 'alice',
+        start_date: '2026-05-11',
+        end_date: '2026-05-15',
+      }),
+      mkTask('orphan', {
+        kind: 'task',
+        collaborator_id: null,
+        start_date: '2026-05-11',
+        end_date: '2026-05-15',
+      }),
+    ]
+    const wl = computeWorkload(tasks, COLLABS, dates)
+    expect(wl.get('alice')).toEqual([0, 0, 0, 0, 0])
+    expect(wl.get('bob')).toEqual([0, 0, 0, 0, 0])
+  })
+
+  it('cumule 1 par tâche-jour ouvré et saute les week-ends', () => {
+    // Tâche Alice du vendredi au lundi : 1 j vendredi, 0 sam/dim, 1 j lundi.
+    const dates = buildDateRange('2026-05-15', '2026-05-18')
+    const tasks: Task[] = [
+      mkTask('a', {
+        collaborator_id: 'alice',
+        start_date: '2026-05-15',
+        end_date: '2026-05-18',
+      }),
+    ]
+    const wl = computeWorkload(tasks, COLLABS, dates)
+    expect(wl.get('alice')).toEqual([1, 0, 0, 1])
+  })
+
+  it('détecte la surcharge (2 tâches sur le même jour ouvré)', () => {
+    const dates = buildDateRange('2026-05-11', '2026-05-12') // lun + mar
+    const tasks: Task[] = [
+      mkTask('t1', {
+        collaborator_id: 'alice',
+        start_date: '2026-05-11',
+        end_date: '2026-05-12',
+      }),
+      mkTask('t2', {
+        collaborator_id: 'alice',
+        start_date: '2026-05-11',
+        end_date: '2026-05-11',
+      }),
+    ]
+    const wl = computeWorkload(tasks, COLLABS, dates)
+    expect(wl.get('alice')).toEqual([2, 1]) // lundi surchargé, mardi plein
+  })
+})
+
+describe('workloadCellStyle (v1.16)', () => {
+  it('mappe les charges sur les classes du code couleur', () => {
+    expect(workloadCellStyle(0)).toContain('text-slate-300')
+    expect(workloadCellStyle(0.25)).toContain('bg-blue-100')
+    expect(workloadCellStyle(0.5)).toContain('bg-blue-200')
+    expect(workloadCellStyle(0.9)).toContain('bg-blue-400')
+    expect(workloadCellStyle(1)).toContain('bg-emerald-300')
+    expect(workloadCellStyle(2)).toContain('bg-red-500')
   })
 })
 

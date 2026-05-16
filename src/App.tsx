@@ -973,6 +973,8 @@ function ReplanPreviewModal({
       onClick={onCancel}
     >
       <div
+        role="dialog"
+        aria-label="Aperçu de la replanification"
         className="bg-white rounded-lg shadow-xl w-full max-w-2xl p-5 space-y-3"
         onClick={(e) => e.stopPropagation()}
       >

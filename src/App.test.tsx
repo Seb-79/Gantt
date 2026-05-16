@@ -19,6 +19,7 @@ import {
   fireEvent,
   act,
   cleanup,
+  within,
 } from '@testing-library/react'
 import App from './App'
 import type { GanttState } from './lib/types'
@@ -326,6 +327,192 @@ describe('App — gestion des projets', () => {
     await waitFor(() => screen.getByRole('combobox'))
     const del = screen.getByTitle(/Impossible de supprimer le dernier projet/)
     expect(del).toBeDisabled()
+  })
+})
+
+// =============================================================================
+// v1.18 — Tests de non-régression MÉTIER pour le flux « Replan »
+// =============================================================================
+// Chaque test encode UNE règle du cahier des charges. Le nom doit pouvoir se
+// lire comme une phrase métier — si une régression future inverse la règle,
+// le test parle français au prochain mainteneur.
+//
+// Stratégie commune :
+//   • on construit un état serveur réaliste (collab + tâches qui se
+//     chevauchent ou non),
+//   • on clique sur « 🔄 Replan »,
+//   • on vérifie soit l'absence de modal (cas sans surcharge), soit le
+//     contenu de la modal et la séquence d'appels API.
+// =============================================================================
+
+/** Helper : état avec une surcharge Alice exactement comme dans le brief. */
+function mkOverloadedState(): GanttState {
+  return mkState({
+    collaborators: [
+      { id: 'alice', name: 'Alice', color: '#3b82f6', position: 0 },
+    ],
+    tasks: [
+      // « Recherche audience » occupe Alice du 15 au 29 mai (11 j ouvrés).
+      {
+        id: 't1a',
+        name: 'Recherche audience',
+        kind: 'task',
+        start_date: '2026-05-15',
+        end_date: '2026-05-29',
+        progress: 0,
+        collaborator_id: 'alice',
+        color: null,
+        parent_id: null,
+        predecessor_id: null,
+        predecessor_lag: 0,
+        priority: null,
+        position: 0,
+        project_id: 'p1',
+      },
+      // « Définir le message » empiète sur la fin de « Recherche audience ».
+      {
+        id: 't1b',
+        name: 'Définir le message',
+        kind: 'task',
+        start_date: '2026-05-25',
+        end_date: '2026-06-05',
+        progress: 0,
+        collaborator_id: 'alice',
+        color: null,
+        parent_id: null,
+        predecessor_id: null,
+        predecessor_lag: 0,
+        priority: null,
+        position: 1,
+        project_id: 'p1',
+      },
+    ],
+  })
+}
+
+describe('App — Replan (non-régression métier)', () => {
+  it("sans surcharge : alerte 'Aucune surcharge' et aucune modal n'apparaît", async () => {
+    // L'état mkState() ne contient qu'une tâche sans collaborateur → aucune
+    // surcharge possible → l'algorithme n'a rien à proposer.
+    const { calls } = setupFetchMock()
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
+    render(<App />)
+    await waitFor(() => screen.getByRole('combobox'))
+
+    fireEvent.click(screen.getByRole('button', { name: /Replan/ }))
+
+    expect(alertSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/Aucune surcharge/),
+    )
+    // Aucune modal ouverte (pas de bouton "Appliquer" visible).
+    expect(
+      screen.queryByRole('button', { name: 'Appliquer' }),
+    ).not.toBeInTheDocument()
+    // Aucun PATCH parti.
+    expect(
+      calls.find((c) => c.method === 'PATCH' && c.url.startsWith('/api/tasks')),
+    ).toBeUndefined()
+  })
+
+  it('scénario du brief : Alice surchargée 25–29 mai → « Définir le message » décalée au 1er juin', async () => {
+    // Encodage strict de l'exemple du cahier des charges. Si demain un
+    // changement d'algo casse ce cas précis, le test parle de lui-même.
+    setupFetchMock(mkOverloadedState())
+    render(<App />)
+    await waitFor(() => screen.getByRole('combobox'))
+
+    fireEvent.click(screen.getByRole('button', { name: /Replan/ }))
+
+    // La modal s'ouvre avec « Définir le message » comme seule tâche déplacée.
+    // On scope les requêtes à la modal (les libellés apparaissent aussi
+    // dans le Gantt à gauche).
+    const dialog = await screen.findByRole('dialog', {
+      name: /replanification/i,
+    })
+    expect(
+      within(dialog).getByRole('button', { name: 'Appliquer' }),
+    ).toBeInTheDocument()
+    expect(within(dialog).getByText('Définir le message')).toBeInTheDocument()
+    // « Recherche audience » ne doit PAS apparaître DANS LA MODAL (elle ne
+    // bouge pas — la replanification ne la liste donc pas).
+    expect(
+      within(dialog).queryByText('Recherche audience'),
+    ).not.toBeInTheDocument()
+    // Et la nouvelle date de début doit être le lundi 1er juin (1er jour
+    // ouvré après la fin du 29 mai d'Alice).
+    expect(within(dialog).getByText(/2026-06-01/)).toBeInTheDocument()
+  })
+
+  it('Annuler ferme la modal sans envoyer de PATCH', async () => {
+    // Garantit qu'un utilisateur peut prévisualiser SANS engager les
+    // modifications. Cf. spec UI « Aperçu puis confirmation ».
+    const { calls } = setupFetchMock(mkOverloadedState())
+    render(<App />)
+    await waitFor(() => screen.getByRole('combobox'))
+
+    fireEvent.click(screen.getByRole('button', { name: /Replan/ }))
+    await waitFor(() => screen.getByRole('button', { name: 'Appliquer' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Annuler' }))
+
+    expect(
+      screen.queryByRole('button', { name: 'Appliquer' }),
+    ).not.toBeInTheDocument()
+    // Aucun PATCH sur /api/tasks/:id parti.
+    expect(
+      calls.find((c) => c.method === 'PATCH' && c.url.startsWith('/api/tasks')),
+    ).toBeUndefined()
+  })
+
+  it('Appliquer envoie 1 PATCH par tâche déplacée avec les nouvelles dates', async () => {
+    // Garantit que la confirmation envoie effectivement la replanification
+    // au serveur (pas d'oubli silencieux côté handler).
+    const { calls } = setupFetchMock(mkOverloadedState())
+    render(<App />)
+    await waitFor(() => screen.getByRole('combobox'))
+
+    fireEvent.click(screen.getByRole('button', { name: /Replan/ }))
+    await waitFor(() => screen.getByRole('button', { name: 'Appliquer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Appliquer' }))
+
+    await waitFor(() => {
+      const patches = calls.filter(
+        (c) => c.method === 'PATCH' && c.url === '/api/tasks/t1b',
+      )
+      expect(patches).toHaveLength(1)
+      const body = JSON.parse(patches[0].body!)
+      // 1er juin = lundi suivant la fin du 29 mai d'Alice (vendredi).
+      expect(body.start_date).toBe('2026-06-01')
+      // Charge préservée : 10 j ouvrés depuis le 1er juin = vendredi 12 juin.
+      expect(body.end_date).toBe('2026-06-12')
+    })
+    // La tâche qui ne bouge pas ne fait l'objet d'aucun PATCH.
+    expect(
+      calls.find((c) => c.method === 'PATCH' && c.url === '/api/tasks/t1a'),
+    ).toBeUndefined()
+  })
+
+  it("après application, l'état est rafraîchi (GET /api/state ré-émis)", async () => {
+    // Garantit que la vue reflète le nouvel état serveur après les PATCH —
+    // sans ce GET final, l'UI resterait sur les anciennes dates.
+    const { calls } = setupFetchMock(mkOverloadedState())
+    render(<App />)
+    await waitFor(() => screen.getByRole('combobox'))
+
+    const getStateBefore = calls.filter(
+      (c) => c.method === 'GET' && c.url.startsWith('/api/state'),
+    ).length
+
+    fireEvent.click(screen.getByRole('button', { name: /Replan/ }))
+    await waitFor(() => screen.getByRole('button', { name: 'Appliquer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Appliquer' }))
+
+    await waitFor(() => {
+      const getStateAfter = calls.filter(
+        (c) => c.method === 'GET' && c.url.startsWith('/api/state'),
+      ).length
+      expect(getStateAfter).toBeGreaterThan(getStateBefore)
+    })
   })
 })
 

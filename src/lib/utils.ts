@@ -10,6 +10,7 @@ import {
   addMonths,
   differenceInCalendarDays,
   format,
+  getISOWeek,
   isWeekend,
   parseISO,
   startOfDay,
@@ -385,6 +386,35 @@ export function groupByMonth(
     const last = out[out.length - 1]
     if (last && last.label === label) last.span++
     else out.push({ label, span: 1 })
+  }
+  return out
+}
+
+/**
+ * v1.14 — Regroupe une liste de dates par semaine ISO (lundi → dimanche).
+ * Utilisé pour la ligne d'en-tête du calendrier quand on est très dézoomé :
+ * on remplace les numéros de jour (illisibles à `dayWidth < 12`) par les
+ * numéros de semaine (`S20`, `S21`, …). La 1re et la dernière semaine
+ * peuvent être partielles si la fenêtre ne commence/finit pas un lundi
+ * — le `span` reflète alors le nombre exact de jours présents.
+ *
+ * @param dates  Liste continue de Date (1 par jour, ordonnée).
+ * @returns      Tableau de { label, span } où label = 'S' + numéro ISO,
+ *               span = nombre de jours de la semaine présents dans la plage.
+ */
+export function groupByWeek(
+  dates: Date[],
+): Array<{ label: string; span: number }> {
+  const out: Array<{ label: string; span: number }> = []
+  let currentWeek = -1
+  for (const d of dates) {
+    const w = getISOWeek(d)
+    if (w !== currentWeek) {
+      currentWeek = w
+      out.push({ label: `S${w}`, span: 1 })
+    } else {
+      out[out.length - 1].span++
+    }
   }
   return out
 }

@@ -274,6 +274,31 @@ describe('GanttChart — affichage des dates (v1.11)', () => {
   })
 })
 
+describe('GanttChart — header semaines au dézoom (v1.14)', () => {
+  // À dayWidth >= 12, on doit voir des numéros de jour (ex. "11", "15").
+  // À dayWidth < 12, ces numéros disparaissent au profit de "S20", "S21".
+  it('bascule jours → semaines (S{N}) sous le seuil de zoom 12', () => {
+    const tasks = [mkTask({ id: 't1', name: 'T1' })]
+    const baseProps = {
+      windowStart: '2026-05-11',
+      windowEnd: '2026-05-24',
+      tasks,
+      collaborators: COLLABS,
+    }
+    // Zoom large : jours visibles, pas de "S20".
+    const { container, rerender } = render(
+      <GanttChart {...baseProps} dayWidth={20} />,
+    )
+    expect(container.textContent).toContain('11')
+    expect(container.textContent).not.toContain('S20')
+
+    // Dézoom (< 12) : semaines visibles, pas de chiffres de jour orphelins.
+    rerender(<GanttChart {...baseProps} dayWidth={8} />)
+    expect(container.textContent).toContain('S20')
+    expect(container.textContent).toContain('S21')
+  })
+})
+
 describe('GanttChart — nom dans les barres (v1.13)', () => {
   // Par défaut le nom de la tâche est écrit dans la barre quand la largeur
   // est suffisante. Avec showBarNames={false}, le span de nom interne

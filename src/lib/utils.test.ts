@@ -15,6 +15,7 @@ import {
   descendantIds,
   effectiveTaskColor,
   groupByMonth,
+  groupByWeek,
   isoToDate,
   isWeekendDay,
   makeId,
@@ -158,6 +159,22 @@ describe('groupByMonth', () => {
     expect(groups).toHaveLength(2)
     expect(groups[0].span).toBe(2) // 30, 31 mai
     expect(groups[1].span).toBe(2) // 1, 2 juin
+  })
+})
+
+describe('groupByWeek', () => {
+  // ISO 8601 : la semaine 20 de 2026 va du lundi 11 mai au dimanche 17 mai.
+  it('regroupe une plage qui chevauche 2 semaines avec spans partiels', () => {
+    const dates = buildDateRange('2026-05-15', '2026-05-19') // ven → mar
+    const groups = groupByWeek(dates)
+    expect(groups).toHaveLength(2)
+    expect(groups[0]).toEqual({ label: 'S20', span: 3 }) // 15, 16, 17
+    expect(groups[1]).toEqual({ label: 'S21', span: 2 }) // 18, 19
+  })
+
+  it('renvoie une seule semaine pour une plage qui ne déborde pas', () => {
+    const dates = buildDateRange('2026-05-11', '2026-05-17') // semaine complète
+    expect(groupByWeek(dates)).toEqual([{ label: 'S20', span: 7 }])
   })
 })
 

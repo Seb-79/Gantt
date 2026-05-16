@@ -23,6 +23,7 @@ import {
   descendantIds,
   effectiveTaskColor,
   groupByMonth,
+  groupByWeek,
   isWeekendDay,
   rangeToWidth,
   snapBackwardToWorkingDay,
@@ -51,6 +52,14 @@ type DropZone = 'before' | 'inside' | 'after'
 
 /** Hauteur fixe d'une ligne (px) — synchronisée colonne gauche / barres. */
 const ROW_HEIGHT = 32
+
+/**
+ * v1.14 — Seuil (px par jour) en dessous duquel la ligne 2 du header
+ * passe en numéros de semaine au lieu des numéros de jour. À `dayWidth < 12`,
+ * les chiffres se chevauchent (cf. captures utilisateur) ; au-dessus, on
+ * conserve l'affichage jour-par-jour.
+ */
+const WEEK_HEADER_THRESHOLD = 12
 
 interface Props {
   /** Bornes du calendrier (incluses), au format YYYY-MM-DD. */
@@ -159,6 +168,13 @@ export default function GanttChart({
     [windowStart, effectiveEndIso],
   )
   const months = useMemo(() => groupByMonth(dates), [dates])
+
+  // v1.14 — Bascule jours ↔ semaines pour la 2e ligne du header.
+  const showWeekHeader = dayWidth < WEEK_HEADER_THRESHOLD
+  const weeks = useMemo(
+    () => (showWeekHeader ? groupByWeek(dates) : []),
+    [dates, showWeekHeader],
+  )
 
   // Index collaborateurs par id pour lookup O(1).
   const collabById = useMemo(() => {
@@ -524,23 +540,38 @@ export default function GanttChart({
             ))}
           </div>
 
-          {/* HEADER ligne 2 — jours */}
-          <div className="flex h-7 border-b border-slate-300 bg-slate-50">
-            {dates.map((d, i) => (
-              <div
-                key={i}
-                className={[
-                  'flex items-center justify-center text-[10px] border-r border-slate-200',
-                  isWeekendDay(d)
-                    ? 'bg-slate-200 text-slate-500'
-                    : 'text-slate-600',
-                ].join(' ')}
-                style={{ width: dayWidth }}
-              >
-                {d.getDate()}
-              </div>
-            ))}
-          </div>
+          {/* HEADER ligne 2 — jours OU semaines (v1.14, selon zoom) */}
+          {showWeekHeader ? (
+            <div className="flex h-7 border-b border-slate-300 bg-slate-50">
+              {weeks.map((w, i) => (
+                <div
+                  key={i}
+                  className="flex items-center justify-center text-[10px] text-slate-600 border-r border-slate-300"
+                  style={{ width: w.span * dayWidth }}
+                  title={`Semaine ${w.label.slice(1)}`}
+                >
+                  {w.label}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex h-7 border-b border-slate-300 bg-slate-50">
+              {dates.map((d, i) => (
+                <div
+                  key={i}
+                  className={[
+                    'flex items-center justify-center text-[10px] border-r border-slate-200',
+                    isWeekendDay(d)
+                      ? 'bg-slate-200 text-slate-500'
+                      : 'text-slate-600',
+                  ].join(' ')}
+                  style={{ width: dayWidth }}
+                >
+                  {d.getDate()}
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* CORPS — grille + barres */}
           <div className="relative">

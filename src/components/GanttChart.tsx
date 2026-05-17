@@ -24,7 +24,8 @@ import {
   effectiveTaskColor,
   groupByMonth,
   groupByWeek,
-  isWeekendDay,
+  isFrenchHoliday,
+  isNonWorkingDay,
   rangeToWidth,
   snapBackwardToWorkingDay,
   snapForwardToWorkingDay,
@@ -703,20 +704,28 @@ export default function GanttChart({
             </div>
           ) : (
             <div className="flex h-7 border-b border-slate-300 bg-slate-50">
-              {dates.map((d, i) => (
-                <div
-                  key={i}
-                  className={[
-                    'flex items-center justify-center text-[10px] border-r border-slate-200',
-                    isWeekendDay(d)
-                      ? 'bg-slate-200 text-slate-500'
-                      : 'text-slate-600',
-                  ].join(' ')}
-                  style={{ width: dayWidth }}
-                >
-                  {d.getDate()}
-                </div>
-              ))}
+              {dates.map((d, i) => {
+                // v1.23 — Les jours fériés français reçoivent un tooltip
+                // explicite et le même fond grisé que les week-ends pour
+                // rester un signal visuel cohérent (= jour non ouvré).
+                const holiday = isFrenchHoliday(d)
+                const nonWorking = isNonWorkingDay(d)
+                return (
+                  <div
+                    key={i}
+                    className={[
+                      'flex items-center justify-center text-[10px] border-r border-slate-200',
+                      nonWorking
+                        ? 'bg-slate-200 text-slate-500'
+                        : 'text-slate-600',
+                    ].join(' ')}
+                    style={{ width: dayWidth }}
+                    title={holiday ? 'Jour férié (France)' : undefined}
+                  >
+                    {d.getDate()}
+                  </div>
+                )
+              })}
             </div>
           )}
 
@@ -737,12 +746,14 @@ export default function GanttChart({
                 className="relative border-b border-slate-100"
                 style={{ height: ROW_HEIGHT }}
               >
-                {/* Fond — colonnes weekend grisées */}
+                {/* v1.23 — Fond grisé pour les jours NON OUVRÉS : week-ends
+                    ET jours fériés français (cohérence visuelle avec la grille
+                    du header). */}
                 <div className="absolute inset-0 flex pointer-events-none">
                   {dates.map((d, i) => (
                     <div
                       key={i}
-                      className={isWeekendDay(d) ? 'bg-slate-50' : ''}
+                      className={isNonWorkingDay(d) ? 'bg-slate-50' : ''}
                       style={{ width: dayWidth }}
                     />
                   ))}

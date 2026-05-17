@@ -21,8 +21,11 @@ import {
   groupByWeek,
   computeWorkload,
   workloadCellStyle,
+  isFrenchHoliday,
+  isNonWorkingDay,
   isoToDate,
   isWeekendDay,
+  computeSuccessorStart,
   makeId,
   maxIso,
   mondayOnOrBefore,
@@ -391,11 +394,15 @@ describe('addWorkingDays (v1.9)', () => {
   })
 
   it('charge=6 lundi → fin lundi suivant (saute samedi/dimanche)', () => {
-    expect(addWorkingDays('2026-05-18', 6)).toBe('2026-05-25')
+    // v1.23 — Semaine du 08/06/2026 (sans jour férié) pour rester sur la
+    // démonstration pure « saute samedi/dimanche » (le 25/05 = Pentecôte
+    // perturbait la version originale du test).
+    expect(addWorkingDays('2026-06-08', 6)).toBe('2026-06-15')
   })
 
   it('charge=10 lundi → fin vendredi de la semaine suivante', () => {
-    expect(addWorkingDays('2026-05-18', 10)).toBe('2026-05-29')
+    // v1.23 — Idem, sur la semaine du 08/06/2026.
+    expect(addWorkingDays('2026-06-08', 10)).toBe('2026-06-19')
   })
 
   it('charge ≤ 0 → renvoie la date de début (clamp à 1 jour)', () => {
@@ -487,11 +494,13 @@ describe('snapForwardToWorkingDay (v1.9)', () => {
   })
 
   it('samedi → lundi suivant', () => {
-    expect(snapForwardToWorkingDay('2026-05-23')).toBe('2026-05-25')
+    // v1.23 — Le 25/05/2026 est désormais férié (Lundi de Pentecôte), donc
+    // on utilise la semaine du 13/06/2026 pour tester le saut « propre ».
+    expect(snapForwardToWorkingDay('2026-06-13')).toBe('2026-06-15')
   })
 
   it('dimanche → lundi suivant', () => {
-    expect(snapForwardToWorkingDay('2026-05-24')).toBe('2026-05-25')
+    expect(snapForwardToWorkingDay('2026-06-14')).toBe('2026-06-15')
   })
 })
 
@@ -577,16 +586,18 @@ describe('filterCollapsed (v1.20)', () => {
 
 describe('replanTasks (v1.18)', () => {
   it('aucun déplacement si aucune surcharge', () => {
+    // v1.23 — Scénario shifté sur la semaine du 08/06/2026 pour éviter le
+    // Lundi de Pentecôte (25/05/2026) qui rend le test fragile.
     const tasks: Task[] = [
       mkTask('A', {
         collaborator_id: 'c1',
-        start_date: '2026-05-18', // lundi
-        end_date: '2026-05-22', // vendredi (5 j ouvrés)
+        start_date: '2026-06-08', // lundi
+        end_date: '2026-06-12', // vendredi (5 j ouvrés)
       }),
       mkTask('B', {
         collaborator_id: 'c1',
-        start_date: '2026-05-25',
-        end_date: '2026-05-29',
+        start_date: '2026-06-15',
+        end_date: '2026-06-19',
       }),
     ]
     expect(replanTasks(tasks)).toEqual([])
@@ -616,8 +627,10 @@ describe('replanTasks (v1.18)', () => {
       id: 'B',
       newStart: '2026-06-01', // lundi suivant la fin de A (ven 29 → lun 1er)
     })
-    // La charge (jours ouvrés) est préservée : 10 j → 1er juin → ven 12 juin.
-    expect(workingDaysBetween(moves[0].newStart, moves[0].newEnd)).toBe(10)
+    // v1.23 — 25/05/2026 = Lundi de Pentecôte (férié) → la charge initiale
+    // de B (du 25 mai au 5 juin) ne contient plus que 9 jours ouvrés au lieu
+    // de 10. Le replan préserve cette charge effective.
+    expect(workingDaysBetween(moves[0].newStart, moves[0].newEnd)).toBe(9)
   })
 
   it('la priorité 1 gagne sur une tâche sans priorité (top-of-list ignoré)', () => {
@@ -678,9 +691,11 @@ describe('replanTasks (v1.18)', () => {
       }),
     ]
     const moves = replanTasks(tasks)
-    // A reste sur place ; B démarre dès la fin de A (lun 25 mai).
+    // v1.23 — A reste sur place ; B démarre dès la fin de A en sautant les
+    // jours non ouvrés : lun 25/05 est désormais férié (Pentecôte), donc B
+    // démarre le mardi 26/05.
     expect(moves.map((m) => m.id)).toEqual(['B'])
-    expect(moves[0].newStart).toBe('2026-05-25')
+    expect(moves[0].newStart).toBe('2026-05-26')
   })
 
   it('ne touche pas aux tâches de collabs différents', () => {
@@ -890,6 +905,104 @@ describe('checkCoherence — détection des incohérences', () => {
     const issues = checkCoherence(tasks)
     expect(issues.some((i) => i.kind === 'overload')).toBe(true)
     expect(issues.some((i) => i.kind === 'predecessor')).toBe(true)
+  })
+})
+
+// =============================================================================
+// v1.23 — Jours fériés français + sémantique « lag = délai minimum »
+// =============================================================================
+
+describe('isFrenchHoliday (v1.23)', () => {
+  it('Fête nationale fixe : 14/07 chaque année', () => {
+    expect(isFrenchHoliday(isoToDate('2026-07-14'))).toBe(true)
+    expect(isFrenchHoliday(isoToDate('2027-07-14'))).toBe(true)
+    expect(isFrenchHoliday(isoToDate('2030-07-14'))).toBe(true)
+  })
+
+  it('jours fixes connus : Fête du Travail, Noël, Toussaint', () => {
+    expect(isFrenchHoliday(isoToDate('2026-05-01'))).toBe(true)
+    expect(isFrenchHoliday(isoToDate('2026-12-25'))).toBe(true)
+    expect(isFrenchHoliday(isoToDate('2026-11-01'))).toBe(true)
+  })
+
+  it('jours mobiles 2026 : Lundi de Pâques (06/04), Ascension (14/05), Pentecôte (25/05)', () => {
+    expect(isFrenchHoliday(isoToDate('2026-04-06'))).toBe(true) // Lundi de Pâques
+    expect(isFrenchHoliday(isoToDate('2026-05-14'))).toBe(true) // Ascension
+    expect(isFrenchHoliday(isoToDate('2026-05-25'))).toBe(true) // Lundi de Pentecôte
+  })
+
+  it("calcul algorithmique au-delà de 2026 : Lundi de Pâques varie d'une année à l'autre", () => {
+    // Cas connus historiquement (Wikipedia / éphémérides) :
+    //   2027 : Pâques 28 mars → Lundi 29 mars
+    //   2024 : Pâques 31 mars → Lundi 1er avril
+    expect(isFrenchHoliday(isoToDate('2027-03-29'))).toBe(true)
+    expect(isFrenchHoliday(isoToDate('2024-04-01'))).toBe(true)
+  })
+
+  it('un jour ordinaire (mar 07/07/2026) → false', () => {
+    expect(isFrenchHoliday(isoToDate('2026-07-07'))).toBe(false)
+  })
+})
+
+describe('isNonWorkingDay (v1.23) — week-end OU férié', () => {
+  it('samedi → true', () => {
+    expect(isNonWorkingDay(isoToDate('2026-06-13'))).toBe(true)
+  })
+
+  it('jour férié en semaine → true (14/07/2026 = mardi férié)', () => {
+    expect(isNonWorkingDay(isoToDate('2026-07-14'))).toBe(true)
+  })
+
+  it('jour ouvré ordinaire → false', () => {
+    expect(isNonWorkingDay(isoToDate('2026-07-15'))).toBe(false)
+  })
+})
+
+describe('computeSuccessorStart (v1.23) — délai = minimum + saute fériés', () => {
+  it('scénario du bug v1.22 : pred=ven 03/07, lag=6 ⇒ start = mer 15/07 (saute 14/07 férié)', () => {
+    // Référence exacte du brief utilisateur :
+    //   • Storyboard finit le ven 03/07/2026
+    //   • Test délai a un délai de 6 jours ouvrés
+    //   • 14/07 = Fête nationale → non ouvré → start = mer 15/07
+    expect(computeSuccessorStart('2026-07-03', 6)).toBe('2026-07-15')
+  })
+
+  it('lag=0 → start = base (= pred.end snappé sur jour ouvré)', () => {
+    expect(computeSuccessorStart('2026-06-12', 0)).toBe('2026-06-12') // ven
+  })
+
+  it('lag=1 → 1 jour ouvré strictement entre pred.end et start', () => {
+    // ven 12/06 → lag=1 → start = mar 16/06 (entre : lun 15/06 = 1 j ouvré)
+    expect(computeSuccessorStart('2026-06-12', 1)).toBe('2026-06-16')
+  })
+
+  it('inverse : start saisie par utilisateur, lag inféré reste cohérent', () => {
+    // Si l'utilisateur saisit start = 15/07, le serveur doit retrouver
+    // lag=6 (= jours ouvrés strictement entre 03/07 et 15/07, en sautant
+    // 14/07 férié). Couvert par `workingDaysBetween - 2` côté serveur.
+    expect(workingDaysBetween('2026-07-03', '2026-07-15')).toBe(8)
+    // 8 - 2 = 6 ✓
+  })
+})
+
+describe('addWorkingDays / workingDaysBetween (v1.23) — sautent les fériés', () => {
+  it('addWorkingDays saute 14/07/2026 (Fête nationale)', () => {
+    // Du lundi 13/07 (1 j ouvré), 14/07 férié sauté, mer 15/07 = 2.
+    expect(addWorkingDays('2026-07-13', 2)).toBe('2026-07-15')
+  })
+
+  it('workingDaysBetween ignore les fériés (semaine du 14/07)', () => {
+    // Lun-Ven 13→17 juillet 2026 : 13 (lun), 14 (FÉRIÉ), 15, 16, 17 = 4 j ouvrés.
+    expect(workingDaysBetween('2026-07-13', '2026-07-17')).toBe(4)
+  })
+
+  it('round-trip avec fériés : workingDaysBetween(s, addWorkingDays(s, n)) = n', () => {
+    // Vérifie la cohérence des deux helpers en présence de fériés.
+    const start = '2026-07-13' // lundi, semaine du 14/07
+    for (const n of [1, 2, 3, 5, 7]) {
+      const end = addWorkingDays(start, n)
+      expect(workingDaysBetween(start, end)).toBe(n)
+    }
   })
 })
 

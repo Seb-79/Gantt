@@ -182,20 +182,23 @@ describe('v1.9 — cascade aux successeurs', () => {
   let db
   beforeEach(() => {
     db = initDb(':memory:')
-    // X : lundi 18 → vendredi 22 mai (5 jours ouvrés).
+    // v1.23 — Scénarios shiftés sur la semaine du 08/06/2026 (sans jour
+    // férié français) pour rester focalisés sur la sémantique de cascade,
+    // sans interférence avec Pentecôte (25/05) ou Ascension (14/05).
+    // X : lundi 08/06 → vendredi 12/06 (5 jours ouvrés).
     createTask(db, {
       id: 'X',
       name: 'X',
-      start_date: '2026-05-18',
-      end_date: '2026-05-22',
+      start_date: '2026-06-08',
+      end_date: '2026-06-12',
     })
-    // Y : prédécesseur=X → start initialisé à la fin de X.
-    // Charge 3 j ouvrés (vendredi → mardi en sautant le w-e).
+    // Y : prédécesseur=X → start initialisé à la fin de X (lag inféré = 0).
+    // Charge 3 j ouvrés (ven 12/06 → mar 16/06 en sautant le w-e).
     createTask(db, {
       id: 'Y',
       name: 'Y',
-      start_date: '2026-05-22',
-      end_date: '2026-05-26',
+      start_date: '2026-06-12',
+      end_date: '2026-06-16',
       predecessor_id: 'X',
     })
   })
@@ -206,48 +209,52 @@ describe('v1.9 — cascade aux successeurs', () => {
   }
 
   it('allonger X : Y est repoussé en conservant sa charge', () => {
-    // X passe de 22 mai à 27 mai (mer) → +3 jours ouvrés.
-    updateTask(db, 'X', { end_date: '2026-05-27' })
+    // X passe de 12/06 à 17/06 (mer) → +3 j ouvrés.
+    updateTask(db, 'X', { end_date: '2026-06-17' })
     const y = get('Y')
-    // Y démarre à la nouvelle fin de X (mercredi 27, jour ouvré).
-    expect(y.start_date).toBe('2026-05-27')
-    // Charge conservée = 3 jours ouvrés → mer + 2 = vendredi 29 mai.
-    expect(y.end_date).toBe('2026-05-29')
+    // Y démarre à la nouvelle fin de X (mer 17/06).
+    expect(y.start_date).toBe('2026-06-17')
+    // Charge conservée = 3 j ouvrés → mer + 2 = ven 19/06.
+    expect(y.end_date).toBe('2026-06-19')
   })
 
-  it('raccourcir X : Y est tiré en arrière (délai constant — v1.10)', () => {
-    // À l'init, Y a été créé sans predecessor_lag explicite et Y.start ==
-    // X.end → lag inféré = 0. La cascade v1.10 force Y.start = X.end + 0.
-    // X réduit au mercredi 20 mai → Y est tiré à 20 mai (charge 3 j ouvrés
-    // = mer→ven). Ceci corrige le bug du « stuck successor » de v1.9.
-    updateTask(db, 'X', { end_date: '2026-05-20' })
+  it('raccourcir X : Y reste sur place (lag = MINIMUM, v1.23)', () => {
+    // v1.23 — Le lag est désormais un délai MINIMUM. Réduire X ne tire plus
+    // Y en arrière (changement vs. v1.10). Y conserve sa start initiale.
+    updateTask(db, 'X', { end_date: '2026-06-10' })
     const y = get('Y')
-    expect(y.start_date).toBe('2026-05-20')
-    expect(y.end_date).toBe('2026-05-22')
+    expect(y.start_date).toBe('2026-06-12')
+    expect(y.end_date).toBe('2026-06-16')
   })
 
-  it("v1.10 — le délai (predecessor_lag) est respecté lors d'un allongement", () => {
-    // Pose un délai de 2 j ouvrés sur Y (au lieu de l'enchaînement immédiat).
+  it("v1.10 / v1.23 — le délai (predecessor_lag) est respecté lors d'un allongement", () => {
+    // Pose un délai de 2 j ouvrés sur Y.
     updateTask(db, 'Y', { predecessor_lag: 2 })
     let y = get('Y')
-    // X.end = 22 mai (ven) ; lag=2 → Y.start = 3e jour ouvré ≥ 22 mai
-    // = ven (1) + lun 25 (2) + mar 26 (3) → mar 26 mai.
-    expect(y.start_date).toBe('2026-05-26')
-    // Charge conservée (3 j ouvrés) → mar + 2 = jeu 28 mai.
-    expect(y.end_date).toBe('2026-05-28')
-    // X allongé jusqu'au 27 mai → Y poussé en gardant le délai de 2.
-    updateTask(db, 'X', { end_date: '2026-05-27' })
+    // X.end = ven 12/06 ; lag=2 ⇒ Y.start = base + 4 j ouvrés
+    // = ven 12 (1) + lun 15 (2) + mar 16 (3) + mer 17 (4) → mer 17/06.
+    // (v1.23 : lag = nombre de j ouvrés STRICTEMENT entre — cf.
+    //  computeSuccessorStart.)
+    expect(y.start_date).toBe('2026-06-17')
+    // Charge initiale conservée (3 j ouvrés) → mer 17 + 2 = ven 19/06.
+    expect(y.end_date).toBe('2026-06-19')
+    // X allongé jusqu'au 17/06 → Y poussé en gardant le délai de 2.
+    updateTask(db, 'X', { end_date: '2026-06-17' })
     y = get('Y')
-    // X.end = 27 mai (mer) ; lag=2 → mer + 2 = ven 29 mai.
-    expect(y.start_date).toBe('2026-05-29')
+    // X.end = mer 17/06 ; lag=2 → 17(1) + 18(2) + 19(3) + WE + 22(4) → lun 22/06.
+    expect(y.start_date).toBe('2026-06-22')
   })
 
-  it("v1.10 — le délai est aussi respecté lors d'un raccourcissement", () => {
+  it("v1.23 — le délai n'est PAS rétro-appliqué lors d'un raccourcissement", () => {
+    // Sémantique « minimum » : si X raccourcit, Y reste sur place dès lors
+    // que sa start_date courante respecte encore le minimum.
     updateTask(db, 'Y', { predecessor_lag: 2 })
-    // X raccourci à mer 20 mai → Y.start = mer + 2 j ouvrés = ven 22 mai.
-    updateTask(db, 'X', { end_date: '2026-05-20' })
+    // Y.start est maintenant à mer 17/06 (cf. test précédent).
+    updateTask(db, 'X', { end_date: '2026-06-10' })
     const y = get('Y')
-    expect(y.start_date).toBe('2026-05-22')
+    // X.end = 10/06 ; minStart(lag=2) = lun 15/06 ; Y.start (17/06) ≥ minStart
+    // → on ne touche pas à Y.
+    expect(y.start_date).toBe('2026-06-17')
   })
 
   it('chaîne X → Y → Z : la cascade se propage récursivement', () => {
@@ -255,28 +262,28 @@ describe('v1.9 — cascade aux successeurs', () => {
     createTask(db, {
       id: 'Z',
       name: 'Z',
-      start_date: '2026-05-26',
-      end_date: '2026-05-27',
+      start_date: '2026-06-16',
+      end_date: '2026-06-17',
       predecessor_id: 'Y',
     })
-    // X étendu de 22 mai (ven) à 29 mai (ven, +5 j ouvrés).
-    updateTask(db, 'X', { end_date: '2026-05-29' })
+    // X étendu de 12/06 (ven) à 19/06 (ven, +5 j ouvrés).
+    updateTask(db, 'X', { end_date: '2026-06-19' })
     const y = get('Y')
     const z = get('Z')
-    // Y poussé à 29 mai (ven), charge=3 j → fin mardi 2 juin.
-    expect(y.start_date).toBe('2026-05-29')
-    expect(y.end_date).toBe('2026-06-02')
-    // Z poussé à 2 juin (mar), charge=2 j → fin mercredi 3 juin.
-    expect(z.start_date).toBe('2026-06-02')
-    expect(z.end_date).toBe('2026-06-03')
+    // Y poussé à 19/06 (ven), charge=3 j → fin mar 23/06.
+    expect(y.start_date).toBe('2026-06-19')
+    expect(y.end_date).toBe('2026-06-23')
+    // Z poussé à 23/06 (mar), charge=2 j → fin mer 24/06.
+    expect(z.start_date).toBe('2026-06-23')
+    expect(z.end_date).toBe('2026-06-24')
   })
 
   it('la nouvelle fin de X qui tombe un week-end est snappée au lundi pour Y', () => {
-    // X.end = samedi 23 mai (cas pathologique : saisie manuelle).
-    updateTask(db, 'X', { end_date: '2026-05-23' })
+    // X.end = samedi 13/06 (cas pathologique : saisie manuelle).
+    updateTask(db, 'X', { end_date: '2026-06-13' })
     const y = get('Y')
-    // Y.start (22) < X.end (23) → pousser ; snap au lundi 25 mai.
-    expect(y.start_date).toBe('2026-05-25')
+    // Y.start (12) < X.end (13) → pousser ; snap au lun 15/06 (pas férié).
+    expect(y.start_date).toBe('2026-06-15')
   })
 
   it('jalon successeur : end suit start (pas de charge à propager)', () => {
@@ -285,14 +292,14 @@ describe('v1.9 — cascade aux successeurs', () => {
       id: 'M',
       name: 'M',
       kind: 'milestone',
-      start_date: '2026-05-22',
-      end_date: '2026-05-22',
+      start_date: '2026-06-12',
+      end_date: '2026-06-12',
       predecessor_id: 'X',
     })
-    updateTask(db, 'X', { end_date: '2026-05-27' })
+    updateTask(db, 'X', { end_date: '2026-06-17' })
     const m = get('M')
-    expect(m.start_date).toBe('2026-05-27')
-    expect(m.end_date).toBe('2026-05-27')
+    expect(m.start_date).toBe('2026-06-17')
+    expect(m.end_date).toBe('2026-06-17')
   })
 })
 

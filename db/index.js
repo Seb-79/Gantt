@@ -555,6 +555,86 @@ function isWeekendIso(iso) {
 }
 
 /**
+ * v1.23 — Calcule la date du dimanche de Pâques pour une année donnée
+ * (algorithme grégorien anonyme / Meeus-Jones-Butcher). Miroir de
+ * `easterSunday` côté client (src/lib/utils.ts).
+ *
+ * @param {number} year   Année grégorienne.
+ * @returns {{month:number, day:number}}  Mois 1-based, jour 1-based.
+ */
+function easterSundayServer(year) {
+  const a = year % 19
+  const b = Math.floor(year / 100)
+  const c = year % 100
+  const d = Math.floor(b / 4)
+  const e = b % 4
+  const f = Math.floor((b + 8) / 25)
+  const g = Math.floor((b - f + 1) / 3)
+  const h = (19 * a + b - d - g + 15) % 30
+  const i = Math.floor(c / 4)
+  const k = c % 4
+  const l = (32 + 2 * e + 2 * i - h - k) % 7
+  const m = Math.floor((a + 11 * h + 22 * l) / 451)
+  const n = h + l - 7 * m + 114
+  return { month: Math.floor(n / 31), day: (n % 31) + 1 }
+}
+
+/** Cache des fériés FR par année (calcul à la demande). */
+const FRENCH_HOLIDAYS_CACHE_SERVER = new Map()
+
+/**
+ * v1.23 — Renvoie un `Set` des dates ISO fériées en France pour une année
+ * donnée (8 fixes + 3 mobiles dérivés de Pâques). Miroir de
+ * `frenchHolidaysOf` côté client.
+ *
+ * @param {number} year
+ * @returns {Set<string>}
+ */
+function frenchHolidaysOfServer(year) {
+  const cached = FRENCH_HOLIDAYS_CACHE_SERVER.get(year)
+  if (cached) return cached
+  const pad = (n) => String(n).padStart(2, '0')
+  const set = new Set([
+    `${year}-01-01`, // Jour de l'An
+    `${year}-05-01`, // Fête du Travail
+    `${year}-05-08`, // Victoire 1945
+    `${year}-07-14`, // Fête nationale
+    `${year}-08-15`, // Assomption
+    `${year}-11-01`, // Toussaint
+    `${year}-11-11`, // Armistice 1918
+    `${year}-12-25`, // Noël
+  ])
+  const e = easterSundayServer(year)
+  const easterIso = `${year}-${pad(e.month)}-${pad(e.day)}`
+  set.add(addDaysIsoServer(easterIso, 1)) // Lundi de Pâques
+  set.add(addDaysIsoServer(easterIso, 39)) // Ascension
+  set.add(addDaysIsoServer(easterIso, 50)) // Lundi de Pentecôte
+  FRENCH_HOLIDAYS_CACHE_SERVER.set(year, set)
+  return set
+}
+
+/**
+ * v1.23 — Indique si une date ISO tombe un jour férié français.
+ *
+ * @param {string} iso   YYYY-MM-DD
+ * @returns {boolean}
+ */
+function isFrenchHolidayIso(iso) {
+  const year = Number(iso.slice(0, 4))
+  return frenchHolidaysOfServer(year).has(iso)
+}
+
+/**
+ * v1.23 — Prédicat unifié « jour non ouvré » = week-end OU jour férié français.
+ *
+ * @param {string} iso   YYYY-MM-DD
+ * @returns {boolean}
+ */
+function isNonWorkingDayIso(iso) {
+  return isWeekendIso(iso) || isFrenchHolidayIso(iso)
+}
+
+/**
  * v1.9 — Avance ou recule une date ISO de N jours calendaires.
  *
  * @param {string} iso    YYYY-MM-DD
@@ -573,20 +653,21 @@ function addDaysIsoServer(iso, days) {
 }
 
 /**
- * v1.9 — Si iso est un week-end, le pousse au lundi suivant (sinon inchangé).
+ * v1.9 / v1.23 — Si iso est non-ouvré (week-end ou férié français), le
+ * pousse au jour ouvré suivant (sinon inchangé).
  *
  * @param {string} iso  YYYY-MM-DD
  * @returns {string}
  */
 function snapForwardToWorkingDayServer(iso) {
   let cur = iso
-  while (isWeekendIso(cur)) cur = addDaysIsoServer(cur, 1)
+  while (isNonWorkingDayIso(cur)) cur = addDaysIsoServer(cur, 1)
   return cur
 }
 
 /**
- * v1.9 — Compte les jours OUVRÉS inclus dans [start, end].
- *   workingDaysBetweenServer('2026-05-18','2026-05-20') === 3
+ * v1.9 / v1.23 — Compte les jours OUVRÉS inclus dans [start, end] (hors
+ * week-ends et fériés français).
  *
  * @param {string} start  YYYY-MM-DD
  * @param {string} end    YYYY-MM-DD
@@ -597,15 +678,16 @@ function workingDaysBetweenServer(start, end) {
   let count = 0
   let cur = start
   while (cur <= end) {
-    if (!isWeekendIso(cur)) count++
+    if (!isNonWorkingDayIso(cur)) count++
     cur = addDaysIsoServer(cur, 1)
   }
   return count
 }
 
 /**
- * v1.9 — Ajoute `charge` jours OUVRÉS à partir de start et renvoie la
- * date de fin (incluse). Cohérent avec `addWorkingDays` côté client.
+ * v1.9 / v1.23 — Ajoute `charge` jours OUVRÉS à partir de start et renvoie
+ * la date de fin (incluse). Saute week-ends ET jours fériés français.
+ * Cohérent avec `addWorkingDays` côté client.
  *
  * @param {string} start   YYYY-MM-DD
  * @param {number} charge  Nombre de jours ouvrés (≥ 1).
@@ -614,21 +696,24 @@ function workingDaysBetweenServer(start, end) {
 function addWorkingDaysServer(start, charge) {
   if (charge <= 1) return start
   let cur = start
-  let count = isWeekendIso(cur) ? 0 : 1
+  let count = isNonWorkingDayIso(cur) ? 0 : 1
   while (count < charge) {
     cur = addDaysIsoServer(cur, 1)
-    if (!isWeekendIso(cur)) count++
+    if (!isNonWorkingDayIso(cur)) count++
   }
   return cur
 }
 
 /**
- * v1.10 — Calcule la date de début d'un successeur Y à partir de la fin
- * de son prédécesseur X et d'un délai (jours ouvrés).
- *   • lag = 0 → Y.start = jour ouvré du jour-même de X.end (snap au lundi
- *     suivant si X.end tombe un week-end).
- *   • lag = N → Y démarre N jours ouvrés APRÈS X.end (= le (N+1)-ème jour
- *     ouvré inclusif depuis X.end).
+ * v1.10 / v1.23 — Calcule la date de début d'un successeur Y à partir de la
+ * fin de son prédécesseur X et d'un délai (jours ouvrés).
+ *
+ * Sémantique : `lag = N` impose N jours ouvrés STRICTEMENT entre `predEnd`
+ * et `start` (= minimum d'attente).
+ *   • lag = 0 → Y.start = base (= jour ouvré snappé de X.end).
+ *   • lag = N ≥ 1 → Y.start = (N+1)-ième jour ouvré STRICTEMENT après X.end.
+ *
+ * Miroir exact de `computeSuccessorStart` côté client (src/lib/utils.ts).
  *
  * @param {string} predEnd  Date de fin du prédécesseur (YYYY-MM-DD).
  * @param {number} lag      Délai en jours ouvrés (≥ 0).
@@ -637,9 +722,10 @@ function addWorkingDaysServer(start, charge) {
 function computeSuccessorStart(predEnd, lag) {
   const base = snapForwardToWorkingDayServer(predEnd)
   if (lag <= 0) return base
-  // addWorkingDaysServer(base, 1) == base ; on veut +N jours ouvrés EN PLUS,
-  // donc on passe (lag + 1) en charge.
-  return addWorkingDaysServer(base, lag + 1)
+  // v1.23 — `lag + 2` (au lieu de `lag + 1`) : on veut N jours ouvrés
+  // STRICTEMENT entre base et start, sans compter base ni start dans le
+  // décompte.
+  return addWorkingDaysServer(base, lag + 2)
 }
 
 // -----------------------------------------------------------------------------
@@ -713,19 +799,24 @@ function reconcilePredecessor(db, current, next, patch) {
   if (!pred) return
   const lagInPatch = patch.predecessor_lag !== undefined
   if (lagInPatch) {
-    // Délai fourni explicitement → dérive start (source de vérité).
-    const targetStart = computeSuccessorStart(
-      pred.end_date,
-      next.predecessor_lag,
-    )
-    if (targetStart === next.start_date) return
-    const charge = Math.max(
-      1,
-      workingDaysBetweenServer(current.start_date, current.end_date),
-    )
-    next.start_date = targetStart
-    if (next.kind !== 'milestone') {
-      next.end_date = addWorkingDaysServer(targetStart, charge)
+    // v1.23 — Le délai est désormais traité comme un MINIMUM : il fixe la
+    // borne basse de start, mais une `start_date` fournie au-delà de cette
+    // borne est respectée (cas typique : un Replan a poussé la tâche pour
+    // résoudre une surcharge, le délai reste à sa valeur saisie, le gap réel
+    // est plus large). Auparavant, lagInPatch écrasait inconditionnellement
+    // start_date avec la valeur dérivée du lag, ce qui faisait sauter le
+    // déplacement du replan et — comme `submitReplanMoves` n'envoyait pas le
+    // lag — entraînait une ré-inférence à 6 (bug v1.22 « Test délai »).
+    const minStart = computeSuccessorStart(pred.end_date, next.predecessor_lag)
+    if (next.start_date < minStart) {
+      const charge = Math.max(
+        1,
+        workingDaysBetweenServer(current.start_date, current.end_date),
+      )
+      next.start_date = minStart
+      if (next.kind !== 'milestone') {
+        next.end_date = addWorkingDaysServer(minStart, charge)
+      }
     }
     return
   }
@@ -738,9 +829,13 @@ function reconcilePredecessor(db, current, next, patch) {
     next.start_date = pred.end_date
     next.predecessor_lag = 0
   } else {
+    // v1.23 — Symétrique de `computeSuccessorStart(pred.end, lag) ⇒ addWorkingDays(base, lag + 2)`.
+    // Pour retrouver le lag à partir d'un gap, on retire 2 au lieu de 1 :
+    // `lag = max(0, workingDaysBetween(pred.end, start) - 2)`. Sur des bornes
+    // toutes deux jour-ouvré, ça donne 0 quand start = pred.end (gap = 1).
     next.predecessor_lag = Math.max(
       0,
-      workingDaysBetweenServer(pred.end_date, next.start_date) - 1,
+      workingDaysBetweenServer(pred.end_date, next.start_date) - 2,
     )
   }
 }
@@ -782,14 +877,19 @@ function propagateToSuccessors(db, rootId) {
     if (!cur) continue
 
     for (const succ of fetchSuccessors.all(curId)) {
-      // v1.10 — Source de vérité : delay stocké. On recalcule Y.start_date
-      // depuis X.end_date + Y.predecessor_lag (jours ouvrés). Le délai
-      // ne dépend pas de l'historique des dates antérieures.
-      const targetStart = computeSuccessorStart(
+      // v1.23 — Le lag est traité comme un MINIMUM (cf. `reconcilePredecessor`) :
+      // on ne POUSSE le successeur que si sa start courante viole cette borne.
+      // Sinon on le laisse en place (ex. : le replan l'avait déjà déplacé plus
+      // loin pour résoudre une surcharge — on ne défait pas son geste). Un
+      // raccourcissement du prédécesseur ne ramène plus le successeur en
+      // arrière (changement vs. v1.10), au profit de la cohérence avec
+      // l'intention « lag = délai minimum ».
+      const minStart = computeSuccessorStart(
         cur.end_date,
         succ.predecessor_lag || 0,
       )
-      const { newStart, newEnd } = computeShiftedDates(succ, targetStart)
+      if (succ.start_date >= minStart) continue
+      const { newStart, newEnd } = computeShiftedDates(succ, minStart)
       if (newStart === succ.start_date && newEnd === succ.end_date) continue
       updateDates.run(newStart, newEnd, succ.id)
       // Propage à la phase parente (les dates de la phase doivent refléter

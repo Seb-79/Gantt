@@ -161,11 +161,13 @@ export default function TaskEditor({
     } else {
       setEndDate((current) => maxIso(current, value))
     }
-    // v1.10 — Synchronise le délai si un prédécesseur est défini.
+    // v1.10 / v1.23 — Synchronise le délai si un prédécesseur est défini.
+    // Inverse de `computeSuccessorStart` (cf. utils.ts) :
+    // `lag = max(0, workingDaysBetween(pred.end, start) - 2)`.
     if (predecessorId) {
       const pred = tasks.find((t) => t.id === predecessorId)
       if (pred && value && value >= pred.end_date) {
-        setLag(Math.max(0, workingDaysBetween(pred.end_date, value) - 1))
+        setLag(Math.max(0, workingDaysBetween(pred.end_date, value) - 2))
       }
     }
     setError(null)

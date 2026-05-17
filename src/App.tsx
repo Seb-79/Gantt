@@ -388,9 +388,14 @@ export default function App() {
           const res = await fetch(`/api/tasks/${m.id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
+            // v1.23 — Inclut `predecessor_lag` pour que le serveur prenne la
+            // branche « lagInPatch=true » et PRÉSERVE le délai utilisateur
+            // (sinon il ré-inférerait un lag depuis le nouveau gap, ce qui
+            // écrasait la valeur saisie — bug v1.22 / Test délai).
             body: JSON.stringify({
               start_date: m.newStart,
               end_date: m.newEnd,
+              predecessor_lag: m.predecessor_lag,
             }),
           })
           if (!res.ok) {

@@ -39,8 +39,11 @@ function mkState(overrides: Partial<GanttState> = {}): GanttState {
         id: 't1',
         name: 'Tâche 1',
         kind: 'task',
-        start_date: '2026-05-01',
-        end_date: '2026-05-05',
+        // v1.23 — 01/05/2026 = Fête du Travail (férié) ; on déplace la
+        // tâche par défaut sur une semaine sans férié pour éviter qu'un
+        // « Replan » par défaut ne propose un déplacement spurieux.
+        start_date: '2026-06-01',
+        end_date: '2026-06-05',
         progress: 0,
         collaborator_id: null,
         color: null,
@@ -483,8 +486,10 @@ describe('App — Replan (non-régression métier)', () => {
       const body = JSON.parse(patches[0].body!)
       // 1er juin = lundi suivant la fin du 29 mai d'Alice (vendredi).
       expect(body.start_date).toBe('2026-06-01')
-      // Charge préservée : 10 j ouvrés depuis le 1er juin = vendredi 12 juin.
-      expect(body.end_date).toBe('2026-06-12')
+      // v1.23 — Charge préservée : 25/05/2026 est désormais férié (Lundi de
+      // Pentecôte) → l'intervalle 25 mai → 5 juin compte 9 j ouvrés (au lieu
+      // de 10). Depuis le 1er juin, +9 j ouvrés → jeudi 11 juin.
+      expect(body.end_date).toBe('2026-06-11')
     })
     // La tâche qui ne bouge pas ne fait l'objet d'aucun PATCH.
     expect(
@@ -837,6 +842,92 @@ describe("App — auto-replan après modification d'une tâche (v1.22)", () => {
     expect(
       calls.find((c) => c.method === 'PATCH' && c.url === '/api/tasks/t1b'),
     ).toBeUndefined()
+  })
+})
+
+// =============================================================================
+// v1.23 — Replan préserve `predecessor_lag` (correctif bug « Test délai »)
+// =============================================================================
+// Régression remontée v1.22 : modifier le délai d'une tâche à 2 et enregistrer
+// avec la case « Replanifier » cochée faisait revenir le lag à 6 — parce que
+// `submitReplanMoves` n'envoyait pas le lag, et le serveur l'inférait depuis
+// le nouveau gap. Le PATCH du replan doit désormais inclure `predecessor_lag`
+// pour que le serveur prenne la branche « lagInPatch=true » et préserve
+// l'intention utilisateur.
+// =============================================================================
+
+describe('App — Replan préserve predecessor_lag (v1.23)', () => {
+  it('chaque PATCH de replan inclut le lag de la tâche déplacée', async () => {
+    // Scénario simple : Alice a 2 tâches qui se chevauchent. La 2e a un lag=3
+    // (sans prédécesseur pour simplifier, mais le PATCH doit malgré tout
+    // transporter la valeur stockée — preuve que `submitReplanMoves` ne
+    // tronque rien).
+    const state = mkState({
+      collaborators: [
+        { id: 'alice', name: 'Alice', color: '#3b82f6', position: 0 },
+      ],
+      tasks: [
+        {
+          id: 'PRED',
+          name: 'Pred',
+          kind: 'task',
+          start_date: '2026-06-08',
+          end_date: '2026-06-12',
+          progress: 0,
+          collaborator_id: 'alice',
+          color: null,
+          parent_id: null,
+          predecessor_id: null,
+          predecessor_lag: 0,
+          priority: null,
+          position: 0,
+          project_id: 'p1',
+        },
+        {
+          id: 'SUCC',
+          name: 'Succ',
+          kind: 'task',
+          // Chevauche PRED → replan va pousser SUCC.
+          start_date: '2026-06-10',
+          end_date: '2026-06-12',
+          progress: 0,
+          collaborator_id: 'alice',
+          color: null,
+          parent_id: null,
+          predecessor_id: 'PRED',
+          // Lag = 3 j ouvrés (= valeur utilisateur, à préserver).
+          predecessor_lag: 3,
+          priority: null,
+          position: 1,
+          project_id: 'p1',
+        },
+      ],
+    })
+    const { calls } = setupFetchMock(state)
+    render(<App />)
+    await waitFor(() => screen.getByTestId('coherence-alert'))
+    fireEvent.click(
+      within(screen.getByTestId('coherence-alert')).getByRole('button', {
+        name: /Replan complet/,
+      }),
+    )
+    const dialog = await screen.findByRole('dialog', {
+      name: /replanification/i,
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Appliquer' }))
+
+    await waitFor(() => {
+      const patch = calls.find(
+        (c) => c.method === 'PATCH' && c.url === '/api/tasks/SUCC',
+      )
+      expect(patch).toBeTruthy()
+      const body = JSON.parse(patch!.body!)
+      // v1.23 — Le lag stocké est renvoyé tel quel dans le PATCH du replan.
+      expect(body.predecessor_lag).toBe(3)
+      // Et les dates proposées sont aussi présentes.
+      expect(body.start_date).toBeTruthy()
+      expect(body.end_date).toBeTruthy()
+    })
   })
 })
 

@@ -26,7 +26,8 @@ import {
   daysBetweenIso,
   groupByMonth,
   groupByWeek,
-  isWeekendDay,
+  isFrenchHoliday,
+  isNonWorkingDay,
   workloadCellStyle,
 } from '../lib/utils'
 import { useHorizontalPan } from '../lib/useHorizontalPan'
@@ -221,20 +222,27 @@ export default function WorkloadChart({
             </div>
           ) : (
             <div className="flex h-7 border-b border-slate-300 bg-slate-50">
-              {dates.map((d, i) => (
-                <div
-                  key={i}
-                  className={[
-                    'flex items-center justify-center text-[10px] border-r border-slate-200',
-                    isWeekendDay(d)
-                      ? 'bg-slate-200 text-slate-500'
-                      : 'text-slate-600',
-                  ].join(' ')}
-                  style={{ width: dayWidth }}
-                >
-                  {d.getDate()}
-                </div>
-              ))}
+              {dates.map((d, i) => {
+                // v1.23 — Fériés français = jours non ouvrés, signalés
+                // comme les week-ends + tooltip explicite.
+                const holiday = isFrenchHoliday(d)
+                const nonWorking = isNonWorkingDay(d)
+                return (
+                  <div
+                    key={i}
+                    className={[
+                      'flex items-center justify-center text-[10px] border-r border-slate-200',
+                      nonWorking
+                        ? 'bg-slate-200 text-slate-500'
+                        : 'text-slate-600',
+                    ].join(' ')}
+                    style={{ width: dayWidth }}
+                    title={holiday ? 'Jour férié (France)' : undefined}
+                  >
+                    {d.getDate()}
+                  </div>
+                )
+              })}
             </div>
           )}
 
@@ -250,10 +258,10 @@ export default function WorkloadChart({
                 >
                   {dates.map((d, i) => {
                     const sum = loads[i] ?? 0
-                    const weekend = isWeekendDay(d)
-                    // Le week-end est non-travaillé : on grise sans afficher
-                    // de chiffre, même si une tâche couvre ce jour-là.
-                    const cellClasses = weekend
+                    // v1.23 — Inclut les fériés français dans les jours
+                    // non-travaillés : on grise sans afficher de chiffre.
+                    const offDay = isNonWorkingDay(d)
+                    const cellClasses = offDay
                       ? 'bg-slate-50 text-slate-300'
                       : workloadCellStyle(sum, highlightUnderload)
                     // Format affiché : entier "1", "2" ; sinon on n'écrit
@@ -262,7 +270,7 @@ export default function WorkloadChart({
                     const sumLabel = Number.isInteger(sum)
                       ? String(sum)
                       : sum.toFixed(2)
-                    const label = weekend || sum === 0 ? '' : sumLabel
+                    const label = offDay || sum === 0 ? '' : sumLabel
                     return (
                       <div
                         key={i}
@@ -272,8 +280,11 @@ export default function WorkloadChart({
                         ].join(' ')}
                         style={{ width: dayWidth }}
                         title={
-                          weekend
-                            ? `${c.name} — ${d.toLocaleDateString('fr-FR')} (week-end)`
+                          // v1.23 — Tooltip uniforme pour les jours non
+                          // ouvrés (week-ends et fériés français). Le détail
+                          // « férié » est porté par le header (jour-mois).
+                          offDay
+                            ? `${c.name} — ${d.toLocaleDateString('fr-FR')} (jour non ouvré)`
                             : `${c.name} — ${d.toLocaleDateString('fr-FR')} : ${sum} j`
                         }
                       >

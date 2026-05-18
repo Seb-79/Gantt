@@ -31,7 +31,12 @@ import {
   workloadCellStyle,
 } from '../lib/utils'
 import { useHorizontalPan } from '../lib/useHorizontalPan'
-import type { Collaborator, MemberAllocation, Task } from '../lib/types'
+import type {
+  Collaborator,
+  CollaboratorAbsence,
+  MemberAllocation,
+  Task,
+} from '../lib/types'
 
 /** Hauteur d'une ligne (px) — alignée sur la vue Gantt pour la cohérence. */
 const ROW_HEIGHT = 26
@@ -56,6 +61,10 @@ interface Props {
    *  quotidienne de chaque tâche : 100 % = 1, 50 % = 0.5, etc.). Vide →
    *  comportement F1 (1 par jour ouvré couvert). */
   memberAllocations?: MemberAllocation[]
+  /** v2.0 / F3 — Absences cross-projet : réduit multiplicativement la
+   *  contribution du collab les jours concernés (capacité = allocation_pct
+   *  × (1 − fraction)). Vide → pas d'impact. */
+  absences?: CollaboratorAbsence[]
   /**
    * v1.17 — Si `true`, met en évidence les sous-charges (`sum < 1` sur les
    * jours ouvrés) avec une palette jaune (cellule libre = jaune pâle,
@@ -82,6 +91,7 @@ export default function WorkloadChart({
   tasks,
   collaborators,
   memberAllocations = [],
+  absences = [],
   highlightUnderload = false,
   onShiftWindow,
 }: Props) {
@@ -140,8 +150,11 @@ export default function WorkloadChart({
     // v2.0 / F2 — `memberAllocations` pondère la contribution quotidienne de
     // chaque tâche (allocation %). Sans allocations, comportement F1 (1 par
     // jour ouvré couvert).
-    () => computeWorkload(tasks, collaborators, dates, memberAllocations),
-    [tasks, collaborators, dates, memberAllocations],
+    // v2.0 / F3 — `absences` réduit multiplicativement la contribution les
+    // jours concernés (cohérent avec le moteur de calcul de fin).
+    () =>
+      computeWorkload(tasks, collaborators, dates, memberAllocations, absences),
+    [tasks, collaborators, dates, memberAllocations, absences],
   )
 
   /**

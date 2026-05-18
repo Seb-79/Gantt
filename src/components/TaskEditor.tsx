@@ -37,6 +37,7 @@ import {
 import PredecessorPicker, { type PredecessorEntry } from './PredecessorPicker'
 import type {
   Collaborator,
+  CollaboratorAbsence,
   MemberAllocation,
   Task,
   TaskKind,
@@ -59,6 +60,10 @@ interface Props {
    *  capacité quotidienne du collab sélectionné (allocation %). Optionnel
    *  pour rétro-compat. */
   memberAllocations?: MemberAllocation[]
+  /** v2.0 / F3 — Absences cross-projet. Quand fournies, la fin affichée
+   *  prend aussi en compte les jours d'absence du collab sélectionné
+   *  (lecture multiplicative). Optionnel pour rétro-compat. */
+  absences?: CollaboratorAbsence[]
   /** v2.0 / F2 — Id du projet courant (nécessaire pour le contexte
    *  d'allocation). Optionnel pour rétro-compat. */
   projectId?: string | null
@@ -86,6 +91,7 @@ export default function TaskEditor({
   collaborators,
   memberIds,
   memberAllocations,
+  absences,
   projectId,
   tasks,
   onSave,
@@ -213,6 +219,7 @@ export default function TaskEditor({
         projectId,
         collaboratorId: collabId,
         allocations: memberAllocations,
+        absences,
       })
     }
     return addWorkingDays(start, c)

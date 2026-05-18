@@ -497,6 +497,93 @@ describe('computeEndFromCharge (v2.0)', () => {
       }),
     ).toBe('2026-06-12')
   })
+
+  // v2.0 / F3 — Absence d'une journée complète + alloc 100 % : capacité 0
+  // ce jour-là, la tâche est décalée d'un jour.
+  // Charge 3 j, alloc 100 %, congé complet le mardi 09/06 :
+  //   J1 lun 08/06 → 1.0 (cumul 1.0)
+  //   J2 mar 09/06 → 0 (congé) — sauté
+  //   J3 mer 10/06 → 1.0 (cumul 2.0)
+  //   J4 jeu 11/06 → 1.0 (cumul 3.0) → fin = 11/06
+  it('v2.0 / RG-GANTT-1402 — congé 1 j décale d`un jour la fin (alloc 100 %)', () => {
+    const allocations = [
+      {
+        id: 'a1',
+        project_id: 'pA',
+        collaborator_id: 'c1',
+        start_date: '2026-01-01',
+        end_date: '2026-12-31',
+        allocation_pct: 100,
+      },
+    ]
+    const absences = [
+      { collaborator_id: 'c1', date: '2026-06-09', fraction: 1 },
+    ]
+    expect(
+      computeEndFromCharge('2026-06-08', 3, {
+        projectId: 'pA',
+        collaboratorId: 'c1',
+        allocations,
+        absences,
+      }),
+    ).toBe('2026-06-11')
+  })
+
+  // v2.0 / F3 — Multiplicatif : alloc 50 % + congé 0,5 j → capacité 25 %
+  // le jour concerné (pas 0 et pas 50 %).
+  it('v2.0 / RG-GANTT-1402 — alloc 50 % + congé 0,5 j = 25 % effectif', () => {
+    const allocations = [
+      {
+        id: 'a1',
+        project_id: 'pA',
+        collaborator_id: 'c1',
+        start_date: '2026-01-01',
+        end_date: '2026-12-31',
+        allocation_pct: 50,
+      },
+    ]
+    const absences = [
+      { collaborator_id: 'c1', date: '2026-06-08', fraction: 0.5 },
+    ]
+    // Cumul jour par jour pour charge 1 :
+    //   08/06 → 0.5 × 0.5 = 0.25 (cumul 0.25)
+    //   09/06 → 0.5            (cumul 0.75)
+    //   10/06 → 0.5            (cumul 1.25) → atteint → fin = 10/06
+    expect(
+      computeEndFromCharge('2026-06-08', 1, {
+        projectId: 'pA',
+        collaboratorId: 'c1',
+        allocations,
+        absences,
+      }),
+    ).toBe('2026-06-10')
+  })
+
+  // v2.0 / F3 — Absences d'un AUTRE collab ne décalent pas la tâche.
+  it('v2.0 / RG-GANTT-1402 — absence d`un autre collab : aucun effet', () => {
+    const allocations = [
+      {
+        id: 'a1',
+        project_id: 'pA',
+        collaborator_id: 'c1',
+        start_date: '2026-01-01',
+        end_date: '2026-12-31',
+        allocation_pct: 100,
+      },
+    ]
+    const absences = [
+      // Absence sur c2 (qui n'est pas affecté à la tâche).
+      { collaborator_id: 'c2', date: '2026-06-09', fraction: 1 },
+    ]
+    expect(
+      computeEndFromCharge('2026-06-08', 5, {
+        projectId: 'pA',
+        collaboratorId: 'c1',
+        allocations,
+        absences,
+      }),
+    ).toBe('2026-06-12') // inchangé (5 jours ouvrés depuis lundi)
+  })
 })
 
 describe('workingDaysBetween (v1.9)', () => {

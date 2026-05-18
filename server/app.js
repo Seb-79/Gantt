@@ -26,17 +26,20 @@
 import express from 'express'
 import helmet from 'helmet'
 import {
+  addAbsence,
   addMemberAllocation,
   addProjectMember,
   createCollaborator,
   createProject,
   createTask,
+  deleteAbsence,
   deleteCollaborator,
   deleteMemberAllocation,
   deleteProject,
   deleteTask,
   getFullState,
   getVersion,
+  listAbsences,
   listMemberAllocations,
   listProjectMembers,
   listProjects,
@@ -47,9 +50,11 @@ import {
   updateTask,
 } from '../db/index.js'
 import {
+  AddAbsenceBody,
   AddMemberAllocationBody,
   AddProjectMemberBody,
   AllocationIdParams,
+  CollabAbsenceParams,
   CollaboratorIdParams,
   CreateCollaboratorBody,
   CreateProjectBody,
@@ -324,6 +329,73 @@ export function createApp(db, { requestLog = true } = {}) {
         return res
           .status(404)
           .json({ error: 'allocation introuvable', version: result.version })
+      }
+      res.json(result)
+    }),
+  )
+
+  // -------------------------------------------------------------------------
+  // ABSENCES (v2.0 / F3) — congés cross-projet
+  // -------------------------------------------------------------------------
+
+  /**
+   * v2.0 / F3 — Liste les absences d'un collaborateur, triées par date.
+   * 404 si le collaborateur n'existe pas.
+   */
+  app.get(
+    '/api/collaborators/:id/absences',
+    validate({ params: CollaboratorIdParams }),
+    safeRoute((req, res) => {
+      const exists = db
+        .prepare(`SELECT 1 AS x FROM collaborators WHERE id = ?`)
+        .get(req.params.id)
+      if (!exists) {
+        return res.status(404).json({ error: 'collaborateur introuvable' })
+      }
+      res.json({ absences: listAbsences(db, req.params.id) })
+    }),
+  )
+
+  /**
+   * v2.0 / F3 — Ajoute (ou remplace via UPSERT) une absence pour un collab.
+   * 400 si le collab est inconnu ou la fraction invalide.
+   */
+  app.post(
+    '/api/collaborators/:id/absences',
+    validate({ params: CollaboratorIdParams, body: AddAbsenceBody }),
+    safeRoute((req, res) => {
+      try {
+        const result = addAbsence(db, {
+          collaborator_id: req.params.id,
+          date: req.body.date,
+          fraction: req.body.fraction,
+        })
+        res.json(result)
+      } catch (err) {
+        let msg
+        if (err.code === 'COLLABORATOR_NOT_FOUND')
+          msg = 'collaborateur introuvable'
+        else if (err.code === 'INVALID_ABSENCE_FRACTION')
+          msg = 'Fraction invalide (valeurs : 0.25, 0.5, 0.75, 1).'
+        else msg = `Ajout impossible : ${err.message}`
+        res.status(400).json({ error: msg })
+      }
+    }),
+  )
+
+  /**
+   * v2.0 / F3 — Supprime une absence par (collab, date). 404 si la ligne
+   * n'existe pas (cohérent avec les autres DELETE de l'API).
+   */
+  app.delete(
+    '/api/collaborators/:id/absences/:date',
+    validate({ params: CollabAbsenceParams }),
+    safeRoute((req, res) => {
+      const result = deleteAbsence(db, req.params.id, req.params.date)
+      if (!result.changed) {
+        return res
+          .status(404)
+          .json({ error: 'absence introuvable', version: result.version })
       }
       res.json(result)
     }),

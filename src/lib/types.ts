@@ -103,6 +103,17 @@ export interface MemberAllocation {
   allocation_pct: number
 }
 
+/** v2.0 / F3 — Un congé (cross-projet) posé par un collaborateur sur une
+ *  date donnée. La fraction représente la part de journée NON travaillée
+ *  (Q8b multiplicatif : capacité = pct × (1 − fraction)). */
+export interface CollaboratorAbsence {
+  collaborator_id: string
+  /** Date ISO YYYY-MM-DD. */
+  date: string
+  /** Fraction non-travaillée ∈ {0.25, 0.5, 0.75, 1}. */
+  fraction: number
+}
+
 /** État complet renvoyé par GET /api/state?project_id=…. */
 export interface GanttState {
   version: number
@@ -121,4 +132,8 @@ export interface GanttState {
    *  paires collab/période confondues). Consommée par le moteur de calcul de
    *  fin (computeEndFromCharge), le plan de charge pondéré et l'UI. */
   member_allocations: MemberAllocation[]
+  /** v2.0 / F3 — Toutes les absences (cross-projet) de tous les collabs.
+   *  Diminue multiplicativement la capacité quotidienne (Q8b). Saisie et
+   *  affichée dans l'onglet « Congés ». */
+  collaborator_absences: CollaboratorAbsence[]
 }

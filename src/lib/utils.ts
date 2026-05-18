@@ -333,6 +333,21 @@ export interface MemberAllocation {
 }
 
 /**
+ * v2.0 / F3 — Absence (congé) d'un collaborateur sur une journée donnée.
+ * Cross-projet : la même absence diminue la capacité du collab sur tous
+ * ses projets simultanément (lecture multiplicative Q8b).
+ *   • `fraction = 0.25` → un quart de journée non travaillé
+ *   • `fraction = 0.5`  → demi-journée
+ *   • `fraction = 0.75` → trois-quarts
+ *   • `fraction = 1`    → journée complète (= jour férié personnel)
+ */
+export interface CollaboratorAbsence {
+  collaborator_id: string
+  date: string
+  fraction: number
+}
+
+/**
  * v2.0 / F2 — Capacité quotidienne d'un collaborateur sur un projet à une
  * date donnée, sous forme de fraction (0..1).
  *
@@ -355,17 +370,35 @@ export function getDailyAllocation(
   allocations: MemberAllocation[],
   projectId: string,
   collabId: string,
+  absences: CollaboratorAbsence[] = [],
 ): number {
   const d = isoToDate(dateIso)
   if (isNonWorkingDay(d)) return 0
+  // v2.0 / F2 — Trouve l'allocation en vigueur ce jour-là (max 1 par invariant
+  // RG-GANTT-1301). Hors période → 0 % de capacité.
+  let pct = 0
   for (const a of allocations) {
     if (a.project_id !== projectId) continue
     if (a.collaborator_id !== collabId) continue
     if (dateIso >= a.start_date && dateIso <= a.end_date) {
-      return a.allocation_pct / 100
+      pct = a.allocation_pct / 100
+      break
     }
   }
-  return 0
+  if (pct === 0) return 0
+  // v2.0 / F3 — Pondération multiplicative par l'absence du jour (Q8b) :
+  // capacité = pct × (1 − fraction). 1 absence par (collab, date) max
+  // (PRIMARY KEY composite). Cas concrets :
+  //   • Paul 50 % + congé 0,5 j → 0,5 × (1 − 0,5) = 0,25 (25 % effectif)
+  //   • Paul 100 % + congé 1 j  → 1 × (1 − 1)    = 0 (jour complet en congé)
+  //   • Paul 100 % + congé 0,25 → 1 × (1 − 0,25) = 0,75
+  for (const ab of absences) {
+    if (ab.collaborator_id !== collabId) continue
+    if (ab.date !== dateIso) continue
+    const f = Math.max(0, Math.min(1, ab.fraction))
+    return pct * (1 - f)
+  }
+  return pct
 }
 
 /**
@@ -398,6 +431,9 @@ export function computeEndFromCharge(
     projectId: string | null
     collaboratorId: string | null
     allocations: MemberAllocation[]
+    /** v2.0 / F3 — Absences cross-projet du collab (toutes celles connues
+     *  côté state suffisent : `getDailyAllocation` filtre par collab+date). */
+    absences?: CollaboratorAbsence[]
   },
 ): string {
   // F0 path : sans allocations explicites, on reste sur la sémantique
@@ -411,9 +447,10 @@ export function computeEndFromCharge(
   ) {
     return addWorkingDays(startIso, charge)
   }
-  // F2 path : itération jour calendaire par jour calendaire, consommation
-  // pondérée par l'allocation. On démarre à `startIso` (inclus) et on
-  // accumule jusqu'à atteindre `charge` jours-personne.
+  // F2/F3 path : itération jour calendaire par jour calendaire, consommation
+  // pondérée par l'allocation × (1 − absence). On démarre à `startIso`
+  // (inclus) et on accumule jusqu'à atteindre `charge` jours-personne.
+  const absences = ctx.absences || []
   const needed = Math.max(1, charge)
   let consumed = 0
   let cur = startIso
@@ -426,6 +463,7 @@ export function computeEndFromCharge(
       ctx.allocations,
       ctx.projectId,
       ctx.collaboratorId,
+      absences,
     )
     if (a > 0) {
       consumed += a
@@ -773,6 +811,7 @@ function accumulateTaskWorkload(
   arr: number[],
   dates: Date[],
   allocations: MemberAllocation[],
+  absences: CollaboratorAbsence[],
 ): void {
   const start = isoToDate(t.start_date).getTime()
   const end = isoToDate(t.end_date).getTime()
@@ -788,6 +827,7 @@ function accumulateTaskWorkload(
         allocations,
         t.project_id,
         t.collaborator_id as string,
+        absences,
       )
     } else {
       arr[i] += 1
@@ -800,6 +840,7 @@ export function computeWorkload(
   collaborators: Collaborator[],
   dates: Date[],
   allocations: MemberAllocation[] = [],
+  absences: CollaboratorAbsence[] = [],
 ): Map<string, number[]> {
   const result = new Map<string, number[]>()
   for (const c of collaborators) {
@@ -807,12 +848,14 @@ export function computeWorkload(
   }
   // v2.0 / F2 — La contribution d'une tâche à un jour donné est désormais
   // pondérée par l'allocation effective du collab ce jour-là sur ce projet.
-  // Sans allocations → fallback F0/F1 : contribution = 1 par jour ouvré.
+  // v2.0 / F3 — Multiplicativement réduite par l'éventuelle absence du collab
+  // ce jour-là (cross-projet). Sans allocations → fallback F0/F1 : contribution
+  // = 1 par jour ouvré (les absences ne s'appliquent pas dans ce mode).
   for (const t of tasks) {
     if (t.kind !== 'task' || !t.collaborator_id) continue
     const arr = result.get(t.collaborator_id)
     if (!arr) continue
-    accumulateTaskWorkload(t, arr, dates, allocations)
+    accumulateTaskWorkload(t, arr, dates, allocations, absences)
   }
   return result
 }
@@ -1178,6 +1221,7 @@ function placeTaskInTimeline(
   proposed: Map<string, { start: string; end: string }>,
   timeline: Map<string, Array<[string, string]>>,
   allocations: MemberAllocation[],
+  absences: CollaboratorAbsence[],
 ): void {
   // v2.0 — La charge est désormais lue depuis `task.charge_jours` (source de
   // vérité). Pour les tâches issues de bases anciennes ou de tests qui ne
@@ -1196,12 +1240,15 @@ function placeTaskInTimeline(
     ? findFreeSlot(intervals, earliest, charge)
     : earliest
   // v2.0 / F2 — La fin est calculée en consommant la capacité quotidienne
-  // (allocation %) du collab sur le projet. Sans allocations, on retombe sur
-  // l'ancien comportement F0 via `computeEndFromCharge`.
+  // (allocation %) du collab sur le projet.
+  // v2.0 / F3 — Les absences personnelles diminuent cette capacité jour par
+  // jour (lecture multiplicative). Sans allocations, on retombe sur l'ancien
+  // comportement F0 via `computeEndFromCharge`.
   const newEnd = computeEndFromCharge(newStart, charge, {
     projectId: t.project_id,
     collaboratorId: t.collaborator_id,
     allocations,
+    absences,
   })
   proposed.set(t.id, { start: newStart, end: newEnd })
   if (t.collaborator_id) {
@@ -1262,6 +1309,7 @@ export function replanTasks(
   tasks: Task[],
   concernedIds?: Set<string>,
   allocations: MemberAllocation[] = [],
+  absences: CollaboratorAbsence[] = [],
 ): ReplanMove[] {
   // v1.21 — `concernedIds` actif → replan PARTIEL : seules les tâches
   // listées peuvent voir leurs dates modifiées. Les autres sont LOCKÉES à
@@ -1272,6 +1320,8 @@ export function replanTasks(
   // v2.0 / F2 — `allocations` est la liste des périodes d'allocation du
   // projet : le moteur consomme la capacité quotidienne (allocation %) pour
   // calculer la fin de chaque tâche, au lieu de simples jours ouvrés bruts.
+  // v2.0 / F3 — `absences` réduit multiplicativement la capacité du collab
+  // (lecture cross-projet). Vide → pas d'impact.
   // Tableau vide → comportement F0 (fin = start + charge en jours ouvrés).
   const isPartial = !!concernedIds
   const isConcerned = (id: string) =>
@@ -1295,7 +1345,7 @@ export function replanTasks(
 
   for (const t of order) {
     if (!isConcerned(t.id)) continue
-    placeTaskInTimeline(t, tasksById, proposed, timeline, allocations)
+    placeTaskInTimeline(t, tasksById, proposed, timeline, allocations, absences)
   }
 
   return buildReplanMoves(order, proposed)

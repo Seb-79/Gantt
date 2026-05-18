@@ -1,8 +1,8 @@
 # Règles de gestion — Application Gantt
 
-**Version applicative couverte : v2.0 (F0 — charge stockée + F1 — memberships + F2 — allocations %)**
+**Version applicative couverte : v2.0 (F0 — charge stockée + F1 — memberships + F2 — allocations % + F3 — absences)**
 **Date de dernière mise à jour : 2026-05-19**
-**Couverture de test : 117 / 117 (100 %)**
+**Couverture de test : 121 / 121 (100 %)**
 
 Ce document est le **référentiel vivant** des règles de gestion métier de
 l'application. Chaque règle porte un identifiant stable de la forme
@@ -976,6 +976,81 @@ pondéré (`computeWorkload`), le replan (`replanTasks`), et l'UI
 
 **Tests :** `db/index.test.js` → « getFullState : member_allocations exposé ».
 
+## Famille 14 — Absences / Congés (v2.0 / F3)
+
+Les absences sont saisies au niveau du collaborateur (cross-projet) :
+une absence posée sur Léa s'applique à tous ses projets simultanément.
+Elles réduisent **multiplicativement** la capacité quotidienne (Q8b) :
+`capacité_réelle = allocation_pct × (1 − fraction_absence)`.
+
+### RG-GANTT-1400
+
+Une absence est portée par un collaborateur, à une date donnée, avec
+une fraction non-travaillée appartenant à `{0.25, 0.5, 0.75, 1}`. Toute
+autre valeur est rejetée (`INVALID_ABSENCE_FRACTION`). Le collaborateur
+doit exister, sinon `COLLABORATOR_NOT_FOUND`.
+
+**Tests :** `db/index.test.js` → « addAbsence : ajoute une absence » ;
+« fraction invalide rejetée » ; « collab inconnu rejeté ».
+
+### RG-GANTT-1401
+
+Une absence est **cross-projet** : elle réduit la capacité du
+collaborateur sur tous ses projets simultanément. C'est le même
+mécanisme `getDailyAllocation` qui consomme l'absence pour tous les
+projets impactés.
+
+**Tests :** `db/index.test.js` → « absence cross-projet : impacte tous les projets ».
+
+### RG-GANTT-1402
+
+La lecture est **multiplicative** : la capacité effective du jour est
+`(allocation_pct / 100) × (1 − fraction_absence)`. Exemples :
+
+- Paul à 100 % + congé 1 j → capacité 0 (jour intégralement consommé
+  par le congé, la tâche stagne).
+- Paul à 50 % + congé 0,5 j → capacité 0,5 × 0,5 = **0,25**.
+- Paul à 100 % + congé 0,25 j → capacité 0,75.
+
+**Tests :** `utils.test.ts` → « congé 1 j décale d'un jour la fin (alloc 100 %) » ;
+« alloc 50 % + congé 0,5 j = 25 % effectif » ; « absence d'un autre collab :
+aucun effet » ; `db/index.test.js` → « absence 1 j décale la fin (alloc 100 %) » ;
+« alloc 50 % + congé 0,5 j : capacité 25 % le jour concerné ».
+
+### RG-GANTT-1403
+
+Une seule absence par couple `(collaborateur, date)` : la table porte
+une PRIMARY KEY composite. Un POST `/api/collaborators/:id/absences`
+avec une date déjà occupée **remplace** la fraction (sémantique UPSERT,
+plus pratique côté UI qu'un workflow delete + add).
+
+**Tests :** `db/index.test.js` → « UPSERT : 2e saisie sur même date remplace la fraction ».
+
+### RG-GANTT-1404
+
+Une absence est supprimable par son couple `(collab, date)` via
+`DELETE /api/collaborators/:id/absences/:date`. 404 si la ligne
+n'existe pas.
+
+**Tests :** `db/index.test.js` → « deleteAbsence : retire la ligne ».
+
+### RG-GANTT-1405
+
+La suppression d'un collaborateur efface en cascade toutes ses absences
+(FK `ON DELETE CASCADE`).
+
+**Tests :** `db/index.test.js` → « cascade suppression collab → absences effacées ».
+
+### RG-GANTT-1406
+
+`GET /api/state` expose `collaborator_absences` : la liste de toutes
+les absences connues (toutes paires `(collab, date)` confondues, peu
+importe le projet courant). Consommée côté client par le moteur de
+calcul de fin, le plan de charge pondéré, le replan, et l'onglet
+« Congés ».
+
+**Tests :** `db/index.test.js` → « getFullState expose collaborator_absences ».
+
 ---
 
 ## Synthèse de couverture
@@ -996,5 +1071,6 @@ pondéré (`computeWorkload`), le replan (`replanTasks`), et l'UI
 | 12 — Hiérarchie / Projets     |       8 |                 8 / 8 |
 | 12bis — Memberships (v2.0/F1) |       6 |                 6 / 6 |
 | 13 — Allocations % (v2.0/F2)  |      10 |               10 / 10 |
-| 14 — Charge stockée (v2.0/F0) |       5 |                 5 / 5 |
-| **Total**                     | **114** | **114 / 114 (100 %)** |
+| 14 — Absences (v2.0/F3)       |       7 |                 7 / 7 |
+| 15 — Charge stockée (v2.0/F0) |       5 |                 5 / 5 |
+| **Total**                     | **121** | **121 / 121 (100 %)** |

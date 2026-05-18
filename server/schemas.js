@@ -177,6 +177,38 @@ export const ProjectCollabParams = z.object({
 export const AllocationIdParams = z.object({ id: NonEmptyId })
 
 // -----------------------------------------------------------------------------
+// ABSENCES (v2.0 / F3) — congés cross-projet
+// -----------------------------------------------------------------------------
+
+/**
+ * v2.0 / F3 — Fraction de jour non-travaillée. Restreinte aux 4 paliers
+ * validés avec l'utilisateur (quart / demi / trois-quarts / journée).
+ */
+const AbsenceFraction = z
+  .number({ message: 'doit être un nombre' })
+  .refine((v) => v === 0.25 || v === 0.5 || v === 0.75 || v === 1, {
+    message: 'doit valoir 0.25, 0.5, 0.75 ou 1',
+  })
+
+/**
+ * v2.0 / F3 — Body de POST /api/collaborators/:id/absences. Le collab est
+ * dans l'URL (params), le body porte la date et la fraction.
+ */
+export const AddAbsenceBody = z.object({
+  date: IsoDate,
+  fraction: AbsenceFraction,
+})
+
+/**
+ * v2.0 / F3 — Params pour DELETE /api/collaborators/:id/absences/:date.
+ * Le collab et la date sont dans l'URL.
+ */
+export const CollabAbsenceParams = z.object({
+  id: NonEmptyId,
+  date: IsoDate,
+})
+
+// -----------------------------------------------------------------------------
 // TÂCHES & JALONS
 // -----------------------------------------------------------------------------
 

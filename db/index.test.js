@@ -4,10 +4,12 @@
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
+  addAbsence,
   addMemberAllocation,
   addProjectMember,
   createCollaborator,
   createTask,
+  deleteAbsence,
   deleteCollaborator,
   deleteMemberAllocation,
   deleteTask,
@@ -16,6 +18,7 @@ import {
   getVersion,
   initDb,
   isDatabaseEmpty,
+  listAbsences,
   listMemberAllocations,
   listProjectMembers,
   moveTask,
@@ -1616,5 +1619,200 @@ describe('v2.0 / F2 — member_allocations', () => {
     const state = getFullState(db, 'pA')
     expect(Array.isArray(state.member_allocations)).toBe(true)
     expect(state.member_allocations.length).toBeGreaterThan(0)
+  })
+})
+
+// =============================================================================
+// v2.0 / F3 — Absences (congés cross-projet)
+// =============================================================================
+
+describe('v2.0 / F3 — collaborator_absences', () => {
+  let db
+  beforeEach(() => {
+    db = initDb(':memory:')
+    db.prepare(`INSERT INTO projects(id, name, position) VALUES (?, ?, ?)`).run(
+      'pA',
+      'Projet A',
+      0,
+    )
+    createCollaborator(db, { id: 'c1', name: 'Léa', color: '#3b82f6' })
+    addProjectMember(db, 'pA', 'c1')
+  })
+
+  // RG-GANTT-1400 — Ajout d'une absence simple.
+  it('v2.0 / RG-GANTT-1400 — addAbsence : ajoute une absence', () => {
+    const r = addAbsence(db, {
+      collaborator_id: 'c1',
+      date: '2026-07-15',
+      fraction: 0.5,
+    })
+    expect(r.absence.fraction).toBe(0.5)
+    const list = listAbsences(db, 'c1')
+    expect(list).toHaveLength(1)
+    expect(list[0].date).toBe('2026-07-15')
+  })
+
+  // RG-GANTT-1403 — UPSERT : la 2e saisie sur la même (collab,date) remplace.
+  it('v2.0 / RG-GANTT-1403 — UPSERT : 2e saisie sur même date remplace la fraction', () => {
+    addAbsence(db, {
+      collaborator_id: 'c1',
+      date: '2026-07-15',
+      fraction: 0.5,
+    })
+    addAbsence(db, {
+      collaborator_id: 'c1',
+      date: '2026-07-15',
+      fraction: 1,
+    })
+    const list = listAbsences(db, 'c1')
+    expect(list).toHaveLength(1)
+    expect(list[0].fraction).toBe(1)
+  })
+
+  // Fraction invalide rejetée.
+  it('v2.0 / RG-GANTT-1400 — fraction invalide rejetée', () => {
+    expect(() =>
+      addAbsence(db, {
+        collaborator_id: 'c1',
+        date: '2026-07-15',
+        fraction: 0.6,
+      }),
+    ).toThrow(/0.25, 0.5, 0.75, 1/)
+  })
+
+  // Collab inconnu rejeté.
+  it('v2.0 / RG-GANTT-1400 — collab inconnu rejeté', () => {
+    expect(() =>
+      addAbsence(db, {
+        collaborator_id: 'unknown',
+        date: '2026-07-15',
+        fraction: 1,
+      }),
+    ).toThrow(/Collaborator not found/)
+  })
+
+  // Suppression par (collab, date).
+  it('v2.0 / RG-GANTT-1404 — deleteAbsence : retire la ligne', () => {
+    addAbsence(db, {
+      collaborator_id: 'c1',
+      date: '2026-07-15',
+      fraction: 1,
+    })
+    const r = deleteAbsence(db, 'c1', '2026-07-15')
+    expect(r.changed).toBe(true)
+    expect(listAbsences(db, 'c1')).toHaveLength(0)
+  })
+
+  // Cascade suppression collab → ses absences.
+  it('v2.0 / RG-GANTT-1405 — cascade suppression collab → absences effacées', () => {
+    addAbsence(db, {
+      collaborator_id: 'c1',
+      date: '2026-07-15',
+      fraction: 1,
+    })
+    deleteCollaborator(db, 'c1')
+    expect(listAbsences(db, 'c1')).toHaveLength(0)
+  })
+
+  // getFullState expose les absences (cross-projet, toutes connues).
+  it('v2.0 / RG-GANTT-1406 — getFullState expose collaborator_absences', () => {
+    addAbsence(db, {
+      collaborator_id: 'c1',
+      date: '2026-07-15',
+      fraction: 0.5,
+    })
+    const state = getFullState(db, 'pA')
+    expect(Array.isArray(state.collaborator_absences)).toBe(true)
+    expect(state.collaborator_absences).toHaveLength(1)
+    expect(state.collaborator_absences[0].date).toBe('2026-07-15')
+  })
+
+  // RG-GANTT-1402 — Lecture multiplicative dans le moteur : alloc 100 % +
+  // congé 1 j → 0 % de capacité ce jour-là → la tâche est repoussée.
+  // Lundi 8 juin charge=3, mais le mardi 9 est en congé complet :
+  //   J1 08/06 (lun) → 1.0 (cumul 1.0)
+  //   J2 09/06 (mar) → 0 (congé 1j) — sauté
+  //   J3 10/06 (mer) → 1.0 (cumul 2.0)
+  //   J4 11/06 (jeu) → 1.0 (cumul 3.0) → fin = 11/06
+  it('v2.0 / RG-GANTT-1402 — absence 1 j décale la fin (alloc 100 %)', () => {
+    // Allocation par défaut 100 % posée par addProjectMember.
+    addAbsence(db, {
+      collaborator_id: 'c1',
+      date: '2026-06-09',
+      fraction: 1,
+    })
+    const r = createTask(db, {
+      id: 't_abs',
+      name: 'Tâche avec congé',
+      start_date: '2026-06-08',
+      charge_jours: 3,
+      collaborator_id: 'c1',
+      project_id: 'pA',
+    })
+    expect(r.task.end_date).toBe('2026-06-11')
+  })
+
+  // RG-GANTT-1402 — Lecture multiplicative avec alloc 50 % + congé 0,5 j :
+  // capacité du jour = 0,5 × (1 − 0,5) = 0,25.
+  // Charge 1 j, lundi 8 juin congé 0,5 j, allocation 50 % :
+  //   J1 08/06 → 0,5 × 0,5 = 0,25 (cumul 0,25)
+  //   J2 09/06 → 0,5            (cumul 0,75)
+  //   J3 10/06 → 0,5            (cumul 1,25) → atteint ≥ 1 sur J3
+  // → fin = 10/06
+  it('v2.0 / RG-GANTT-1402 — alloc 50 % + congé 0,5 j : capacité 25 % le jour concerné', () => {
+    // Vider l'allocation auto-pop (100 %) et poser 50 %.
+    for (const a of db
+      .prepare(`SELECT id FROM member_allocations WHERE collaborator_id = ?`)
+      .all('c1')) {
+      deleteMemberAllocation(db, a.id)
+    }
+    addMemberAllocation(db, {
+      project_id: 'pA',
+      collaborator_id: 'c1',
+      start_date: '2026-01-01',
+      end_date: '2026-12-31',
+      allocation_pct: 50,
+    })
+    addAbsence(db, {
+      collaborator_id: 'c1',
+      date: '2026-06-08',
+      fraction: 0.5,
+    })
+    const r = createTask(db, {
+      id: 't_mul',
+      name: 'Multiplicatif',
+      start_date: '2026-06-08',
+      charge_jours: 1,
+      collaborator_id: 'c1',
+      project_id: 'pA',
+    })
+    expect(r.task.end_date).toBe('2026-06-10')
+  })
+
+  // RG-GANTT-1401 — Cross-projet : la même absence impacte tous les projets.
+  // On crée un 2e projet avec le même collab, et on vérifie que l'absence
+  // du 09/06 décale aussi la tâche du projet B (pas seulement A).
+  it('v2.0 / RG-GANTT-1401 — absence cross-projet : impacte tous les projets', () => {
+    db.prepare(`INSERT INTO projects(id, name, position) VALUES (?, ?, ?)`).run(
+      'pB',
+      'Projet B',
+      1,
+    )
+    addProjectMember(db, 'pB', 'c1')
+    addAbsence(db, {
+      collaborator_id: 'c1',
+      date: '2026-06-09',
+      fraction: 1,
+    })
+    const r = createTask(db, {
+      id: 't_B',
+      name: 'Tâche projet B',
+      start_date: '2026-06-08',
+      charge_jours: 2,
+      collaborator_id: 'c1',
+      project_id: 'pB',
+    })
+    // J1 08/06 → 1.0 ; J2 09/06 congé → 0 ; J3 10/06 → 1.0 → fin 10/06
+    expect(r.task.end_date).toBe('2026-06-10')
   })
 })

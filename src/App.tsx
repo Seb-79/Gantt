@@ -18,6 +18,7 @@ import TaskEditor from './components/TaskEditor'
 import WorkloadChart from './components/WorkloadChart'
 import CoherenceAlert from './components/CoherenceAlert'
 import ProjectMembers from './components/ProjectMembers'
+import Absences from './components/Absences'
 import {
   checkCoherence,
   clampDayWidth,
@@ -63,8 +64,9 @@ const LS_COLLAPSED_PHASES = 'gantt.collapsedPhases'
 /** v1.16 / v2.0 — Vues disponibles dans l'app :
  *    • 'gantt'    → planning (par défaut)
  *    • 'workload' → plan de charge par collaborateur
- *    • 'members'  → v2.0 / F1 : affectation des collaborateurs au projet */
-type View = 'gantt' | 'workload' | 'members'
+ *    • 'members'  → v2.0 / F1 : affectation des collaborateurs au projet
+ *    • 'absences' → v2.0 / F3 : congés cross-projet */
+type View = 'gantt' | 'workload' | 'members' | 'absences'
 
 /** État réseau pour le badge en haut à droite. */
 type NetStatus = 'idle' | 'loading' | 'ok' | 'error'
@@ -165,10 +167,12 @@ export default function App() {
    * Persisté en localStorage pour revenir sur la même vue à l'ouverture.
    */
   const [view, setView] = useState<View>(() => {
-    // v2.0 / F1 — Ajout de la vue 'members'. On valide explicitement la valeur
-    // lue dans localStorage pour éviter qu'une valeur exotique ne casse l'UI.
+    // v2.0 / F1+F3 — Ajout des vues 'members' et 'absences'. On valide
+    // explicitement la valeur lue dans localStorage pour éviter qu'une
+    // valeur exotique ne casse l'UI.
     const stored = lsGet(LS_VIEW)
-    if (stored === 'workload' || stored === 'members') return stored
+    if (stored === 'workload' || stored === 'members' || stored === 'absences')
+      return stored
     return 'gantt'
   })
   /**
@@ -410,6 +414,37 @@ export default function App() {
     [mutate],
   )
 
+  /**
+   * v2.0 / F3 — Ajoute (ou remplace via UPSERT) une absence pour un
+   * collaborateur. Le serveur valide la fraction (∈ {0.25, 0.5, 0.75, 1})
+   * et renvoie 400 sinon.
+   */
+  const handleAddAbsence = useCallback(
+    (collaboratorId: string, body: { date: string; fraction: number }) => {
+      mutate(
+        'POST',
+        `/api/collaborators/${encodeURIComponent(collaboratorId)}/absences`,
+        body,
+      )
+    },
+    [mutate],
+  )
+
+  /**
+   * v2.0 / F3 — Supprime une absence par (collab, date). 404 silencieux
+   * (l'UI se rafraîchit via fetchState).
+   */
+  const handleDeleteAbsence = useCallback(
+    (collaboratorId: string, date: string) => {
+      if (!confirm(`Supprimer le congé du ${date} ?`)) return
+      mutate(
+        'DELETE',
+        `/api/collaborators/${encodeURIComponent(collaboratorId)}/absences/${encodeURIComponent(date)}`,
+      )
+    },
+    [mutate],
+  )
+
   /** Capture le bloc Gantt en PNG et déclenche le téléchargement. */
   const handleScreenshot = async () => {
     if (!ganttRef.current) return
@@ -514,12 +549,14 @@ export default function App() {
         const res = await fetch(url)
         if (!res.ok) return
         const data: GanttState = await res.json()
-        // v2.0 / F2 — Replan automatique post-save : consomme aussi la
-        // capacité allouée pour rester cohérent avec le replan manuel.
+        // v2.0 / F2/F3 — Replan automatique post-save : consomme aussi la
+        // capacité allouée et les absences pour rester cohérent avec le
+        // replan manuel.
         const moves = replanTasks(
           sortTasksHierarchically(data.tasks),
           undefined,
           data.member_allocations,
+          data.collaborator_absences,
         )
         await submitReplanMoves(moves)
       } catch (err) {
@@ -751,15 +788,20 @@ export default function App() {
     if (!state) return
     // v2.0 / F2 — Le replan consomme la capacité quotidienne réelle de chaque
     // collab : on lui passe `member_allocations` du projet courant.
+    // v2.0 / F3 — Les absences personnelles (cross-projet) sont également
+    // injectées pour que la pondération multiplicative s'applique aussi pendant
+    // le replan (sinon le replan replacerait des tâches sur des jours en congé).
     const allocs = state.member_allocations
+    const absences = state.collaborator_absences
     const moves =
       scope === 'partial'
         ? replanTasks(
             orderedTasks,
             concernedTaskIds(coherenceIssues, orderedTasks),
             allocs,
+            absences,
           )
-        : replanTasks(orderedTasks, undefined, allocs)
+        : replanTasks(orderedTasks, undefined, allocs, absences)
     if (moves.length === 0) {
       alert(
         scope === 'partial'
@@ -1090,6 +1132,7 @@ export default function App() {
                 tasks={orderedTasks}
                 collaborators={state.collaborators}
                 memberAllocations={state.member_allocations}
+                absences={state.collaborator_absences}
                 highlightUnderload={highlightUnderload}
                 onShiftWindow={shiftWindow}
               />
@@ -1104,6 +1147,14 @@ export default function App() {
                 onAddMember={handleAddProjectMember}
                 onAddAllocation={handleAddMemberAllocation}
                 onDeleteAllocation={handleDeleteMemberAllocation}
+              />
+            )}
+            {view === 'absences' && (
+              <Absences
+                collaborators={state.collaborators}
+                absences={state.collaborator_absences}
+                onAddAbsence={handleAddAbsence}
+                onDeleteAbsence={handleDeleteAbsence}
               />
             )}
           </div>
@@ -1144,6 +1195,7 @@ export default function App() {
           collaborators={state.collaborators}
           memberIds={state.current_project_members}
           memberAllocations={state.member_allocations}
+          absences={state.collaborator_absences}
           projectId={state.current_project_id}
           tasks={orderedTasks}
           onSave={handleSaveTask}
@@ -1256,6 +1308,23 @@ function ViewTabs({
         title="Affecter les collaborateurs au projet"
       >
         Affectation
+      </button>
+      {/* v2.0 / F3 — Onglet « Congés » (cross-projet) : saisie des absences
+          de chaque collab. L'absence diminue multiplicativement la capacité
+          du collab sur tous ses projets simultanément. */}
+      <button
+        className={[
+          'h-7 px-2 text-xs font-medium border-l border-slate-300',
+          view === 'absences'
+            ? 'bg-blue-100 text-blue-700'
+            : 'bg-white text-slate-700 hover:bg-slate-100',
+        ].join(' ')}
+        onClick={() => onChange('absences')}
+        role="tab"
+        aria-selected={view === 'absences'}
+        title="Gérer les absences (congés) — cross-projet"
+      >
+        Congés
       </button>
     </div>
   )

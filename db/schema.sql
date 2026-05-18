@@ -178,3 +178,27 @@ CREATE TABLE IF NOT EXISTS member_allocations (
 );
 CREATE INDEX IF NOT EXISTS idx_member_allocations_lookup
   ON member_allocations(project_id, collaborator_id);
+
+-- =============================================================================
+-- v2.0 / F3 — Absences (congés) d'un collaborateur.
+-- Cross-projet : une absence saisie sur Léa s'applique à TOUS ses projets
+-- (la valeur retournée par `getDailyAllocation` est pondérée par
+-- `1 − absence_fraction`, lecture MULTIPLICATIVE validée avec l'utilisateur).
+--
+-- Règles métier :
+--   • `fraction ∈ {0.25, 0.5, 0.75, 1.0}` — paliers fixés (quart, demi,
+--     trois-quarts, journée complète). Stockée en réel pour rester simple
+--     avec SQLite (les paliers sont validés Zod côté API et DAL).
+--   • Une seule entrée par (collab, date) : PRIMARY KEY composite.
+--     Pour modifier la fraction, on supprime puis on rajoute (ou on upsert
+--     via `INSERT OR REPLACE`).
+--   • Suppression d'un collaborateur → cascade sur ses absences.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS collaborator_absences (
+  collaborator_id TEXT NOT NULL REFERENCES collaborators(id) ON DELETE CASCADE,
+  date            TEXT NOT NULL,            -- 'YYYY-MM-DD'
+  fraction        REAL NOT NULL,            -- 0.25 | 0.5 | 0.75 | 1.0
+  PRIMARY KEY (collaborator_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_collaborator_absences_date
+  ON collaborator_absences(date);

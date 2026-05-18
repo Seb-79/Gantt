@@ -78,6 +78,10 @@ export function initDb(dbPath) {
   // « couvrant tout l'intervalle utile des tâches existantes »).
   ensureMemberAllocationsTable(db)
 
+  // v2.0 / F3 — Crée la table `collaborator_absences` (cross-projet). Pas
+  // d'auto-pop : c'est une donnée entièrement nouvelle saisie par l'utilisateur.
+  ensureCollaboratorAbsencesTable(db)
+
   // Initialise la version à 0 si la ligne meta n'existe pas encore.
   db.prepare(
     `INSERT OR IGNORE INTO meta(key, value) VALUES ('version', '0')`,
@@ -607,6 +611,26 @@ function ensureMemberAllocationsTable(db) {
 }
 
 /**
+ * v2.0 / F3 — Migration idempotente : crée la table `collaborator_absences`
+ * si elle n'existe pas. Aucune auto-population : c'est une donnée entièrement
+ * nouvelle (les congés ne sont jamais inférables des tâches existantes).
+ *
+ * @param {import('better-sqlite3').Database} db
+ */
+function ensureCollaboratorAbsencesTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS collaborator_absences (
+      collaborator_id TEXT NOT NULL REFERENCES collaborators(id) ON DELETE CASCADE,
+      date            TEXT NOT NULL,
+      fraction        REAL NOT NULL,
+      PRIMARY KEY (collaborator_id, date)
+    );
+    CREATE INDEX IF NOT EXISTS idx_collaborator_absences_date
+      ON collaborator_absences(date);
+  `)
+}
+
+/**
  * v1.21 — Lit tous les prédécesseurs d'une tâche, triés par id pour un ordre
  * déterministe (utile pour les tests et l'affichage des flèches).
  *
@@ -914,6 +938,10 @@ export function getFullState(db, projectId) {
   const memberAllocations = currentId
     ? listMemberAllocations(db, currentId)
     : []
+  // v2.0 / F3 — Absences (cross-projet) : on retourne TOUTES les absences
+  // de TOUS les collabs, car un congé saisi sur Léa impacte tous ses projets
+  // (lecture multiplicative Q8b). L'onglet « Congés » est lui-même cross-projet.
+  const collaboratorAbsences = listAbsences(db)
   return {
     version: getVersion(db),
     current_project_id: currentId,
@@ -922,6 +950,7 @@ export function getFullState(db, projectId) {
     tasks,
     current_project_members: currentProjectMembers,
     member_allocations: memberAllocations,
+    collaborator_absences: collaboratorAbsences,
   }
 }
 
@@ -1384,6 +1413,115 @@ export function deleteMemberAllocation(db, id) {
     const info = db
       .prepare(`DELETE FROM member_allocations WHERE id = ?`)
       .run(id)
+    if (info.changes === 0) return { version: getVersion(db), changed: false }
+    const version = bumpVersion(db)
+    return { version, changed: true }
+  })
+  return tx()
+}
+
+// -----------------------------------------------------------------------------
+// v2.0 / F3 — ABSENCES (congés cross-projet)
+// -----------------------------------------------------------------------------
+
+/** v2.0 / F3 — Paliers de fraction de jour autorisés pour un congé. */
+const ALLOWED_ABSENCE_FRACTIONS = new Set([0.25, 0.5, 0.75, 1])
+
+/**
+ * v2.0 / F3 — Liste les absences d'un collaborateur, triées par date.
+ * Si `collaboratorId` est omis, renvoie TOUTES les absences (cross-projet).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} [collaboratorId]
+ * @returns {Array<{collaborator_id:string, date:string, fraction:number}>}
+ */
+export function listAbsences(db, collaboratorId) {
+  if (collaboratorId) {
+    return db
+      .prepare(
+        `SELECT collaborator_id, date, fraction
+           FROM collaborator_absences
+           WHERE collaborator_id = ?
+           ORDER BY date ASC`,
+      )
+      .all(collaboratorId)
+  }
+  return db
+    .prepare(
+      `SELECT collaborator_id, date, fraction
+         FROM collaborator_absences
+         ORDER BY collaborator_id ASC, date ASC`,
+    )
+    .all()
+}
+
+/**
+ * v2.0 / F3 — Ajoute (ou remplace) une absence pour un collab à une date
+ * donnée. Sémantique UPSERT : si une absence existe déjà sur cette date,
+ * sa fraction est mise à jour (utile pour passer de 0,5 j à 1 j sans avoir
+ * à supprimer d'abord).
+ *
+ * Validations :
+ *   • `collaborator_id` doit pointer un collab existant.
+ *   • `date` au format ISO YYYY-MM-DD (validation Zod côté API).
+ *   • `fraction ∈ {0.25, 0.5, 0.75, 1}`.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {{collaborator_id:string, date:string, fraction:number}} input
+ * @returns {{version:number, absence:object}}
+ */
+export function addAbsence(db, input) {
+  const tx = db.transaction(() => {
+    const col = db
+      .prepare(`SELECT 1 AS x FROM collaborators WHERE id = ?`)
+      .get(input.collaborator_id)
+    if (!col) {
+      const err = new Error(`Collaborator not found: ${input.collaborator_id}`)
+      err.code = 'COLLABORATOR_NOT_FOUND'
+      throw err
+    }
+    const f = Number(input.fraction)
+    if (!ALLOWED_ABSENCE_FRACTIONS.has(f)) {
+      const err = new Error(
+        `fraction must be one of 0.25, 0.5, 0.75, 1 (got ${input.fraction})`,
+      )
+      err.code = 'INVALID_ABSENCE_FRACTION'
+      throw err
+    }
+    db.prepare(
+      `INSERT INTO collaborator_absences (collaborator_id, date, fraction)
+         VALUES (?, ?, ?)
+         ON CONFLICT(collaborator_id, date) DO UPDATE SET fraction = excluded.fraction`,
+    ).run(input.collaborator_id, input.date, f)
+    const version = bumpVersion(db)
+    const absence = db
+      .prepare(
+        `SELECT collaborator_id, date, fraction FROM collaborator_absences
+           WHERE collaborator_id = ? AND date = ?`,
+      )
+      .get(input.collaborator_id, input.date)
+    return { version, absence }
+  })
+  return tx()
+}
+
+/**
+ * v2.0 / F3 — Supprime une absence par (collab, date). No-op si absente
+ * (cohérent avec le reste du DAL).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} collaboratorId
+ * @param {string} date  YYYY-MM-DD
+ * @returns {{version:number, changed:boolean}}
+ */
+export function deleteAbsence(db, collaboratorId, date) {
+  const tx = db.transaction(() => {
+    const info = db
+      .prepare(
+        `DELETE FROM collaborator_absences
+           WHERE collaborator_id = ? AND date = ?`,
+      )
+      .run(collaboratorId, date)
     if (info.changes === 0) return { version: getVersion(db), changed: false }
     const version = bumpVersion(db)
     return { version, changed: true }
@@ -1980,6 +2118,44 @@ function findAllocationPctForDay(allocs, dateIso) {
   return 0
 }
 
+/**
+ * v2.0 / F3 — Lit les absences d'un collab sous forme de Map date→fraction
+ * pour une lecture O(1) dans la boucle de consommation jour par jour.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} collabId
+ * @returns {Map<string, number>}  Map ISO date → fraction non-travaillée (0..1).
+ */
+function loadAbsencesMap(db, collabId) {
+  const m = new Map()
+  if (!collabId) return m
+  const rows = db
+    .prepare(
+      `SELECT date, fraction FROM collaborator_absences WHERE collaborator_id = ?`,
+    )
+    .all(collabId)
+  for (const r of rows)
+    m.set(r.date, Math.max(0, Math.min(1, Number(r.fraction))))
+  return m
+}
+
+/**
+ * v2.0 / F2+F3 — Capacité effective du collab pour un jour donné, dans [0,1].
+ *   • Jour non-ouvré (week-end/férié)        → 0
+ *   • Hors période d'allocation              → 0
+ *   • Sinon : allocation_pct/100 × (1 − absence_fraction)
+ *
+ * Extrait dans son propre helper pour limiter la complexité cognitive de
+ * `addWorkingDaysWithAllocationServer` (sonarjs).
+ */
+function effectiveCapacityServer(dateIso, allocs, absences) {
+  if (isNonWorkingDayIso(dateIso)) return 0
+  const pct = findAllocationPctForDay(allocs, dateIso)
+  if (pct <= 0) return 0
+  const absenceFraction = absences.get(dateIso) || 0
+  return (pct / 100) * (1 - absenceFraction)
+}
+
 function addWorkingDaysWithAllocationServer(
   db,
   startIso,
@@ -1990,19 +2166,19 @@ function addWorkingDaysWithAllocationServer(
   if (!collabId || !projectId) return addWorkingDaysServer(startIso, charge)
   const allocs = listAllocationsServer(db, projectId, collabId)
   if (allocs.length === 0) return addWorkingDaysServer(startIso, charge)
+  // v2.0 / F3 — Map absences cross-projet pour pondération multiplicative.
+  const absences = loadAbsencesMap(db, collabId)
   const needed = Math.max(1, charge)
   let consumed = 0
   let cur = startIso
   let lastWorked = startIso
   const maxScan = Math.max(needed * 30, 10000)
   for (let i = 0; i < maxScan; i++) {
-    if (!isNonWorkingDayIso(cur)) {
-      const pct = findAllocationPctForDay(allocs, cur)
-      if (pct > 0) {
-        consumed += pct / 100
-        lastWorked = cur
-        if (consumed >= needed - 1e-9) return lastWorked
-      }
+    const effective = effectiveCapacityServer(cur, allocs, absences)
+    if (effective > 0) {
+      consumed += effective
+      lastWorked = cur
+      if (consumed >= needed - 1e-9) return lastWorked
     }
     cur = addDaysIsoServer(cur, 1)
   }

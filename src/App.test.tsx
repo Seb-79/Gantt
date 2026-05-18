@@ -64,6 +64,8 @@ function mkState(overrides: Partial<GanttState> = {}): GanttState {
     // v2.0 / F2 — Allocations du projet courant. Par défaut vide ; les tests
     // qui ont besoin de pondération en injectent via `overrides`.
     member_allocations: [],
+    // v2.0 / F3 — Absences cross-projet. Vide par défaut.
+    collaborator_absences: [],
     ...overrides,
   }
 }

@@ -561,6 +561,50 @@ export default function App() {
   }
 
   /**
+   * v1.23 — F2 : création d'un lien prédécesseur par drag-to-link dans le
+   * planning. Lit la liste actuelle de prédécesseurs de la tâche cible et
+   * ajoute la source (lag=0). Si elle est déjà présente, no-op. Le serveur
+   * filtre silencieusement les cycles indirects (cf. `wouldCreateCycle`
+   * dans le DAL).
+   *
+   * @param sourceId  Id de la tâche source (handle d'origine).
+   * @param targetId  Id de la tâche cible (réceptrice du nouveau lien).
+   */
+  const handleCreateLink = (sourceId: string, targetId: string) => {
+    if (!state) return
+    const target = state.tasks.find((t) => t.id === targetId)
+    if (!target) return
+    // Cible phase : pas de lien possible (filtré aussi côté GanttChart).
+    if (target.kind === 'phase') return
+    const current = target.predecessors ?? []
+    if (current.some((p) => p.id === sourceId)) return // déjà lié
+    const next = [...current, { id: sourceId, lag: 0 }]
+    mutate('PATCH', `/api/tasks/${targetId}`, { predecessors: next })
+  }
+
+  /**
+   * v1.23 — F4 : suppression d'un lien prédécesseur par clic sur la flèche
+   * dans le planning. Lit la liste actuelle des prédécesseurs de la tâche
+   * cible et en retire l'entrée correspondant à `sourceId`. La confirmation
+   * utilisateur (`window.confirm`) est demandée par `PredecessorArrows`
+   * AVANT que ce handler soit invoqué — ici, on applique directement.
+   *
+   * @param sourceId  Id du prédécesseur retiré.
+   * @param targetId  Id de la tâche dont on retire le lien.
+   */
+  const handleDeleteLink = (sourceId: string, targetId: string) => {
+    if (!state) return
+    const target = state.tasks.find((t) => t.id === targetId)
+    if (!target) return
+    const current = target.predecessors ?? []
+    const next = current.filter((p) => p.id !== sourceId)
+    // Si rien n'a changé (id absent), inutile de PATCH (évite un bump de
+    // version « gratuit » en base et un round-trip réseau).
+    if (next.length === current.length) return
+    mutate('PATCH', `/api/tasks/${targetId}`, { predecessors: next })
+  }
+
+  /**
    * v1.11 — Bascule l'affichage des dates des barres et persiste le choix
    * en localStorage.
    */
@@ -957,6 +1001,8 @@ export default function App() {
                 onTaskClick={setEditing}
                 onMoveTask={handleMoveTask}
                 onResizeTask={handleResizeTask}
+                onCreateLink={handleCreateLink}
+                onDeleteLink={handleDeleteLink}
                 showDates={showDates}
                 showBarNames={showBarNames}
                 onShiftWindow={shiftWindow}

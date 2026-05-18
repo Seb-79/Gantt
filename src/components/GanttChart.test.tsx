@@ -371,6 +371,154 @@ describe('GanttChart — flèches prédécesseurs', () => {
     expect(arrowPath).toBeTruthy()
   })
 
+  // v1.23 — F4 : clic sur une flèche pour supprimer le lien prédécesseur.
+  describe("suppression d'un lien au clic sur la flèche (v1.23 / F4)", () => {
+    const tasksWithLink: Task[] = [
+      mkTask({
+        id: 'a',
+        name: 'A',
+        start_date: '2026-05-01',
+        end_date: '2026-05-05',
+      }),
+      mkTask({
+        id: 'b',
+        name: 'B',
+        start_date: '2026-05-10',
+        end_date: '2026-05-15',
+        predecessor_id: 'a',
+      }),
+    ]
+
+    it('rend un path ghost cliquable par flèche quand onDeleteLink est fourni', () => {
+      const { container } = render(
+        <GanttChart
+          windowStart="2026-05-01"
+          windowEnd="2026-05-31"
+          dayWidth={20}
+          tasks={tasksWithLink}
+          collaborators={COLLABS}
+          onDeleteLink={vi.fn()}
+        />,
+      )
+      const hits = container.querySelectorAll('[data-pred-link-hit]')
+      expect(hits.length).toBe(1)
+      expect(hits[0].getAttribute('data-pred-link-hit')).toBe('a->b')
+    })
+
+    it('sans onDeleteLink, aucun path ghost rendu (flèches statiques)', () => {
+      const { container } = render(
+        <GanttChart
+          windowStart="2026-05-01"
+          windowEnd="2026-05-31"
+          dayWidth={20}
+          tasks={tasksWithLink}
+          collaborators={COLLABS}
+        />,
+      )
+      expect(container.querySelectorAll('[data-pred-link-hit]').length).toBe(0)
+    })
+
+    it('clic sur le ghost + confirm OK → callback (sourceId, targetId)', () => {
+      const onDeleteLink = vi.fn()
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+      const { container } = render(
+        <GanttChart
+          windowStart="2026-05-01"
+          windowEnd="2026-05-31"
+          dayWidth={20}
+          tasks={tasksWithLink}
+          collaborators={COLLABS}
+          onDeleteLink={onDeleteLink}
+        />,
+      )
+      fireEvent.click(container.querySelector('[data-pred-link-hit="a->b"]')!)
+      expect(confirmSpy).toHaveBeenCalled()
+      expect(onDeleteLink).toHaveBeenCalledWith('a', 'b')
+      confirmSpy.mockRestore()
+    })
+
+    it('clic + confirm Annuler → callback NON appelé', () => {
+      const onDeleteLink = vi.fn()
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+      const { container } = render(
+        <GanttChart
+          windowStart="2026-05-01"
+          windowEnd="2026-05-31"
+          dayWidth={20}
+          tasks={tasksWithLink}
+          collaborators={COLLABS}
+          onDeleteLink={onDeleteLink}
+        />,
+      )
+      fireEvent.click(container.querySelector('[data-pred-link-hit="a->b"]')!)
+      expect(confirmSpy).toHaveBeenCalled()
+      expect(onDeleteLink).not.toHaveBeenCalled()
+      confirmSpy.mockRestore()
+    })
+  })
+
+  // v1.23 — F2 : handles bleus de drag-to-link à droite des barres.
+  describe('handles drag-to-link (v1.23)', () => {
+    const baseTasks: Task[] = [
+      mkTask({
+        id: 'ph',
+        name: 'Phase',
+        kind: 'phase',
+        start_date: '2026-05-01',
+        end_date: '2026-05-20',
+      }),
+      mkTask({
+        id: 'a',
+        name: 'A',
+        start_date: '2026-05-01',
+        end_date: '2026-05-05',
+        parent_id: 'ph',
+      }),
+      mkTask({
+        id: 'm',
+        name: 'M',
+        kind: 'milestone',
+        start_date: '2026-05-15',
+        end_date: '2026-05-15',
+        parent_id: 'ph',
+      }),
+    ]
+
+    it('aucun handle quand onCreateLink est absent (feature désactivée)', () => {
+      const { container } = render(
+        <GanttChart
+          windowStart="2026-05-01"
+          windowEnd="2026-05-31"
+          dayWidth={20}
+          tasks={baseTasks}
+          collaborators={COLLABS}
+        />,
+      )
+      expect(container.querySelectorAll('[data-link-source]').length).toBe(0)
+    })
+
+    it('un handle par activité et jalon (jamais sur phase) quand onCreateLink fourni', () => {
+      const { container } = render(
+        <GanttChart
+          windowStart="2026-05-01"
+          windowEnd="2026-05-31"
+          dayWidth={20}
+          tasks={baseTasks}
+          collaborators={COLLABS}
+          onCreateLink={vi.fn()}
+        />,
+      )
+      const handles = container.querySelectorAll('[data-link-source]')
+      expect(handles.length).toBe(2)
+      const ids = Array.from(handles).map((h) =>
+        h.getAttribute('data-link-source'),
+      )
+      expect(ids).toContain('a')
+      expect(ids).toContain('m')
+      expect(ids).not.toContain('ph')
+    })
+  })
+
   // v1.21 — Multi-prédécesseurs : une tâche avec N prédécesseurs doit
   // afficher N flèches distinctes (une par lien).
   it('rend N flèches quand task.predecessors contient N entrées', () => {

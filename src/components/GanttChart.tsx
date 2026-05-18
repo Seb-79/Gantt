@@ -32,6 +32,7 @@ import {
   workingDaysBetween,
 } from '../lib/utils'
 import { useHorizontalPan } from '../lib/useHorizontalPan'
+import { useLinkDrag } from '../lib/useLinkDrag'
 import type { Collaborator, Task } from '../lib/types'
 
 /**
@@ -208,6 +209,27 @@ interface Props {
    * désactivée).
    */
   onToggleCollapse?: (phaseId: string) => void
+  /**
+   * v1.23 — F2 : drag-to-link à la souris. Si fourni, chaque barre task /
+   * jalon expose un petit handle bleu à droite ; tirer ce handle vers une
+   * autre barre crée un lien prédécesseur (target reçoit source comme pred).
+   * Si absent, la feature est désactivée (handles invisibles).
+   *
+   * @param sourceId  Id de la tâche source (handle d'origine).
+   * @param targetId  Id de la tâche cible (où on a lâché).
+   */
+  onCreateLink?: (sourceId: string, targetId: string) => void
+  /**
+   * v1.23 — F4 : suppression d'un lien prédécesseur au clic sur la flèche
+   * dans le planning. Si fourni, les flèches deviennent cliquables (zone
+   * étendue à 12 px) et un `window.confirm` est demandé avant d'appeler
+   * le callback. Si absent, les flèches restent statiques (comportement
+   * v1.21).
+   *
+   * @param sourceId  Id du prédécesseur (origine de la flèche).
+   * @param targetId  Id de la tâche successeur (pointe de la flèche).
+   */
+  onDeleteLink?: (sourceId: string, targetId: string) => void
 }
 
 /**
@@ -229,7 +251,14 @@ export default function GanttChart({
   onShiftWindow,
   collapsedPhases,
   onToggleCollapse,
+  onCreateLink,
+  onDeleteLink,
 }: Props) {
+  // v1.23 — Hook qui pilote le drag-to-link (création de lien à la souris).
+  // Activé uniquement si le parent fournit `onCreateLink` ; sinon les handles
+  // restent invisibles et `startLink` est un no-op. On réutilise `scrollRef`
+  // (déclaré plus bas) comme repère de coordonnées pour le drag.
+  const linkDrag = useLinkDrag({ onCreateLink })
   // v1.20 — Set des ids de phases ayant au moins UN enfant (direct ou non).
   // Calculé sur `allTasks` (= liste complète) pour ne pas perdre l'info quand
   // une phase est repliée (ses enfants sont alors absents de `tasks`).
@@ -739,12 +768,34 @@ export default function GanttChart({
               windowStart={windowStart}
               dayWidth={dayWidth}
               totalWidth={totalWidth}
+              onDeleteLink={onDeleteLink}
             />
-            {tasks.map((t) => (
+            {/* v1.23 — Overlay du drag-to-link en cours (au-dessus des barres
+                grâce à zIndex 4, mais pointer-events:none pour ne pas
+                intercepter le mouseup sur les barres cibles). */}
+            {linkDrag.state && (
+              <LinkOverlay
+                state={linkDrag.state}
+                totalWidth={totalWidth}
+                rowsCount={tasks.length}
+              />
+            )}
+            {tasks.map((t, rowIndex) => (
               <div
                 key={t.id}
                 className="relative border-b border-slate-100"
                 style={{ height: ROW_HEIGHT }}
+                // v1.23 — Drop d'un drag-to-link : le hook ferme le drag et
+                // appelle onCreateLink si target ≠ source. On filtre les
+                // phases (non sélectionnables comme cible) au niveau caller :
+                // App.tsx peut décider d'ignorer.
+                onMouseUp={
+                  onCreateLink
+                    ? () => {
+                        if (t.kind !== 'phase') linkDrag.dropOnTarget(t.id)
+                      }
+                    : undefined
+                }
               >
                 {/* v1.23 — Fond grisé pour les jours NON OUVRÉS : week-ends
                     ET jours fériés français (cohérence visuelle avec la grille
@@ -793,6 +844,21 @@ export default function GanttChart({
                     tâche concernée (activités et jalons uniquement). Aucun
                     interactif : c'est un repère visuel pur. */}
                 {renderNotBeforeMarker(t, windowStart, dayWidth)}
+
+                {/* v1.23 — Handle de drag-to-link à droite de la barre
+                    (uniquement si onCreateLink défini ET kind = task/jalon).
+                    Tirer ce handle vers une autre barre crée un lien
+                    prédécesseur. */}
+                {onCreateLink && (
+                  <LinkHandle
+                    task={t}
+                    windowStart={windowStart}
+                    dayWidth={dayWidth}
+                    rowIndex={rowIndex}
+                    scrollRef={scrollRef}
+                    startLink={linkDrag.startLink}
+                  />
+                )}
               </div>
             ))}
           </div>
@@ -815,6 +881,143 @@ export default function GanttChart({
  * `tasks` (qui doit être l'ordre d'affichage = ordre hiérarchique trié).
  */
 /**
+ * v1.23 — Calcule la coordonnée X (px) du bord DROIT d'une barre dans le
+ * repère du panneau scrollable. Pour un jalon, on prend le bord droit du
+ * losange (centre + demi-taille).
+ */
+function rightEdgeX(task: Task, windowStart: string, dayWidth: number): number {
+  if (task.kind === 'milestone') {
+    const size = Math.max(12, Math.min(20, dayWidth - 2))
+    return (
+      dateToX(task.start_date, windowStart, dayWidth) + dayWidth / 2 + size / 2
+    )
+  }
+  return dateToX(task.end_date, windowStart, dayWidth) + dayWidth
+}
+
+/**
+ * v1.23 — Petit handle bleu rendu à droite d'une barre `task` / `milestone`
+ * pour démarrer un drag-to-link. Visible uniquement si `onCreateLink` est
+ * fourni au composant parent. Au mousedown, calcule les coordonnées du
+ * point d'origine (dans le repère du panneau scrollable, incluant le
+ * scroll horizontal) et appelle `startLink`.
+ *
+ * Le handle s'affiche en permanence (8 px de diamètre, bleu indigo).
+ * Il vit dans la div ligne (en `position: relative`), positionné en
+ * absolute selon `x` et `y`. `pointer-events:auto` malgré son z-index
+ * élevé pour qu'on puisse l'attraper.
+ */
+function LinkHandle({
+  task,
+  windowStart,
+  dayWidth,
+  rowIndex,
+  scrollRef,
+  startLink,
+}: {
+  task: Task
+  windowStart: string
+  dayWidth: number
+  rowIndex: number
+  scrollRef: React.RefObject<HTMLDivElement | null>
+  startLink: ReturnType<typeof useLinkDrag>['startLink']
+}) {
+  if (task.kind === 'phase') return null
+  const x = rightEdgeX(task, windowStart, dayWidth)
+  const y = ROW_HEIGHT / 2
+  return (
+    <button
+      type="button"
+      aria-label={`Lier depuis « ${task.name} »`}
+      title="Tirer pour créer un lien prédécesseur vers une autre tâche"
+      data-link-source={task.id}
+      onMouseDown={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        const scrollEl = scrollRef.current
+        if (!scrollEl) return
+        const rect = scrollEl.getBoundingClientRect()
+        // Position du handle en coordonnées « panneau » : x déjà en repère
+        // intérieur (commence à 0 = bord gauche du contenu, donc inclut le
+        // scroll). Le y est local à la ligne : on ajoute rowIndex*ROW_HEIGHT.
+        startLink({
+          sourceId: task.id,
+          sourceX: x,
+          sourceY: rowIndex * ROW_HEIGHT + y,
+          clientX: e.clientX,
+          clientY: e.clientY,
+          panelRect: rect,
+          scrollLeft: scrollEl.scrollLeft,
+        })
+      }}
+      className="absolute rounded-full bg-blue-600 hover:bg-blue-700 border border-white shadow-sm cursor-crosshair"
+      style={{
+        left: x - 4,
+        top: y - 4,
+        width: 8,
+        height: 8,
+        // z-index 3 : au-dessus des barres (2) et des flèches (1) pour
+        // être attrapable. Sous les labels de dates (3) qui sont dans une
+        // couche distincte.
+        zIndex: 3,
+        padding: 0,
+      }}
+    />
+  )
+}
+
+/**
+ * v1.23 — Overlay SVG affiché pendant un drag-to-link : trace une ligne
+ * pointillée bleue depuis le point d'origine (handle source) jusqu'à la
+ * position courante du curseur, avec une pointe de flèche.
+ *
+ * Rendu en superposition absolue sur le panneau scrollable, transparent
+ * aux clics (`pointer-events-none`) pour ne pas intercepter le drop.
+ */
+function LinkOverlay({
+  state,
+  totalWidth,
+  rowsCount,
+}: {
+  state: import('../lib/useLinkDrag').LinkDragState
+  totalWidth: number
+  rowsCount: number
+}) {
+  return (
+    <svg
+      className="absolute top-0 left-0 pointer-events-none"
+      width={totalWidth}
+      height={rowsCount * ROW_HEIGHT}
+      style={{ zIndex: 4 }}
+    >
+      <defs>
+        <marker
+          id="gantt-link-preview-arrow"
+          markerUnits="userSpaceOnUse"
+          markerWidth="8"
+          markerHeight="6"
+          refX="7"
+          refY="3"
+          orient="auto"
+        >
+          <path d="M0,0 L8,3 L0,6 Z" fill="#2563eb" />
+        </marker>
+      </defs>
+      <line
+        x1={state.sourceX}
+        y1={state.sourceY}
+        x2={state.currentX}
+        y2={state.currentY}
+        stroke="#2563eb"
+        strokeWidth="2"
+        strokeDasharray="4 4"
+        markerEnd="url(#gantt-link-preview-arrow)"
+      />
+    </svg>
+  )
+}
+
+/**
  * v1.21 — Renvoie les ids des prédécesseurs d'une tâche, en privilégiant le
  * nouveau format `task.predecessors` et en retombant sur l'alias mono-pred
  * `task.predecessor_id` si la liste est absente (rétro-compat tests).
@@ -834,11 +1037,18 @@ function PredecessorArrows({
   windowStart,
   dayWidth,
   totalWidth,
+  onDeleteLink,
 }: {
   tasks: Task[]
   windowStart: string
   dayWidth: number
   totalWidth: number
+  /**
+   * v1.23 — F4 : si fourni, chaque flèche devient cliquable (zone étendue
+   * via un `<path>` ghost transparent plus épais). Au clic, l'utilisateur
+   * confirme via `window.confirm` puis le callback est appelé.
+   */
+  onDeleteLink?: (sourceId: string, targetId: string) => void
 }) {
   /** Renvoie la coordonnée X "fin" d'une tâche (côté droit de sa barre). */
   function endX(task: Task): number {
@@ -863,7 +1073,14 @@ function PredecessorArrows({
 
   return (
     <svg
-      className="absolute top-0 left-0 pointer-events-none"
+      // v1.23 — Si `onDeleteLink` est fourni, le SVG capte les pointer
+      // events (pour que le `<path>` ghost transparent soit cliquable).
+      // Sinon, on garde `pointer-events:none` (comportement v1.21).
+      className={
+        onDeleteLink
+          ? 'absolute top-0 left-0'
+          : 'absolute top-0 left-0 pointer-events-none'
+      }
       // v1.19.2 — z-index 1 : place le SVG AU-DESSUS des éléments « auto »
       // (cellules week-end grises, barre dark des phases) tout en restant
       // SOUS les barres de tâches (z-index 2) et les étiquettes de dates
@@ -934,16 +1151,49 @@ function PredecessorArrows({
                   `L ${x2 - backOffset} ${midY} L ${x2 - backOffset} ${y2} L ${x2} ${y2}`
               }
             }
+            const linkKey = `${predId}->${t.id}`
             return (
-              <path
-                key={`${t.id}__${predId}`}
-                d={d}
-                stroke="#475569"
-                strokeWidth="2"
-                fill="none"
-                markerEnd="url(#gantt-arrow)"
-                data-pred-link={`${predId}->${t.id}`}
-              />
+              <g key={`${t.id}__${predId}`}>
+                {/* v1.23 — Path ghost (large + transparent) qui élargit la
+                    zone cliquable de la flèche pour la suppression. Rendu
+                    AVANT le path visible pour que le tracé fin reste en
+                    surface. Au clic : confirmation puis appel callback. */}
+                {onDeleteLink && (
+                  <path
+                    d={d}
+                    stroke="transparent"
+                    strokeWidth="12"
+                    fill="none"
+                    style={{ cursor: 'pointer' }}
+                    data-pred-link-hit={linkKey}
+                    onClick={() => {
+                      const pname = pred.task.name
+                      const tname = t.name
+                      // window.confirm est synchrone et sans UI custom : OK
+                      // pour cette première itération. À remplacer par un
+                      // menu contextuel si l'UX le justifie plus tard.
+                      const ok = window.confirm(
+                        `Supprimer le lien de prédécesseur :\n\n` +
+                          `« ${pname} »  →  « ${tname} »  ?`,
+                      )
+                      if (ok) onDeleteLink(predId, t.id)
+                    }}
+                  >
+                    <title>{`Cliquer pour supprimer le lien « ${pred.task.name} » → « ${t.name} »`}</title>
+                  </path>
+                )}
+                <path
+                  d={d}
+                  stroke="#475569"
+                  strokeWidth="2"
+                  fill="none"
+                  markerEnd="url(#gantt-arrow)"
+                  // v1.23 — Le path visible n'attrape pas les clics : c'est
+                  // le ghost transparent qui le fait (zone plus large).
+                  pointerEvents="none"
+                  data-pred-link={linkKey}
+                />
+              </g>
             )
           })
           .filter(Boolean)

@@ -187,8 +187,10 @@ describe('App — smoke', () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
-    // Clic sur le bouton "+ Tâche".
-    fireEvent.click(screen.getByRole('button', { name: /Tâche/ }))
+    // Clic sur le bouton "+ Tâche" (texte exact, pour ne pas matcher les
+    // handles de drag-to-link v1.23 dont l'aria-label inclut le nom de la
+    // tâche source).
+    fireEvent.click(screen.getByRole('button', { name: '+ Tâche' }))
     // Renseigne le nom et sauve.
     fireEvent.change(screen.getByLabelText(/Nom/), {
       target: { value: 'Nouvelle' },

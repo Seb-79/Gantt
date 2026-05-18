@@ -26,6 +26,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   addWorkingDays,
+  computeEndFromCharge,
   computeMaxStartFromPredecessors,
   DEFAULT_TASK_COLOR,
   effectiveTaskColor,
@@ -34,7 +35,12 @@ import {
   workingDaysBetween,
 } from '../lib/utils'
 import PredecessorPicker, { type PredecessorEntry } from './PredecessorPicker'
-import type { Collaborator, Task, TaskKind } from '../lib/types'
+import type {
+  Collaborator,
+  MemberAllocation,
+  Task,
+  TaskKind,
+} from '../lib/types'
 
 interface Props {
   /** Tâche à éditer (null = création). */
@@ -43,6 +49,19 @@ interface Props {
   defaults?: Partial<Task>
   /** Liste des collaborateurs disponibles dans le menu. */
   collaborators: Collaborator[]
+  /** v2.0 / F1 — Ids des collaborateurs membres du projet courant. La dropdown
+   *  filtre les `collaborators` à cet ensemble (RG-GANTT-1200). Optionnel pour
+   *  la rétro-compat des tests qui ne le passent pas ; si absent, on ne filtre
+   *  pas (comportement v1.x). */
+  memberIds?: string[]
+  /** v2.0 / F2 — Allocations du projet courant (toutes paires confondues).
+   *  Quand fournies, la date de fin affichée est recalculée en consommant la
+   *  capacité quotidienne du collab sélectionné (allocation %). Optionnel
+   *  pour rétro-compat. */
+  memberAllocations?: MemberAllocation[]
+  /** v2.0 / F2 — Id du projet courant (nécessaire pour le contexte
+   *  d'allocation). Optionnel pour rétro-compat. */
+  projectId?: string | null
   /** Liste des tâches existantes (pour les menus parent / prédécesseur). */
   tasks: Task[]
   /**
@@ -65,6 +84,9 @@ export default function TaskEditor({
   task,
   defaults,
   collaborators,
+  memberIds,
+  memberAllocations,
+  projectId,
   tasks,
   onSave,
   onClose,
@@ -144,13 +166,18 @@ export default function TaskEditor({
       setPredecessorsList([])
     }
     setColor(src.color || '')
-    // v1.9 — Charge initiale = nb de jours ouvrés entre start et end existants.
-    // Min 1 pour rester cohérent avec la convention "une tâche dure au moins 1 jour".
-    setCharge(
-      initStart && initEnd
-        ? Math.max(1, workingDaysBetween(initStart, initEnd))
-        : 1,
-    )
+    // v1.9 / v2.0 — Charge initiale :
+    //   • Source de vérité depuis v2.0 : `task.charge_jours` (valeur stockée).
+    //   • Filet de sécurité : back-dérive depuis l'écart courant si l'activité
+    //     vient d'une base ancienne ou d'un payload sans charge_jours.
+    //   • Min 1 (convention « une activité dure au moins 1 jour »).
+    let initCharge = 1
+    if (typeof src.charge_jours === 'number' && src.charge_jours >= 1) {
+      initCharge = src.charge_jours
+    } else if (initStart && initEnd) {
+      initCharge = Math.max(1, workingDaysBetween(initStart, initEnd))
+    }
+    setCharge(initCharge)
     // v1.18 / v1.24 — Priorité d'une activité :
     //   • si la tâche en édition est une activité : on charge la valeur en
     //     base ; si invalide / absente, on initialise à 3 (défaut métier Pr2),
@@ -171,6 +198,27 @@ export default function TaskEditor({
   }, [task, defaults])
 
   /**
+   * v2.0 / F2 — Helper local : calcule la date de fin d'une activité depuis
+   * sa charge en consommant la capacité allouée du collab sélectionné. Sans
+   * collab sélectionné OU sans allocations OU sans projectId, retombe sur le
+   * comportement F0 (jours ouvrés bruts).
+   *
+   * @param start  Date de début YYYY-MM-DD.
+   * @param c      Charge en jours ouvrés (≥ 1).
+   * @returns      Date de fin YYYY-MM-DD.
+   */
+  function endFromCharge(start: string, c: number): string {
+    if (collabId && projectId && memberAllocations) {
+      return computeEndFromCharge(start, c, {
+        projectId,
+        collaboratorId: collabId,
+        allocations: memberAllocations,
+      })
+    }
+    return addWorkingDays(start, c)
+  }
+
+  /**
    * Modifie la date de début (saisie manuelle).
    *
    * v1.9 — Pour une tâche, la fin est dérivée : end_date = start + charge
@@ -179,13 +227,15 @@ export default function TaskEditor({
    * v1.10 — Si un prédécesseur est défini, on infère le nouveau délai depuis
    * (value - pred.end) pour rester cohérent (l'utilisateur a explicitement
    * choisi une date plus tardive).
+   * v2.0 / F2 — La fin est désormais calculée via `endFromCharge` qui
+   * consomme l'allocation du collab quand disponible.
    *
    * @param value  Nouvelle date ISO YYYY-MM-DD (ou '' si l'input est vidé).
    */
   function handleStartDateChange(value: string) {
     setStartDate(value)
     if (kind === 'task' && value) {
-      setEndDate(addWorkingDays(value, charge))
+      setEndDate(endFromCharge(value, charge))
     } else {
       setEndDate((current) => maxIso(current, value))
     }
@@ -205,7 +255,7 @@ export default function TaskEditor({
     const n = Math.max(1, Math.floor(Number(raw) || 1))
     setCharge(n)
     if (startDate && kind === 'task') {
-      setEndDate(addWorkingDays(startDate, n))
+      setEndDate(endFromCharge(startDate, n))
     }
     setError(null)
   }
@@ -241,7 +291,7 @@ export default function TaskEditor({
     if (minStart && startDate < minStart) {
       setStartDate(minStart)
       if (kind === 'task') {
-        setEndDate(addWorkingDays(minStart, charge))
+        setEndDate(endFromCharge(minStart, charge))
       } else if (kind === 'milestone') {
         setEndDate(minStart)
       } else {
@@ -250,6 +300,20 @@ export default function TaskEditor({
     }
     setError(null)
   }
+
+  /**
+   * v2.0 / F1 — Sous-liste des collaborateurs proposables dans la dropdown.
+   * Filtrée aux membres du projet courant (RG-GANTT-1200) ; on conserve aussi
+   * le collab actuellement affecté à la tâche s'il n'est plus membre, pour
+   * que l'utilisateur le voie clairement (et puisse le retirer s'il le veut).
+   * Si `memberIds` n'est pas fourni (tests legacy), on n'applique aucun filtre.
+   */
+  const eligibleCollaborators = useMemo(() => {
+    if (!memberIds) return collaborators
+    const allowed = new Set(memberIds)
+    if (collabId) allowed.add(collabId)
+    return collaborators.filter((c) => allowed.has(c.id))
+  }, [collaborators, memberIds, collabId])
 
   /**
    * Couleur "proposée par défaut" pour le picker quand l'utilisateur n'a
@@ -290,8 +354,10 @@ export default function TaskEditor({
    */
   function endDateTooltip(): string | undefined {
     if (kind === 'phase') return 'Calculée automatiquement à partir des enfants'
+    // v2.0 — La fin n'est plus directement éditable pour une activité : elle
+    // dérive de start + charge. Le tooltip reflète ce changement de sémantique.
     if (kind === 'task')
-      return 'Modifiable directement — la charge est ajustée en conséquence.'
+      return 'Calculée à partir du début et de la charge (en jours ouvrés).'
     return undefined
   }
 
@@ -356,6 +422,10 @@ export default function TaskEditor({
         priority: kind === 'task' ? (priority ?? 3) : null,
         // v1.24 — Contrainte SNET (vide → null). Forcée à null pour les phases.
         not_before_date: kind === 'phase' ? null : notBeforeDate || null,
+        // v2.0 — Charge en jours ouvrés (source de vérité pour les activités).
+        // Le DAL recalculera end_date depuis (start_date + charge_jours).
+        // Jalon / phase : on n'envoie rien (le DAL forcera NULL).
+        ...(kind === 'task' ? { charge_jours: charge } : {}),
         // color: '' (vide) → null (= hériter automatiquement)
         color: color || null,
       },
@@ -483,15 +553,32 @@ export default function TaskEditor({
             </label>
           )}
 
+          {/* v2.0 — Pour une activité, la date de fin devient READ-ONLY :
+              elle est désormais DÉRIVÉE de (start_date + charge_jours), la
+              charge étant la source de vérité. L'utilisateur saisit la charge,
+              le champ « Fin » affiche le résultat. Pour les jalons / phases,
+              comportement inchangé (jalon : fin = début forcé ; phase : fin =
+              MAX des enfants). */}
           <label className="block text-sm flex-1">
-            <span className="text-slate-600">Fin</span>
+            <span className="text-slate-600">
+              Fin
+              {kind === 'task' && (
+                <span
+                  className="ml-1 text-xs text-slate-400"
+                  title="Calculée automatiquement depuis le début et la charge."
+                >
+                  (calculée)
+                </span>
+              )}
+            </span>
             <input
               type="date"
-              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
+              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500 read-only:bg-slate-50 read-only:text-slate-500"
               value={endDate}
               min={startDate || undefined}
               onChange={(e) => handleEndDateChange(e.target.value)}
               disabled={kind === 'milestone' || kind === 'phase'}
+              readOnly={kind === 'task'}
               title={endDateTooltip()}
             />
           </label>
@@ -502,19 +589,37 @@ export default function TaskEditor({
             un point de repère ponctuel, une phase est une synthèse). */}
         {kind === 'task' && (
           <label className="block text-sm">
-            <span className="text-slate-600">Collaborateur</span>
+            <span className="text-slate-600">
+              Collaborateur
+              {memberIds && (
+                <span
+                  className="ml-1 text-xs text-slate-400"
+                  title="Seuls les membres du projet sont proposés. Pour ajouter quelqu’un, passez par l’onglet « Affectation »."
+                >
+                  (membres du projet)
+                </span>
+              )}
+            </span>
             <select
               className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
               value={collabId}
               onChange={(e) => setCollabId(e.target.value)}
             >
               <option value="">— aucun —</option>
-              {collaborators.map((c) => (
+              {eligibleCollaborators.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
                 </option>
               ))}
             </select>
+            {/* v2.0 / F1 — Info-bulle quand la liste est vide : oriente
+                l'utilisateur vers l'onglet d'affectation pour débloquer. */}
+            {memberIds && eligibleCollaborators.length === 0 && (
+              <p className="mt-1 text-xs text-amber-700">
+                Aucun collaborateur n’est encore membre de ce projet. Ouvrez
+                l’onglet « Affectation » pour en ajouter.
+              </p>
+            )}
           </label>
         )}
 
@@ -644,6 +749,7 @@ export default function TaskEditor({
                     predecessor_lag: 0,
                     priority: null,
                     not_before_date: null,
+                    charge_jours: null,
                     position: 0,
                     project_id: '',
                   },

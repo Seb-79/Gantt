@@ -7,6 +7,7 @@ import {
   addDaysIso,
   addWorkingDays,
   buildDateRange,
+  computeEndFromCharge,
   checkCoherence,
   clampDayWidth,
   concernedTaskIds,
@@ -62,6 +63,10 @@ function mkTask(id: string, overrides: Partial<Task> = {}): Task {
     predecessor_lag: 0,
     priority: null,
     not_before_date: null,
+    // v2.0 — charge_jours par défaut à null pour les tests qui ne s'en
+    // soucient pas (rétro-compatibilité : la replan utilise un fallback sur
+    // workingDaysBetween(start, end) si charge_jours n'est pas positionnée).
+    charge_jours: null,
     position: 0,
     project_id: 'p_test',
     ...overrides,
@@ -415,6 +420,82 @@ describe('addWorkingDays (v1.9)', () => {
   it('démarrage un samedi : décompte commence au lundi suivant', () => {
     // 2026-05-16 = samedi, donc charge=3 → samedi (compte 0) + lundi(1) + mardi(2) + mercredi(3)
     expect(addWorkingDays('2026-05-16', 3)).toBe('2026-05-20')
+  })
+})
+
+// v2.0 — RG-GANTT-0100 : `computeEndFromCharge` est le wrapper sémantique
+// utilisé partout où on dérive la date de fin depuis la charge (source de
+// vérité). En F0 le calcul est identique à `addWorkingDays` ; les tests
+// servent de filet pour les évolutions F2 (allocations) et F3 (congés)
+// qui changeront l'algo SANS toucher au contrat.
+describe('computeEndFromCharge (v2.0)', () => {
+  it('alias d`addWorkingDays en F0 : charge=5 lundi → vendredi', () => {
+    expect(computeEndFromCharge('2026-05-18', 5)).toBe('2026-05-22')
+  })
+
+  it('saute les fériés FR : jeudi 30/04 + 3 → mardi 5/05 (1er mai férié)', () => {
+    expect(computeEndFromCharge('2026-04-30', 3)).toBe('2026-05-05')
+  })
+
+  it('charge=1 → fin = début (convention 1 jour de présence)', () => {
+    expect(computeEndFromCharge('2026-05-18', 1)).toBe('2026-05-18')
+  })
+
+  // v2.0 / F2 — Alloc 100 % : équivalent à F0 (1 j-personne par jour ouvré).
+  it('v2.0 / RG-GANTT-1310 — alloc 100 % sur toute la période : fin identique à F0', () => {
+    const allocations = [
+      {
+        id: 'a1',
+        project_id: 'pA',
+        collaborator_id: 'c1',
+        start_date: '2026-01-01',
+        end_date: '2026-12-31',
+        allocation_pct: 100,
+      },
+    ]
+    expect(
+      computeEndFromCharge('2026-06-08', 5, {
+        projectId: 'pA',
+        collaboratorId: 'c1',
+        allocations,
+      }),
+    ).toBe('2026-06-12') // 5 jours ouvrés depuis lundi 08/06
+  })
+
+  // v2.0 / F2 — Alloc 50 % : il faut 2× plus de jours pour consommer la charge.
+  // Charge 5 j @ 50 % :
+  //   J1 08/06 → 0.5, J2 09 → 1.0, J3 10 → 1.5, J4 11 → 2.0, J5 12 → 2.5,
+  //   J6 15 → 3.0, J7 16 → 3.5, J8 17 → 4.0, J9 18 → 4.5, J10 19 → 5.0
+  // → fin = 19/06 (vendredi semaine suivante).
+  it('v2.0 / RG-GANTT-1310 — alloc 50 % : charge 5 j → 10 jours ouvrés', () => {
+    const allocations = [
+      {
+        id: 'a1',
+        project_id: 'pA',
+        collaborator_id: 'c1',
+        start_date: '2026-01-01',
+        end_date: '2026-12-31',
+        allocation_pct: 50,
+      },
+    ]
+    expect(
+      computeEndFromCharge('2026-06-08', 5, {
+        projectId: 'pA',
+        collaboratorId: 'c1',
+        allocations,
+      }),
+    ).toBe('2026-06-19')
+  })
+
+  // v2.0 / F2 — Sans collab affecté : pas de pondération, fallback F0.
+  it('v2.0 / RG-GANTT-1311 — ctx sans collab : fallback F0', () => {
+    expect(
+      computeEndFromCharge('2026-06-08', 5, {
+        projectId: 'pA',
+        collaboratorId: null,
+        allocations: [],
+      }),
+    ).toBe('2026-06-12')
   })
 })
 

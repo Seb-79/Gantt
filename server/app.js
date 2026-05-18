@@ -26,14 +26,19 @@
 import express from 'express'
 import helmet from 'helmet'
 import {
+  addMemberAllocation,
+  addProjectMember,
   createCollaborator,
   createProject,
   createTask,
   deleteCollaborator,
+  deleteMemberAllocation,
   deleteProject,
   deleteTask,
   getFullState,
   getVersion,
+  listMemberAllocations,
+  listProjectMembers,
   listProjects,
   moveTask,
   resetToDemo,
@@ -42,11 +47,15 @@ import {
   updateTask,
 } from '../db/index.js'
 import {
+  AddMemberAllocationBody,
+  AddProjectMemberBody,
+  AllocationIdParams,
   CollaboratorIdParams,
   CreateCollaboratorBody,
   CreateProjectBody,
   CreateTaskBody,
   MoveTaskBody,
+  ProjectCollabParams,
   ProjectIdParams,
   StateQuery,
   TaskIdParams,
@@ -183,6 +192,138 @@ export function createApp(db, { requestLog = true } = {}) {
           error: 'projet introuvable',
           version: result.version,
         })
+      }
+      res.json(result)
+    }),
+  )
+
+  // -------------------------------------------------------------------------
+  // MEMBERSHIPS (v2.0 / F1) — projet ↔ collaborateur
+  // -------------------------------------------------------------------------
+
+  /**
+   * v2.0 / F1 — Liste les ids des collaborateurs membres d'un projet.
+   * 404 si le projet n'existe pas.
+   */
+  app.get(
+    '/api/projects/:id/members',
+    validate({ params: ProjectIdParams }),
+    safeRoute((req, res) => {
+      // Vérifie l'existence du projet pour différencier « projet vide d'équipe »
+      // (200, []) de « projet inconnu » (404).
+      const exists = listProjects(db).some((p) => p.id === req.params.id)
+      if (!exists) {
+        return res.status(404).json({ error: 'projet introuvable' })
+      }
+      res.json({ members: listProjectMembers(db, req.params.id) })
+    }),
+  )
+
+  /**
+   * v2.0 / F1 — Ajoute un collaborateur à l'équipe d'un projet. Idempotent
+   * (un POST en double n'incrémente la version qu'une fois).
+   * 400 si le projet ou le collaborateur sont introuvables.
+   */
+  app.post(
+    '/api/projects/:id/members',
+    validate({ params: ProjectIdParams, body: AddProjectMemberBody }),
+    safeRoute((req, res) => {
+      try {
+        const result = addProjectMember(
+          db,
+          req.params.id,
+          req.body.collaborator_id,
+        )
+        res.json(result)
+      } catch (err) {
+        // Mapping code d'erreur DAL → message lisible. Switch plutôt que
+        // ternaire imbriqué pour rester lint-friendly (sonarjs).
+        let msg
+        if (err.code === 'PROJECT_NOT_FOUND') msg = 'projet introuvable'
+        else if (err.code === 'COLLABORATOR_NOT_FOUND')
+          msg = 'collaborateur introuvable'
+        else msg = `Ajout impossible : ${err.message}`
+        res.status(400).json({ error: msg })
+      }
+    }),
+  )
+
+  // -------------------------------------------------------------------------
+  // ALLOCATIONS (v2.0 / F2) — périodes %
+  // -------------------------------------------------------------------------
+
+  /**
+   * v2.0 / F2 — Liste les allocations d'un membre dans un projet, triées par
+   * date. 404 si le projet ou la membership n'existent pas.
+   */
+  app.get(
+    '/api/projects/:id/members/:collabId/allocations',
+    validate({ params: ProjectCollabParams }),
+    safeRoute((req, res) => {
+      const { id, collabId } = req.params
+      const projectExists = listProjects(db).some((p) => p.id === id)
+      if (!projectExists) {
+        return res.status(404).json({ error: 'projet introuvable' })
+      }
+      const isMember = listProjectMembers(db, id).includes(collabId)
+      if (!isMember) {
+        return res
+          .status(404)
+          .json({ error: 'collaborateur non membre du projet' })
+      }
+      res.json({ allocations: listMemberAllocations(db, id, collabId) })
+    }),
+  )
+
+  /**
+   * v2.0 / F2 — Ajoute une période d'allocation pour un membre. Le DAL valide :
+   *   • % ∈ {25,50,75,100}
+   *   • pas de chevauchement (RG-GANTT-1301)
+   *   • membership existante
+   * En cas d'erreur typée → 400 avec un message clair, sinon 200 avec le row.
+   */
+  app.post(
+    '/api/projects/:id/members/:collabId/allocations',
+    validate({ params: ProjectCollabParams, body: AddMemberAllocationBody }),
+    safeRoute((req, res) => {
+      try {
+        const result = addMemberAllocation(db, {
+          project_id: req.params.id,
+          collaborator_id: req.params.collabId,
+          start_date: req.body.start_date,
+          end_date: req.body.end_date,
+          allocation_pct: req.body.allocation_pct,
+        })
+        res.json(result)
+      } catch (err) {
+        let msg
+        if (err.code === 'NOT_PROJECT_MEMBER')
+          msg = 'collaborateur non membre du projet'
+        else if (err.code === 'ALLOCATION_OVERLAP')
+          msg = 'La période chevauche une période existante du membre.'
+        else if (err.code === 'INVALID_ALLOCATION_PCT')
+          msg = 'Pourcentage invalide (valeurs autorisées : 25, 50, 75, 100).'
+        else if (err.code === 'INVALID_DATE_RANGE')
+          msg = 'La date de fin doit être supérieure ou égale au début.'
+        else msg = `Ajout impossible : ${err.message}`
+        res.status(400).json({ error: msg })
+      }
+    }),
+  )
+
+  /**
+   * v2.0 / F2 — Supprime une période d'allocation par son id. 404 si l'id
+   * n'existe pas.
+   */
+  app.delete(
+    '/api/allocations/:id',
+    validate({ params: AllocationIdParams }),
+    safeRoute((req, res) => {
+      const result = deleteMemberAllocation(db, req.params.id)
+      if (!result.changed) {
+        return res
+          .status(404)
+          .json({ error: 'allocation introuvable', version: result.version })
       }
       res.json(result)
     }),

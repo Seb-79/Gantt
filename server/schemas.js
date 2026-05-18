@@ -55,6 +55,17 @@ const Lag = z
   .max(3650, 'doit être ≤ 3650')
 
 /**
+ * v2.0 — Charge en jours ouvrés (≥ 1) d'une activité. Source de vérité
+ * désormais : la date de fin est dérivée de `start_date + charge_jours`.
+ * Plafonné à 3650 (≈ 10 ans) pour éviter les saisies aberrantes.
+ */
+const ChargeJours = z
+  .number({ message: 'doit être un nombre' })
+  .int('doit être entier')
+  .min(1, 'doit être ≥ 1')
+  .max(3650, 'doit être ≤ 3650')
+
+/**
  * v1.18 — Priorité facultative pour le « Replan » : entier 1..5 ; 1 = la plus
  * prioritaire, 5 = la moins. `null` = « pas de priorité saisie ».
  */
@@ -110,6 +121,62 @@ export const UpdateCollaboratorBody = z
 export const CollaboratorIdParams = z.object({ id: NonEmptyId })
 
 // -----------------------------------------------------------------------------
+// MEMBERSHIPS (v2.0 / F1) — body de POST /api/projects/:id/members
+// -----------------------------------------------------------------------------
+
+/**
+ * v2.0 / F1 — Ajout d'un collab à l'équipe d'un projet. Le `project_id` est
+ * dans l'URL (params), seul `collaborator_id` est dans le body.
+ */
+export const AddProjectMemberBody = z.object({
+  collaborator_id: NonEmptyId,
+})
+
+// -----------------------------------------------------------------------------
+// ALLOCATIONS (v2.0 / F2) — périodes %
+// -----------------------------------------------------------------------------
+
+/**
+ * v2.0 / F2 — Pourcentage d'allocation. Restreint aux 4 paliers validés avec
+ * l'utilisateur. La validation est ici (rejette en Zod avant le DAL) et
+ * répétée côté DAL (double filet pour la cohérence du modèle).
+ */
+const AllocationPct = z
+  .number({ message: 'doit être un nombre' })
+  .int('doit être entier')
+  .refine((v) => v === 25 || v === 50 || v === 75 || v === 100, {
+    message: 'doit valoir 25, 50, 75 ou 100',
+  })
+
+/**
+ * v2.0 / F2 — Body de POST /api/projects/:id/members/:collabId/allocations.
+ * Le triplet (project_id, collaborator_id) est dans l'URL ; le body porte
+ * la période et le %.
+ */
+export const AddMemberAllocationBody = z
+  .object({
+    start_date: IsoDate,
+    end_date: IsoDate,
+    allocation_pct: AllocationPct,
+  })
+  .refine((v) => v.end_date >= v.start_date, {
+    message: 'end_date doit être ≥ start_date',
+    path: ['end_date'],
+  })
+
+/**
+ * v2.0 / F2 — Params combinés pour les routes d'allocation : id du projet
+ * et id du collaborateur dans l'URL.
+ */
+export const ProjectCollabParams = z.object({
+  id: NonEmptyId,
+  collabId: NonEmptyId,
+})
+
+/** v2.0 / F2 — Params pour DELETE /api/allocations/:id. */
+export const AllocationIdParams = z.object({ id: NonEmptyId })
+
+// -----------------------------------------------------------------------------
 // TÂCHES & JALONS
 // -----------------------------------------------------------------------------
 
@@ -153,6 +220,10 @@ export const CreateTaskBody = z
     // v1.24 — SNET « Ne doit pas démarrer avant le ». Date facultative
     // (null = pas de contrainte). Forcée à null pour les phases côté DAL.
     not_before_date: IsoDate.nullable().optional(),
+    // v2.0 — Charge en jours ouvrés (≥ 1). Source de vérité pour les activités.
+    // Si fournie, prend le pas sur `end_date` (qui est dérivée). Forcée à null
+    // pour les jalons et phases côté DAL.
+    charge_jours: ChargeJours.optional(),
     // v1.8 — Projet de rattachement (optionnel : si absent, le DAL utilise
     // le premier projet existant).
     project_id: NonEmptyId.optional(),
@@ -178,6 +249,7 @@ export const UpdateTaskBody = z
     predecessor_lag: Lag.optional(), // v1.10 (alias legacy)
     priority: Priority.nullable().optional(), // v1.18
     not_before_date: IsoDate.nullable().optional(), // v1.24 — SNET
+    charge_jours: ChargeJours.optional(), // v2.0 — charge stockée (source de vérité)
   })
   .refine((v) => Object.keys(v).length > 0, {
     message: 'au moins un champ doit être fourni',

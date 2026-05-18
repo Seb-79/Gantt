@@ -77,10 +77,30 @@ export interface Task {
    *  ISO YYYY-MM-DD facultative en dessous de laquelle la tâche ne peut pas
    *  commencer. `null` = pas de contrainte. Toujours `null` pour les phases. */
   not_before_date: string | null
+  /** v2.0 — Charge en jours ouvrés (≥ 1) d'une activité. Source de vérité :
+   *  `end_date` est dérivée de `addWorkingDays(start_date, charge_jours)`.
+   *  `null` pour les jalons et les phases (pas de notion de charge propre). */
+  charge_jours: number | null
   /** Position d'affichage (ordre des lignes). */
   position: number
   /** Projet de rattachement (v1.8). */
   project_id: string
+}
+
+/** v2.0 / F2 — Une période d'allocation d'un membre sur un projet. */
+export interface MemberAllocation {
+  /** Identifiant unique (surrogate, généré côté serveur). */
+  id: string
+  /** Projet concerné. */
+  project_id: string
+  /** Collaborateur concerné (doit être membre du projet). */
+  collaborator_id: string
+  /** Date de début de la période (incluse), YYYY-MM-DD. */
+  start_date: string
+  /** Date de fin de la période (incluse), YYYY-MM-DD. */
+  end_date: string
+  /** Pourcentage ∈ {25, 50, 75, 100}. */
+  allocation_pct: number
 }
 
 /** État complet renvoyé par GET /api/state?project_id=…. */
@@ -93,4 +113,12 @@ export interface GanttState {
   collaborators: Collaborator[]
   /** Tâches du projet courant uniquement. */
   tasks: Task[]
+  /** v2.0 / F1 — Ids des collaborateurs membres du projet courant. Sert à
+   *  filtrer la dropdown du TaskEditor et à alimenter l'onglet « Affectation
+   *  projet ». Vide si aucun projet courant. */
+  current_project_members: string[]
+  /** v2.0 / F2 — Toutes les périodes d'allocation du projet courant (toutes
+   *  paires collab/période confondues). Consommée par le moteur de calcul de
+   *  fin (computeEndFromCharge), le plan de charge pondéré et l'UI. */
+  member_allocations: MemberAllocation[]
 }

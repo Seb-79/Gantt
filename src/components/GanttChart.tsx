@@ -94,9 +94,14 @@ function applyMoveDrag(
 }
 
 /**
- * v1.21 — Applique un drag en mode `resize-end` : seule la fin bouge. Snap
- * selon le sens du geste, puis clampe à `start_date` pour garantir au moins
- * 1 jour de barre.
+ * v1.21 / v2.0 — Applique un drag en mode `resize-end` : seule la fin bouge.
+ * Snap selon le sens du geste, puis clampe à `start_date` pour garantir au
+ * moins 1 jour de barre.
+ *
+ * Sémantique v2.0 (Q1 option a) : étirer le bord droit modifie la **charge**
+ * de l'activité (ce n'est plus juste une date de fin saisie). Le client
+ * continue d'envoyer `end_date` ; le serveur back-dérive `charge_jours` via
+ * `resolveChargeAndEnd`, ce qui revient à éditer la charge.
  *
  * @param r       État actif du drag.
  * @param notify  Callback de remontée vers le parent (PATCH end_date).

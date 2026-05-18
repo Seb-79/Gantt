@@ -14,6 +14,7 @@
 // =============================================================================
 
 import Database from 'better-sqlite3'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -57,6 +58,25 @@ export function initDb(dbPath) {
   // elle n'existe pas, puis migre une fois pour toutes les anciennes liaisons
   // mono-prédécesseur (`tasks.predecessor_id`) vers la nouvelle table.
   ensureTaskPredecessorsTable(db)
+
+  // v2.0 — Ajoute la colonne `charge_jours` sur `tasks` si elle manque, puis
+  // initialise sa valeur depuis l'écart actuel (workingDaysBetween) pour
+  // chaque activité existante. Bascule le modèle vers "charge = source de
+  // vérité, end_date = dérivée".
+  ensureChargeColumn(db)
+
+  // v2.0 / F1 — Crée la table `project_members` si elle n'existe pas, puis
+  // auto-peuple les memberships à partir des affectations de tâches existantes
+  // (chaque couple (project_id, collaborator_id) trouvé dans `tasks` devient
+  // une ligne). Stratégie validée avec l'utilisateur : on ne casse aucune
+  // affectation existante au premier boot v2.0.
+  ensureProjectMembersTable(db)
+
+  // v2.0 / F2 — Crée la table `member_allocations` puis auto-crée une période
+  // 100 % couvrant [MIN(task.start_date), MAX(task.end_date)] pour chaque
+  // membership encore sans allocation (cohérent avec la décision utilisateur :
+  // « couvrant tout l'intervalle utile des tâches existantes »).
+  ensureMemberAllocationsTable(db)
 
   // Initialise la version à 0 si la ligne meta n'existe pas encore.
   db.prepare(
@@ -391,6 +411,202 @@ function ensureTaskPredecessorsTable(db) {
 }
 
 /**
+ * v2.0 — Migration idempotente : ajoute la colonne `charge_jours` sur `tasks`
+ * si elle manque, puis l'initialise pour chaque activité existante depuis
+ * l'écart courant (workingDaysBetween) entre start_date et end_date.
+ *
+ * Stratégie « charge = source de vérité » :
+ *   • activités (`kind='task'`) → charge = workingDaysBetween(start, end) (≥ 1)
+ *   • jalons et phases → NULL (pas de notion de charge)
+ *
+ * Sûr à rejouer : si la colonne existe et que toutes les activités ont déjà
+ * une valeur cohérente, l'opération est silencieuse.
+ *
+ * @param {import('better-sqlite3').Database} db
+ */
+function ensureChargeColumn(db) {
+  const cols = db
+    .prepare(`PRAGMA table_info(tasks)`)
+    .all()
+    .map((c) => c.name)
+  if (!cols.includes('charge_jours')) {
+    db.exec(`ALTER TABLE tasks ADD COLUMN charge_jours INTEGER`)
+  }
+  // Initialise charge_jours pour toutes les ACTIVITÉS qui n'en ont pas encore
+  // (NULL = colonne fraîchement ajoutée OU activité créée par une route ne
+  // gérant pas encore le champ). On reconstitue la charge depuis l'écart
+  // existant pour ne pas modifier les dates affichées à l'utilisateur.
+  const rows = db
+    .prepare(
+      `SELECT id, start_date, end_date FROM tasks
+         WHERE kind = 'task' AND charge_jours IS NULL`,
+    )
+    .all()
+  if (rows.length > 0) {
+    const upd = db.prepare(`UPDATE tasks SET charge_jours = ? WHERE id = ?`)
+    for (const r of rows) {
+      const c = Math.max(1, workingDaysBetweenServer(r.start_date, r.end_date))
+      upd.run(c, r.id)
+    }
+    console.log(
+      `[INIT] Migration v2.0 (charge) : ${rows.length} activité(s) → charge_jours initialisée depuis l'écart courant.`,
+    )
+  }
+  // Nettoyage : jalons / phases ne portent jamais de charge.
+  const rNonTask = db
+    .prepare(
+      `UPDATE tasks SET charge_jours = NULL
+         WHERE kind IN ('milestone', 'phase') AND charge_jours IS NOT NULL`,
+    )
+    .run()
+  if (rNonTask.changes > 0) {
+    console.log(
+      `[INIT] Migration v2.0 (charge) : ${rNonTask.changes} jalon(s)/phase(s) avaient une charge résiduelle — effacée(s).`,
+    )
+  }
+}
+
+/**
+ * v2.0 / F1 — Migration idempotente : crée la table `project_members` si
+ * elle n'existe pas, puis auto-peuple les memberships manquantes depuis les
+ * affectations de tâches existantes.
+ *
+ * Stratégie d'auto-population (option α validée avec l'utilisateur) :
+ *   • Pour chaque couple (project_id, collaborator_id) trouvé dans `tasks`
+ *     ET non encore présent dans `project_members`, on insère une ligne.
+ *   • Aucune membership n'est jamais retirée automatiquement (un collab qui
+ *     était membre mais n'a plus de tâche reste membre).
+ *
+ * Sûre à rejouer : `INSERT OR IGNORE` garantit qu'on n'écrase pas les
+ * memberships saisies manuellement après la migration.
+ *
+ * @param {import('better-sqlite3').Database} db
+ */
+function ensureProjectMembersTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS project_members (
+      project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      collaborator_id TEXT NOT NULL REFERENCES collaborators(id) ON DELETE CASCADE,
+      PRIMARY KEY (project_id, collaborator_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_members_collab
+      ON project_members(collaborator_id);
+  `)
+  // Auto-pop : on lit toutes les paires distinctes (project_id, collaborator_id)
+  // des tâches avec un collab non-null, et on insère celles qui manquent dans
+  // project_members. INSERT OR IGNORE = no-op si la ligne existe déjà.
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT t.project_id, t.collaborator_id
+         FROM tasks t
+         WHERE t.collaborator_id IS NOT NULL
+           AND t.project_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM project_members m
+              WHERE m.project_id = t.project_id
+                AND m.collaborator_id = t.collaborator_id
+           )`,
+    )
+    .all()
+  if (rows.length === 0) return
+  const ins = db.prepare(
+    `INSERT OR IGNORE INTO project_members(project_id, collaborator_id) VALUES (?, ?)`,
+  )
+  for (const r of rows) ins.run(r.project_id, r.collaborator_id)
+  console.log(
+    `[INIT] Migration v2.0 / F1 : ${rows.length} membership(s) auto-créée(s) depuis les affectations de tâches existantes.`,
+  )
+}
+
+/**
+ * v2.0 / F2 — Migration idempotente : crée la table `member_allocations` si
+ * elle n'existe pas, puis auto-crée pour chaque membership encore sans
+ * allocation une période 100 % couvrant l'intervalle utile des tâches
+ * existantes du collab sur ce projet.
+ *
+ * Stratégie d'auto-pop :
+ *   • Pour chaque (project_id, collab_id) ∈ project_members :
+ *     - si une allocation existe déjà → no-op (l'utilisateur ou un précédent
+ *       boot l'a déjà créée),
+ *     - sinon on calcule [MIN(task.start_date), MAX(task.end_date)] des
+ *       tâches existantes (project_id, collab_id) et on insère une période
+ *       100 % sur cette plage,
+ *     - s'il n'y a aucune tâche (cas très rare), on retombe sur le projet
+ *       [MIN(task.start_date), MAX(task.end_date)] tout collabs confondus,
+ *     - s'il n'y a vraiment aucune tâche du tout, on insère une période à
+ *       100 % sur une plage par défaut très large (2020-01-01 → 2099-12-31).
+ *       L'utilisateur pourra ajuster ensuite.
+ *
+ * @param {import('better-sqlite3').Database} db
+ */
+function ensureMemberAllocationsTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS member_allocations (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      collaborator_id TEXT NOT NULL,
+      start_date      TEXT NOT NULL,
+      end_date        TEXT NOT NULL,
+      allocation_pct  INTEGER NOT NULL,
+      FOREIGN KEY (project_id, collaborator_id)
+        REFERENCES project_members(project_id, collaborator_id)
+        ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_member_allocations_lookup
+      ON member_allocations(project_id, collaborator_id);
+  `)
+  // Liste les memberships sans aucune allocation existante.
+  const orphans = db
+    .prepare(
+      `SELECT m.project_id, m.collaborator_id
+         FROM project_members m
+         WHERE NOT EXISTS (
+           SELECT 1 FROM member_allocations a
+             WHERE a.project_id = m.project_id
+               AND a.collaborator_id = m.collaborator_id
+         )`,
+    )
+    .all()
+  if (orphans.length === 0) return
+  const tasksRange = db.prepare(
+    `SELECT MIN(start_date) AS minS, MAX(end_date) AS maxE
+       FROM tasks
+       WHERE project_id = ? AND collaborator_id = ?`,
+  )
+  const projectRange = db.prepare(
+    `SELECT MIN(start_date) AS minS, MAX(end_date) AS maxE
+       FROM tasks
+       WHERE project_id = ?`,
+  )
+  const ins = db.prepare(
+    `INSERT INTO member_allocations
+       (id, project_id, collaborator_id, start_date, end_date, allocation_pct)
+       VALUES (?, ?, ?, ?, ?, 100)`,
+  )
+  let inserted = 0
+  for (const m of orphans) {
+    // Range 1 : tâches du couple (project, collab).
+    let r = tasksRange.get(m.project_id, m.collaborator_id)
+    if (!r.minS || !r.maxE) {
+      // Range 2 : toutes tâches du projet (au cas où le collab n'a aucune
+      // tâche affectée — par ex. membership ajoutée manuellement).
+      r = projectRange.get(m.project_id)
+    }
+    const start = r.minS || '2020-01-01'
+    const end = r.maxE || '2099-12-31'
+    // Surrogate id stable et déterministe par couple (project, collab) pour
+    // garantir l'idempotence si la migration est rejouée (rare mais possible
+    // si le user vide member_allocations à la main).
+    const id = `auto_${m.project_id}_${m.collaborator_id}`
+    ins.run(id, m.project_id, m.collaborator_id, start, end)
+    inserted++
+  }
+  console.log(
+    `[INIT] Migration v2.0 / F2 : ${inserted} allocation(s) 100 % auto-créée(s) pour les memberships existantes.`,
+  )
+}
+
+/**
  * v1.21 — Lit tous les prédécesseurs d'une tâche, triés par id pour un ordre
  * déterministe (utile pour les tests et l'affichage des flèches).
  *
@@ -645,7 +861,7 @@ export function getFullState(db, projectId) {
         .prepare(
           `SELECT id, name, kind, start_date, end_date, progress,
                   collaborator_id, color, parent_id,
-                  priority, not_before_date,
+                  priority, not_before_date, charge_jours,
                   position, project_id
              FROM tasks
              WHERE project_id = ?
@@ -685,12 +901,27 @@ export function getFullState(db, projectId) {
     t.predecessor_id = list[0]?.id ?? null
     t.predecessor_lag = list[0]?.lag ?? 0
   }
+  // v2.0 / F1 — Liste des collaborateurs membres du projet courant (utilisée
+  // côté client pour filtrer la dropdown du TaskEditor et alimenter l'onglet
+  // « Affectation projet »). Vide si aucun projet courant.
+  const currentProjectMembers = currentId
+    ? listProjectMembers(db, currentId)
+    : []
+  // v2.0 / F2 — Périodes d'allocation du projet courant (toutes paires
+  // collab/période confondues). Le client en a besoin pour le moteur de
+  // calcul de fin (computeEndFromCharge), le plan de charge pondéré et
+  // l'UI d'édition dans l'onglet « Affectation projet ».
+  const memberAllocations = currentId
+    ? listMemberAllocations(db, currentId)
+    : []
   return {
     version: getVersion(db),
     current_project_id: currentId,
     projects,
     collaborators,
     tasks,
+    current_project_members: currentProjectMembers,
+    member_allocations: memberAllocations,
   }
 }
 
@@ -871,6 +1102,288 @@ export function updateCollaborator(db, id, patch) {
 export function deleteCollaborator(db, id) {
   const tx = db.transaction(() => {
     const info = db.prepare(`DELETE FROM collaborators WHERE id = ?`).run(id)
+    if (info.changes === 0) return { version: getVersion(db), changed: false }
+    const version = bumpVersion(db)
+    return { version, changed: true }
+  })
+  return tx()
+}
+
+// -----------------------------------------------------------------------------
+// v2.0 / F1 — MEMBERSHIPS projet ↔ collaborateur
+// -----------------------------------------------------------------------------
+// Un collab doit être membre d'un projet pour qu'une de ses activités puisse
+// lui être affectée. Pas de notion de pourcentage en F1 — c'est F2 qui
+// l'apportera via la table `member_allocations`.
+
+/**
+ * v2.0 / F1 — Liste les ids des collaborateurs membres d'un projet, triés
+ * par leur position d'affichage globale (cohérent avec la dropdown du
+ * TaskEditor).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} projectId
+ * @returns {string[]}  Ids des collabs membres.
+ */
+export function listProjectMembers(db, projectId) {
+  return db
+    .prepare(
+      `SELECT m.collaborator_id AS id
+         FROM project_members m
+         JOIN collaborators c ON c.id = m.collaborator_id
+         WHERE m.project_id = ?
+         ORDER BY c.position ASC, c.id ASC`,
+    )
+    .all(projectId)
+    .map((r) => r.id)
+}
+
+/**
+ * v2.0 / F1 — Vérifie qu'un collaborateur est membre d'un projet donné.
+ * Utilisé en garde dans createTask / updateTask pour interdire l'affectation
+ * d'un non-membre (RG-GANTT-1200).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} projectId
+ * @param {string} collabId
+ * @returns {boolean}
+ */
+function isProjectMember(db, projectId, collabId) {
+  const row = db
+    .prepare(
+      `SELECT 1 AS x FROM project_members
+         WHERE project_id = ? AND collaborator_id = ?`,
+    )
+    .get(projectId, collabId)
+  return !!row
+}
+
+/**
+ * v2.0 / F1 — Ajoute un collaborateur à l'équipe d'un projet.
+ *
+ * Validations :
+ *   • Le projet doit exister.
+ *   • Le collaborateur doit exister.
+ *   • Si la membership existe déjà : no-op silencieux (idempotent).
+ *
+ * Bump de version uniquement si la ligne a effectivement été créée (pour ne
+ * pas spammer les clients en polling lors d'un double-clic).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} projectId
+ * @param {string} collaboratorId
+ * @returns {{version:number, added:boolean}}
+ */
+export function addProjectMember(db, projectId, collaboratorId) {
+  const tx = db.transaction(() => {
+    const proj = db
+      .prepare(`SELECT 1 AS x FROM projects WHERE id = ?`)
+      .get(projectId)
+    if (!proj) {
+      const err = new Error(`Project not found: ${projectId}`)
+      err.code = 'PROJECT_NOT_FOUND'
+      throw err
+    }
+    const col = db
+      .prepare(`SELECT 1 AS x FROM collaborators WHERE id = ?`)
+      .get(collaboratorId)
+    if (!col) {
+      const err = new Error(`Collaborator not found: ${collaboratorId}`)
+      err.code = 'COLLABORATOR_NOT_FOUND'
+      throw err
+    }
+    const info = db
+      .prepare(
+        `INSERT OR IGNORE INTO project_members(project_id, collaborator_id) VALUES (?, ?)`,
+      )
+      .run(projectId, collaboratorId)
+    if (info.changes === 0) return { version: getVersion(db), added: false }
+    // v2.0 / F2 — Auto-pop d'une allocation 100 % par défaut couvrant une
+    // plage très large (2020-01-01 → 2099-12-31). L'utilisateur peut ensuite
+    // affiner via l'onglet « Affectation projet ». Cohérent avec :
+    //   • la migration `ensureMemberAllocationsTable` (auto-pop des memberships
+    //     pré-existantes),
+    //   • l'auto-heal `ensureCollabIsMember` (création de tâche affectée à un
+    //     collab non encore membre).
+    // Sans cette ligne par défaut, un membre fraîchement ajouté aurait 0 % de
+    // capacité et toute tâche qui lui serait affectée stagnerait.
+    db.prepare(
+      `INSERT OR IGNORE INTO member_allocations
+         (id, project_id, collaborator_id, start_date, end_date, allocation_pct)
+         VALUES (?, ?, ?, '2020-01-01', '2099-12-31', 100)`,
+    ).run(`default_${projectId}_${collaboratorId}`, projectId, collaboratorId)
+    const version = bumpVersion(db)
+    return { version, added: true }
+  })
+  return tx()
+}
+
+// -----------------------------------------------------------------------------
+// v2.0 / F2 — ALLOCATIONS (périodes %)
+// -----------------------------------------------------------------------------
+
+/** v2.0 / F2 — Paliers d'allocation autorisés (4 valeurs fixées avec l'utilisateur). */
+const ALLOWED_ALLOCATION_PCTS = new Set([25, 50, 75, 100])
+
+/**
+ * v2.0 / F2 — Liste les allocations d'un projet (toutes paires
+ * (collab, période) confondues), triées par collab puis date de début.
+ * Si `collaboratorId` est fourni, filtre uniquement ses périodes.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} projectId
+ * @param {string} [collaboratorId]  Optionnel : filtre sur un collab précis.
+ * @returns {Array<{id:string, project_id:string, collaborator_id:string,
+ *                  start_date:string, end_date:string, allocation_pct:number}>}
+ */
+export function listMemberAllocations(db, projectId, collaboratorId) {
+  if (collaboratorId) {
+    return db
+      .prepare(
+        `SELECT id, project_id, collaborator_id, start_date, end_date, allocation_pct
+           FROM member_allocations
+           WHERE project_id = ? AND collaborator_id = ?
+           ORDER BY start_date ASC, id ASC`,
+      )
+      .all(projectId, collaboratorId)
+  }
+  return db
+    .prepare(
+      `SELECT id, project_id, collaborator_id, start_date, end_date, allocation_pct
+         FROM member_allocations
+         WHERE project_id = ?
+         ORDER BY collaborator_id ASC, start_date ASC, id ASC`,
+    )
+    .all(projectId)
+}
+
+/**
+ * v2.0 / F2 — Vérifie qu'une période `[start, end]` ne chevauche aucune
+ * période existante pour la même paire (project, collab), à l'exclusion
+ * éventuelle d'un id à ignorer (utile pour les UPDATE qui ne doivent pas
+ * se comparer à eux-mêmes).
+ *
+ * Deux périodes A et B se chevauchent ssi A.start <= B.end ET B.start <= A.end
+ * (en bornes inclusives).
+ *
+ * @returns {boolean} true s'il y a chevauchement (= rejeter l'insertion).
+ */
+function hasAllocationOverlap(
+  db,
+  projectId,
+  collaboratorId,
+  start,
+  end,
+  excludeId,
+) {
+  const stmt = excludeId
+    ? db.prepare(
+        `SELECT 1 AS x FROM member_allocations
+           WHERE project_id = ? AND collaborator_id = ?
+             AND id != ?
+             AND start_date <= ? AND end_date >= ?
+           LIMIT 1`,
+      )
+    : db.prepare(
+        `SELECT 1 AS x FROM member_allocations
+           WHERE project_id = ? AND collaborator_id = ?
+             AND start_date <= ? AND end_date >= ?
+           LIMIT 1`,
+      )
+  const row = excludeId
+    ? stmt.get(projectId, collaboratorId, excludeId, end, start)
+    : stmt.get(projectId, collaboratorId, end, start)
+  return !!row
+}
+
+/**
+ * v2.0 / F2 — Ajoute une période d'allocation à l'équipe d'un projet.
+ *
+ * Validations :
+ *   • La membership (project_id, collab_id) doit exister (sinon erreur typée).
+ *   • `allocation_pct` doit être ∈ {25, 50, 75, 100}.
+ *   • `start_date` ≤ `end_date`.
+ *   • Aucun chevauchement avec une période existante (RG-GANTT-1301).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {{id?:string, project_id:string, collaborator_id:string,
+ *          start_date:string, end_date:string, allocation_pct:number}} input
+ * @returns {{version:number, allocation:object}}
+ */
+export function addMemberAllocation(db, input) {
+  const tx = db.transaction(() => {
+    if (!isProjectMember(db, input.project_id, input.collaborator_id)) {
+      const err = new Error(
+        `Not a member: ${input.collaborator_id} in ${input.project_id}`,
+      )
+      err.code = 'NOT_PROJECT_MEMBER'
+      throw err
+    }
+    if (!ALLOWED_ALLOCATION_PCTS.has(Number(input.allocation_pct))) {
+      const err = new Error(
+        `allocation_pct must be one of 25,50,75,100 (got ${input.allocation_pct})`,
+      )
+      err.code = 'INVALID_ALLOCATION_PCT'
+      throw err
+    }
+    if (input.end_date < input.start_date) {
+      const err = new Error('end_date must be >= start_date')
+      err.code = 'INVALID_DATE_RANGE'
+      throw err
+    }
+    if (
+      hasAllocationOverlap(
+        db,
+        input.project_id,
+        input.collaborator_id,
+        input.start_date,
+        input.end_date,
+      )
+    ) {
+      const err = new Error(
+        'Allocation period overlaps an existing one for this member',
+      )
+      err.code = 'ALLOCATION_OVERLAP'
+      throw err
+    }
+    // v2.0 / F2 — Surrogate id : on accepte une valeur explicite (utile pour
+    // les seeds / replay) ou on en génère une via crypto.randomUUID (préfixé
+    // `alloc_` pour la lisibilité dans la base).
+    const id = input.id || `alloc_${randomUUID()}`
+    db.prepare(
+      `INSERT INTO member_allocations
+         (id, project_id, collaborator_id, start_date, end_date, allocation_pct)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      input.project_id,
+      input.collaborator_id,
+      input.start_date,
+      input.end_date,
+      Number(input.allocation_pct),
+    )
+    const version = bumpVersion(db)
+    const allocation = db
+      .prepare(`SELECT * FROM member_allocations WHERE id = ?`)
+      .get(id)
+    return { version, allocation }
+  })
+  return tx()
+}
+
+/**
+ * v2.0 / F2 — Supprime une période d'allocation par son id. No-op si l'id
+ * n'existe pas (cohérent avec les autres `delete*` du DAL).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} id
+ * @returns {{version:number, changed:boolean}}
+ */
+export function deleteMemberAllocation(db, id) {
+  const tx = db.transaction(() => {
+    const info = db
+      .prepare(`DELETE FROM member_allocations WHERE id = ?`)
+      .run(id)
     if (info.changes === 0) return { version: getVersion(db), changed: false }
     const version = bumpVersion(db)
     return { version, changed: true }
@@ -1104,18 +1617,29 @@ function computeSuccessorStart(predEnd, lag) {
  * @param {string} targetStart  Nouvelle date de début (jour ouvré).
  * @returns {{newStart:string, newEnd:string}}
  */
-function computeShiftedDates(succ, targetStart) {
+function computeShiftedDates(succ, targetStart, db) {
   if (succ.kind === 'milestone') {
     return { newStart: targetStart, newEnd: targetStart }
   }
-  const charge = Math.max(
-    1,
-    workingDaysBetweenServer(succ.start_date, succ.end_date),
-  )
-  return {
-    newStart: targetStart,
-    newEnd: addWorkingDaysServer(targetStart, charge),
-  }
+  // v2.0 — Lit la charge depuis `charge_jours` (source de vérité) ; back-dérive
+  // depuis l'écart courant en filet de sécurité (bases anciennes / tests).
+  const charge =
+    succ.charge_jours && succ.charge_jours >= 1
+      ? succ.charge_jours
+      : Math.max(1, workingDaysBetweenServer(succ.start_date, succ.end_date))
+  // v2.0 / F2 — Si `db` est fourni, on utilise le moteur allocation-aware
+  // pour préserver la charge ET le rythme du collab. Sinon (chemin legacy
+  // sans contexte d'allocation), on retombe sur addWorkingDaysServer pur.
+  const newEnd = db
+    ? addWorkingDaysWithAllocationServer(
+        db,
+        targetStart,
+        charge,
+        succ.project_id,
+        succ.collaborator_id,
+      )
+    : addWorkingDaysServer(targetStart, charge)
+  return { newStart: targetStart, newEnd }
 }
 
 /**
@@ -1167,13 +1691,27 @@ function reconcilePredecessors(db, current, next) {
   const minStart = computeMinStartFromPredecessors(db, current.id)
   if (minStart === null) return
   if (next.start_date >= minStart) return
-  const charge = Math.max(
-    1,
-    workingDaysBetweenServer(current.start_date, current.end_date),
-  )
+  // v2.0 — Préserve la charge stockée plutôt que de la back-dériver depuis
+  // l'écart courant (plus juste sémantiquement).
+  const charge =
+    next.charge_jours && next.charge_jours >= 1
+      ? next.charge_jours
+      : Math.max(
+          1,
+          workingDaysBetweenServer(current.start_date, current.end_date),
+        )
   next.start_date = minStart
   if (next.kind !== 'milestone') {
-    next.end_date = addWorkingDaysServer(minStart, charge)
+    // v2.0 / F2 — Recalcul allocation-aware (cf. addWorkingDaysWithAllocationServer)
+    // pour que le décalage induit par un prédécesseur reflète aussi le rythme
+    // d'allocation du collab.
+    next.end_date = addWorkingDaysWithAllocationServer(
+      db,
+      minStart,
+      charge,
+      next.project_id,
+      next.collaborator_id,
+    )
   }
 }
 
@@ -1193,8 +1731,13 @@ function reconcilePredecessors(db, current, next) {
  */
 function propagateToSuccessors(db, rootId) {
   // v1.21 — Successeurs récupérés via la table N:M (un succ peut avoir N préds).
+  // v2.0 — On ramène charge_jours pour que computeShiftedDates lise la charge
+  // depuis la source de vérité au lieu de la back-dériver.
+  // v2.0 / F2 — On ramène aussi project_id et collaborator_id pour que le
+  // calcul de fin pondérée par l'allocation puisse se faire.
   const fetchSuccessors = db.prepare(
-    `SELECT t.id, t.kind, t.start_date, t.end_date, t.parent_id
+    `SELECT t.id, t.kind, t.start_date, t.end_date, t.parent_id,
+            t.charge_jours, t.project_id, t.collaborator_id
        FROM task_predecessors tp
        JOIN tasks t ON t.id = tp.task_id
        WHERE tp.predecessor_id = ?`,
@@ -1219,7 +1762,9 @@ function propagateToSuccessors(db, rootId) {
       const minStart = computeMinStartFromPredecessors(db, succ.id)
       if (minStart === null) continue
       if (succ.start_date >= minStart) continue
-      const { newStart, newEnd } = computeShiftedDates(succ, minStart)
+      // v2.0 / F2 — `db` est transmis pour permettre à computeShiftedDates de
+      // consommer la capacité réelle du collab (allocations %) lors du push.
+      const { newStart, newEnd } = computeShiftedDates(succ, minStart, db)
       if (newStart === succ.start_date && newEnd === succ.end_date) continue
       updateDates.run(newStart, newEnd, succ.id)
       // Propage à la phase parente (les dates de la phase doivent refléter
@@ -1341,6 +1886,224 @@ function normalizeNotBeforeDate(raw, kind) {
 }
 
 /**
+ * v2.0 / F1 — S'assure que `collabId` est membre de `projectId` au moment où
+ * on l'affecte à une activité. Si la membership n'existe pas encore, elle est
+ * créée à la volée (idempotent via `INSERT OR IGNORE`).
+ *
+ * Pourquoi tolérant côté DAL plutôt que strict ? La contrainte « doit être
+ * dans la dropdown » est portée par l'UI (filtrage côté `TaskEditor`).
+ * Au niveau du DAL, on reste résilient : un appel direct à l'API ne casse
+ * pas le modèle, il enrichit l'équipe du projet — cohérent avec la stratégie
+ * d'auto-pop de la migration (option α validée avec l'utilisateur).
+ *
+ * No-op si `collabId` est null (activité non affectée) ou si `projectId`
+ * est null (cas pathologique géré ailleurs).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string|null} collabId
+ * @param {string|null} projectId
+ */
+function ensureCollabIsMember(db, collabId, projectId) {
+  if (!collabId || !projectId) return
+  if (isProjectMember(db, projectId, collabId)) return
+  // Le collab existe-t-il vraiment ? Si non, on ne crée surtout pas une
+  // membership orpheline (FK collaborator_id rejetterait de toute façon
+  // l'INSERT, mais on évite l'erreur SQL en cassant tôt avec un message clair).
+  const col = db
+    .prepare(`SELECT 1 AS x FROM collaborators WHERE id = ?`)
+    .get(collabId)
+  if (!col) return // le DAL en amont rejettera l'affectation à un collab inexistant
+  db.prepare(
+    `INSERT OR IGNORE INTO project_members(project_id, collaborator_id) VALUES (?, ?)`,
+  ).run(projectId, collabId)
+  // v2.0 / F2 — Auto-heal complet : on crée aussi une allocation 100 % par
+  // défaut couvrant une plage très large, sinon la nouvelle membership aura
+  // 0 % de capacité et la tâche fraîchement créée ne pourra pas se calculer.
+  // L'utilisateur pourra affiner les périodes/% via l'UI ensuite.
+  const existing = db
+    .prepare(
+      `SELECT 1 AS x FROM member_allocations
+         WHERE project_id = ? AND collaborator_id = ? LIMIT 1`,
+    )
+    .get(projectId, collabId)
+  if (!existing) {
+    db.prepare(
+      `INSERT INTO member_allocations
+         (id, project_id, collaborator_id, start_date, end_date, allocation_pct)
+         VALUES (?, ?, ?, '2020-01-01', '2099-12-31', 100)`,
+    ).run(`autoheal_${projectId}_${collabId}`, projectId, collabId)
+  }
+}
+
+/**
+ * v2.0 / F2 — Lit toutes les allocations d'un couple (projet, collab) triées
+ * par date de début, pour usage dans le moteur de calcul de fin serveur.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} projectId
+ * @param {string} collabId
+ * @returns {Array<{start_date:string, end_date:string, allocation_pct:number}>}
+ */
+function listAllocationsServer(db, projectId, collabId) {
+  return db
+    .prepare(
+      `SELECT start_date, end_date, allocation_pct
+         FROM member_allocations
+         WHERE project_id = ? AND collaborator_id = ?
+         ORDER BY start_date ASC, id ASC`,
+    )
+    .all(projectId, collabId)
+}
+
+/**
+ * v2.0 / F2 — Calcule la fin d'une activité à partir de sa charge et du
+ * rythme d'allocation du collab sur le projet (miroir exact de
+ * `computeEndFromCharge` côté client).
+ *
+ * Sans collab affecté OU sans allocation existante → retombe sur l'ancien
+ * comportement F0 (`addWorkingDaysServer`).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} startIso  Date de début YYYY-MM-DD.
+ * @param {number} charge    Charge en jours ouvrés (≥ 1).
+ * @param {string|null} projectId
+ * @param {string|null} collabId
+ * @returns {string}         Date de fin YYYY-MM-DD (incluse).
+ */
+function findAllocationPctForDay(allocs, dateIso) {
+  // Hypothèse : pas de chevauchement (invariant RG-GANTT-1301), on prend
+  // la 1ʳᵉ période qui couvre `dateIso`.
+  for (const a of allocs) {
+    if (dateIso >= a.start_date && dateIso <= a.end_date)
+      return a.allocation_pct
+  }
+  return 0
+}
+
+function addWorkingDaysWithAllocationServer(
+  db,
+  startIso,
+  charge,
+  projectId,
+  collabId,
+) {
+  if (!collabId || !projectId) return addWorkingDaysServer(startIso, charge)
+  const allocs = listAllocationsServer(db, projectId, collabId)
+  if (allocs.length === 0) return addWorkingDaysServer(startIso, charge)
+  const needed = Math.max(1, charge)
+  let consumed = 0
+  let cur = startIso
+  let lastWorked = startIso
+  const maxScan = Math.max(needed * 30, 10000)
+  for (let i = 0; i < maxScan; i++) {
+    if (!isNonWorkingDayIso(cur)) {
+      const pct = findAllocationPctForDay(allocs, cur)
+      if (pct > 0) {
+        consumed += pct / 100
+        lastWorked = cur
+        if (consumed >= needed - 1e-9) return lastWorked
+      }
+    }
+    cur = addDaysIsoServer(cur, 1)
+  }
+  return lastWorked
+}
+
+/**
+ * v2.0 — Calcule la charge effective et la date de fin dérivée pour une
+ * mutation de tâche, en appliquant la règle « charge = source de vérité ».
+ *
+ * Politique de réconciliation (par ordre de priorité) :
+ *   1. **Jalon** → charge = NULL, end = start (toujours).
+ *   2. **Phase** → charge = NULL (les dates sont synthétisées depuis les enfants).
+ *   3. **Activité** :
+ *      a) si `patch.charge_jours` est fourni → charge = valeur fournie,
+ *         end = addWorkingDays(start, charge).
+ *      b) sinon si `patch.end_date` est fourni → charge = back-dérivée depuis
+ *         (start, end) via workingDaysBetween, end conservé tel quel
+ *         (cas du drag bord droit dans le Gantt, Q1 option a).
+ *      c) sinon si la charge existante est connue → end = addWorkingDays(start, chargeExistante)
+ *         (cas du drag horizontal "move" ou d'un patch qui ne touche que start).
+ *      d) sinon (fallback ultime, base très ancienne) → charge = 1, end = start.
+ *
+ * @param {{kind:string, start_date:string, end_date?:string, charge_jours?:number|null}} next
+ *        État courant fusionné (`{...current, ...patch}`) avant écriture.
+ * @param {object} patch  Le patch reçu (utilisé pour détecter quelles clés
+ *        ont été explicitement fournies par l'appelant).
+ * @returns {{charge_jours:number|null, end_date:string}}
+ */
+function resolveChargeAndEnd(next, patch, db) {
+  if (next.kind === 'milestone') {
+    return { charge_jours: null, end_date: next.start_date }
+  }
+  if (next.kind === 'phase') {
+    // Une phase n'a pas de charge propre ; sa fin est recalculée depuis ses
+    // enfants par `recomputePhaseDates`. On garde l'end_date courante (sera
+    // écrasée juste après par la synthèse).
+    return { charge_jours: null, end_date: next.end_date || next.start_date }
+  }
+  // v2.0 / F2 — Helper local : calcule la fin d'une activité depuis sa charge
+  // en consommant la capacité quotidienne du collab (allocation %). Si `db`
+  // n'est pas fourni (cas exceptionnel) ou si la tâche n'a pas de collab,
+  // on retombe sur l'ancien comportement F0.
+  const endFromCharge = (start, c) =>
+    db
+      ? addWorkingDaysWithAllocationServer(
+          db,
+          start,
+          c,
+          next.project_id,
+          next.collaborator_id,
+        )
+      : addWorkingDaysServer(start, c)
+  const hasExplicitCharge =
+    patch &&
+    Object.prototype.hasOwnProperty.call(patch, 'charge_jours') &&
+    patch.charge_jours !== null &&
+    patch.charge_jours !== undefined
+  const hasExplicitEnd =
+    patch &&
+    Object.prototype.hasOwnProperty.call(patch, 'end_date') &&
+    patch.end_date
+  // Cas 3a : charge explicite gagne.
+  if (hasExplicitCharge) {
+    const c = Math.max(1, Math.floor(Number(patch.charge_jours)))
+    return { charge_jours: c, end_date: endFromCharge(next.start_date, c) }
+  }
+  // Cas 3b : end_date explicite → back-dérivation de la charge.
+  // v2.0 / F2 — La back-dérivation reste basée sur l'écart en jours ouvrés
+  // bruts (workingDaysBetween), pas sur la capacité allouée : un drag du
+  // bord droit exprime « je veux que ça dure tant de jours-travail »,
+  // indépendamment du rythme d'allocation. Cohérent avec Q1 option a.
+  if (hasExplicitEnd) {
+    const c = Math.max(
+      1,
+      workingDaysBetweenServer(next.start_date, patch.end_date),
+    )
+    return { charge_jours: c, end_date: patch.end_date }
+  }
+  // Cas 3c : charge déjà connue (sur la tâche courante) → on la conserve et
+  // recalcule end depuis le start (potentiellement nouveau).
+  if (next.charge_jours && next.charge_jours >= 1) {
+    return {
+      charge_jours: next.charge_jours,
+      end_date: endFromCharge(next.start_date, next.charge_jours),
+    }
+  }
+  // Cas 3d : fallback ultime — base très ancienne où ni charge_jours ni end_date
+  // ne sont disponibles. On reconstitue depuis l'end_date courante (qui existe
+  // forcément en base, NOT NULL), bornée à 1 minimum.
+  const fallbackCharge = Math.max(
+    1,
+    workingDaysBetweenServer(next.start_date, next.end_date || next.start_date),
+  )
+  return {
+    charge_jours: fallbackCharge,
+    end_date: endFromCharge(next.start_date, fallbackCharge),
+  }
+}
+
+/**
  * v1.24 — Applique la contrainte SNET en POUSSANT `start_date` au jour ouvré
  * de la date de démarrage au plus tôt si elle est en deçà. La règle « le plus tardif gagne »
  * est garantie en appelant cette fonction APRÈS la cascade de prédécesseur :
@@ -1356,19 +2119,38 @@ function normalizeNotBeforeDate(raw, kind) {
  *
  * @param {object} next  Tâche en cours d'évaluation (kind, start_date, end_date, not_before_date).
  */
-function enforceNotBeforeDate(next) {
+function enforceNotBeforeDate(next, db) {
   const snet = normalizeNotBeforeDate(next.not_before_date, next.kind)
   if (!snet) return
   const snapped = snapForwardToWorkingDayServer(snet)
   if (next.start_date >= snapped) return
-  // Préserve la charge en jours ouvrés pour les activités.
-  const charge =
-    next.kind === 'milestone'
-      ? 0
-      : Math.max(1, workingDaysBetweenServer(next.start_date, next.end_date))
+  // v2.0 — Préserve la charge en jours ouvrés pour les activités. La charge
+  // est lue depuis `charge_jours` quand elle existe (source de vérité), avec
+  // un filet de sécurité sur l'écart courant pour les patches qui ne
+  // l'auraient pas encore positionnée.
+  let charge = 0
+  if (next.kind !== 'milestone') {
+    charge =
+      next.charge_jours && next.charge_jours >= 1
+        ? next.charge_jours
+        : Math.max(1, workingDaysBetweenServer(next.start_date, next.end_date))
+  }
   next.start_date = snapped
-  next.end_date =
-    next.kind === 'milestone' ? snapped : addWorkingDaysServer(snapped, charge)
+  // v2.0 / F2 — Recalcul allocation-aware si `db` fourni (chemin nominal). Sinon
+  // on retombe sur le calcul jours ouvrés bruts (rétro-compat anciens chemins).
+  if (next.kind === 'milestone') {
+    next.end_date = snapped
+  } else if (db) {
+    next.end_date = addWorkingDaysWithAllocationServer(
+      db,
+      snapped,
+      charge,
+      next.project_id,
+      next.collaborator_id,
+    )
+  } else {
+    next.end_date = addWorkingDaysServer(snapped, charge)
+  }
 }
 
 /**
@@ -1479,23 +2261,51 @@ export function createTask(db, input) {
         projectId = DEFAULT_PROJECT_ID
       }
     }
+    // v2.0 / F1 — Garde : interdit l'affectation d'un collab non membre du
+    // projet de la tâche (RG-GANTT-1200). Ne s'applique qu'aux activités —
+    // jalons et phases n'ont jamais de collab.
+    if (kind === 'task') {
+      ensureCollabIsMember(db, input.collaborator_id ?? null, projectId)
+    }
     // v1.24 — SNET : on applique la contrainte « ne doit pas démarrer avant le »
     // en dernière étape, après que la cascade prédécesseur a déjà fixé
     // {startDate, endDate}. La règle « plus tardif gagne » est ainsi respectée.
+    // v2.0 — La charge devient la source de vérité : on résout d'abord
+    // {charge_jours, end_date} via resolveChargeAndEnd, PUIS on applique SNET
+    // qui pourra repousser start (et l'end suivra en préservant la charge).
+    // v2.0 / F2 — On passe `project_id` et `collaborator_id` dans le `next`
+    // virtuel pour que resolveChargeAndEnd consomme la capacité allouée
+    // (allocations %) plutôt que les seuls jours ouvrés bruts.
+    const resolved = resolveChargeAndEnd(
+      {
+        kind,
+        start_date: startDate,
+        end_date: endDate,
+        charge_jours: null,
+        project_id: projectId,
+        collaborator_id:
+          kind === 'task' ? (input.collaborator_id ?? null) : null,
+      },
+      input,
+      db,
+    )
     const draft = {
       kind,
       start_date: startDate,
-      end_date: endDate,
+      end_date: resolved.end_date,
+      charge_jours: resolved.charge_jours,
+      project_id: projectId,
+      collaborator_id: kind === 'task' ? (input.collaborator_id ?? null) : null,
       not_before_date: normalizeNotBeforeDate(input.not_before_date, kind),
     }
-    enforceNotBeforeDate(draft)
+    enforceNotBeforeDate(draft, db)
 
     db.prepare(
       `INSERT INTO tasks
         (id, name, kind, start_date, end_date, progress,
          collaborator_id, color, parent_id, predecessor_id,
-         predecessor_lag, priority, not_before_date, position, project_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         predecessor_lag, priority, not_before_date, charge_jours, position, project_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.id,
       input.name,
@@ -1518,6 +2328,8 @@ export function createTask(db, input) {
       normalizePriority(input.priority, kind),
       // v1.24 — SNET : valeur saisie ou null si phase / format invalide.
       draft.not_before_date,
+      // v2.0 — Charge stockée en source de vérité. Null pour jalons/phases.
+      draft.charge_jours,
       position,
       projectId,
     )
@@ -1598,16 +2410,33 @@ export function updateTask(db, id, patch) {
       next.not_before_date,
       next.kind,
     )
+    // v2.0 / F1 — Garde : interdit l'affectation d'un collab non membre du
+    // projet de la tâche (RG-GANTT-1200). Ne s'applique qu'aux activités —
+    // jalons et phases viennent d'être forcés à `collaborator_id = null`.
+    if (next.kind === 'task') {
+      ensureCollabIsMember(db, next.collaborator_id, next.project_id)
+    }
+    // v2.0 — Résolution charge_jours / end_date AVANT l'enforcement SNET pour
+    // que ce dernier puisse repousser start tout en préservant la nouvelle
+    // charge calculée. Politique gérée par resolveChargeAndEnd :
+    //   • charge_jours explicite → end = start + charge,
+    //   • end_date explicite (drag bord droit) → charge back-dérivée,
+    //   • sinon → charge existante conservée, end recalculée depuis start.
+    // v2.0 / F2 — `db` est transmis pour que le recalcul consomme la
+    // capacité allouée du collab (allocations %) jour par jour.
+    const resolved = resolveChargeAndEnd(next, patch, db)
+    next.charge_jours = resolved.charge_jours
+    next.end_date = resolved.end_date
     // v1.24 — Applique la contrainte SNET en dernière étape (la borne basse
     // prédécesseur a déjà été réconciliée juste avant). Si SNET > borne basse
     // actuelle, start (et end) sont relevés en respectant la charge en jours ouvrés.
-    enforceNotBeforeDate(next)
+    enforceNotBeforeDate(next, db)
 
     db.prepare(
       `UPDATE tasks
          SET name = ?, kind = ?, start_date = ?, end_date = ?, progress = ?,
              collaborator_id = ?, color = ?, parent_id = ?,
-             priority = ?, not_before_date = ?
+             priority = ?, not_before_date = ?, charge_jours = ?
          WHERE id = ?`,
     ).run(
       next.name,
@@ -1620,6 +2449,7 @@ export function updateTask(db, id, patch) {
       next.parent_id,
       next.priority,
       next.not_before_date,
+      next.charge_jours,
       id,
     )
     // v1.6 — Si la tâche modifiée est elle-même une phase, on recalcule ses

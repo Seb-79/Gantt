@@ -76,6 +76,13 @@ CREATE TABLE IF NOT EXISTS tasks (
   -- contrainte. Applicable aux activités et aux jalons uniquement (jamais
   -- aux phases dont les dates sont la synthèse des enfants).
   not_before_date TEXT,
+  -- v2.0 — Charge en jours ouvrés (≥ 1). Source de vérité pour les activités :
+  -- `end_date` est désormais une valeur DÉRIVÉE (= addWorkingDays(start, charge)).
+  -- Stockée pour optimiser les requêtes/index et garder la rétro-compatibilité
+  -- des SELECT existants (les colonnes start_date / end_date restent inchangées,
+  -- elles ne sont plus que des caches recomputés à chaque mutation).
+  -- NULL pour jalons et phases (qui n'ont pas de charge propre).
+  charge_jours    INTEGER,
   position        INTEGER NOT NULL,
   -- v1.8 — project_id est ajouté à la table tasks pour les bases neuves ;
   -- pour les bases anciennes, c'est `ensureTaskColumns()` (db/index.js) qui
@@ -119,3 +126,55 @@ CREATE TABLE IF NOT EXISTS task_predecessors (
 );
 CREATE INDEX IF NOT EXISTS idx_task_predecessors_pred
   ON task_predecessors(predecessor_id);
+
+-- =============================================================================
+-- v2.0 — F1 : Memberships projet ↔ collaborateur.
+-- Un collaborateur doit être MEMBRE d'un projet pour pouvoir être affecté à
+-- une de ses activités. Cette table porte la liste des memberships, indé-
+-- pendamment de toute notion de pourcentage d'allocation (qui viendra en F2
+-- via la table `member_allocations`).
+--
+-- Cascades :
+--   • Suppression d'un projet → ses memberships sont retirées (un projet
+--     supprimé n'a plus d'équipe).
+--   • Suppression d'un collaborateur → ses memberships sont retirées (un
+--     collab supprimé n'est plus membre de rien).
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS project_members (
+  project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  collaborator_id TEXT NOT NULL REFERENCES collaborators(id) ON DELETE CASCADE,
+  PRIMARY KEY (project_id, collaborator_id)
+);
+CREATE INDEX IF NOT EXISTS idx_project_members_collab
+  ON project_members(collaborator_id);
+
+-- =============================================================================
+-- v2.0 / F2 — Périodes d'allocation % d'un membre sur un projet.
+-- Chaque ligne = « le collab C est affecté à `allocation_pct` % de son temps
+-- au projet P entre `start_date` et `end_date` (inclus) ».
+--
+-- Règles métier (validées en DAL + Zod) :
+--   • `allocation_pct ∈ {25, 50, 75, 100}` (4 paliers fixés avec l'utilisateur).
+--   • Pas de chevauchement temporel sur la même paire (project_id, collab_id) :
+--     deux périodes ne peuvent pas se croiser même partiellement. Le DAL
+--     rejette toute insertion qui violerait cet invariant.
+--   • Hors période → 0 % de capacité (= collab non dispo ce jour-là sur le
+--     projet). Le moteur `computeEndFromCharge` étire alors la fin de tâche.
+--
+-- L'id est un surrogate TEXT pour permettre DELETE/UPDATE ciblé depuis l'UI.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS member_allocations (
+  id              TEXT PRIMARY KEY,
+  project_id      TEXT NOT NULL,
+  collaborator_id TEXT NOT NULL,
+  start_date      TEXT NOT NULL,            -- 'YYYY-MM-DD' inclus
+  end_date        TEXT NOT NULL,            -- 'YYYY-MM-DD' inclus
+  allocation_pct  INTEGER NOT NULL,         -- 25 | 50 | 75 | 100
+  -- FK composite vers project_members : une allocation n'existe que si la
+  -- membership existe ; supprimer la membership cascade les allocations.
+  FOREIGN KEY (project_id, collaborator_id)
+    REFERENCES project_members(project_id, collaborator_id)
+    ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_member_allocations_lookup
+  ON member_allocations(project_id, collaborator_id);

@@ -1,8 +1,8 @@
 # Règles de gestion — Application Gantt
 
-**Version applicative couverte : v1.24**
-**Date de dernière mise à jour : 2026-05-18**
-**Couverture de test : 93 / 93 (100 %)**
+**Version applicative couverte : v2.0 (F0 — charge stockée + F1 — memberships + F2 — allocations %)**
+**Date de dernière mise à jour : 2026-05-19**
+**Couverture de test : 117 / 117 (100 %)**
 
 Ce document est le **référentiel vivant** des règles de gestion métier de
 l'application. Chaque règle porte un identifiant stable de la forme
@@ -80,10 +80,26 @@ Chaque tâche a une couleur effective :
 
 ### RG-GANTT-0100
 
-Une activité a une **charge** exprimée en jours ouvrés (≥ 1) qui
-détermine sa date de fin à partir de sa date de début.
+Une activité a une **charge** exprimée en jours ouvrés (≥ 1). Depuis la
+v2.0, la charge est **stockée explicitement** (colonne `charge_jours`) et
+constitue la **source de vérité** de la durée : la date de fin est
+**dérivée** de `(date de début + charge en jours ouvrés)`. Les week-ends
+et les jours fériés français sont sautés pendant la consommation.
 
-**Tests :** `utils.test.ts` → bloc `addWorkingDays (v1.9)` (8 cas dont « charge=3 lundi → fin mercredi », « charge=5 lundi → fin vendredi », « charge=6 lundi → fin lundi suivant »).
+À la création ou à la modification, si la charge n'est pas fournie mais
+qu'une date de fin l'est, le système **back-dérive** la charge depuis
+l'écart courant en jours ouvrés. Si les deux sont fournies, la charge
+gagne. Cette politique permet au drag du bord droit d'une barre dans le
+planning (qui envoie `end_date`) d'éditer implicitement la charge.
+
+**Tests :** `utils.test.ts` → bloc `addWorkingDays (v1.9)` (8 cas) ;
+bloc `computeEndFromCharge (v2.0)` (3 cas dont « saute les fériés FR ») ;
+`db/index.test.js` → « v2.0 / RG-GANTT-0100 — activité créée sans charge_jours :
+charge back-dérivée » ; « charge_jours explicite à la création : end recalculée » ;
+« charge_jours saute les fériés français » ; « patch charge_jours : end_date
+recalculée » ; « patch end_date seul : charge back-dérivée (drag bord droit) » ;
+« patch start_date seul : charge préservée, end suit » ; « migration : charge_jours
+initialisée depuis l'écart courant ».
 
 ### RG-GANTT-0101
 
@@ -134,9 +150,11 @@ Un jalon est un point ponctuel. Sa date de fin est toujours identique
 
 ### RG-GANTT-0201
 
-Un jalon n'a pas de charge : sa durée visuelle est de zéro jour.
+Un jalon n'a pas de charge : sa durée visuelle est de zéro jour. Depuis
+la v2.0, sa colonne `charge_jours` est toujours NULL en base — même si
+un client fournit une valeur, elle est ignorée.
 
-**Tests :** `db/index.test.js` → « v1.24 / RG-GANTT-0201 — jalon : impossible de lui donner une charge ».
+**Tests :** `db/index.test.js` → « v1.24 / RG-GANTT-0201 — jalon : impossible de lui donner une charge » ; « v2.0 / RG-GANTT-0201 — jalon : charge_jours forcée à NULL même si fournie ».
 
 ### RG-GANTT-0202
 
@@ -188,9 +206,11 @@ précoce** parmi celles de ses enfants directs, et la date de fin la
 ### RG-GANTT-0301
 
 Une phase sans enfant conserve ses dates inchangées (aucun
-écrasement).
+écrasement). Depuis la v2.0, sa colonne `charge_jours` est toujours
+NULL (une phase est une synthèse, pas une activité avec une charge
+propre).
 
-**Tests :** `db/index.test.js` → « v1.24 / RG-GANTT-0301 — phase sans enfant : ses dates ne sont pas écrasées ».
+**Tests :** `db/index.test.js` → « v1.24 / RG-GANTT-0301 — phase sans enfant : ses dates ne sont pas écrasées » ; « v2.0 / RG-GANTT-0301 — phase : charge_jours toujours NULL ».
 
 ### RG-GANTT-0302
 
@@ -795,20 +815,186 @@ mais reportées à une version ultérieure :
 
 ---
 
+## Famille 12bis — Memberships projet ↔ collaborateur (v2.0 / F1)
+
+### RG-GANTT-1200
+
+L'affectation d'un collaborateur à une activité ne peut se faire que si
+celui-ci est **membre** du projet de l'activité. Côté **UI**, la dropdown
+de sélection du collaborateur dans le formulaire de tâche est filtrée
+aux seuls membres du projet courant. Côté **DAL**, si une affectation
+arrive via API directe avec un collab non-membre, la membership est
+créée automatiquement (auto-heal) — la cohérence du modèle est ainsi
+préservée même hors UI.
+
+**Tests :** `db/index.test.js` → « v2.0 / RG-GANTT-1200 — createTask avec collab non-membre auto-ajoute la membership ».
+
+### RG-GANTT-1201
+
+Un collaborateur peut être ajouté à un projet via `addProjectMember`.
+L'opération est **idempotente** : un second appel sur la même paire ne
+crée pas de doublon et n'incrémente pas la version. Le projet et le
+collaborateur doivent exister, sinon erreur typée
+(`PROJECT_NOT_FOUND` / `COLLABORATOR_NOT_FOUND`).
+
+**Tests :** `db/index.test.js` → « addProjectMember : idempotent + bump version » ; « addProjectMember rejette un projet inconnu » ; « addProjectMember rejette un collab inconnu ».
+
+### RG-GANTT-1202
+
+À la **migration v2.0**, pour chaque couple (projet, collaborateur)
+distinct présent dans la table `tasks` d'une base v1.x, une membership
+est automatiquement créée. Stratégie « option α » : aucune affectation
+existante n'est cassée au premier boot v2.0.
+
+**Tests :** `db/index.test.js` → « migration : auto-pop des memberships depuis les tâches ».
+
+### RG-GANTT-1203
+
+`GET /api/state` expose la liste `current_project_members` : ids des
+collaborateurs membres du projet courant. Cette liste alimente la
+dropdown filtrée du `TaskEditor` (cf. RG-GANTT-1200) et l'onglet
+« Affectation projet ».
+
+**Tests :** `db/index.test.js` → « getFullState expose current_project_members » ;
+`server/app.test.js` → « v2.0 / F1 — GET /api/state.current_project_members ».
+
+### RG-GANTT-1204
+
+La suppression d'un projet retire en cascade toutes ses memberships
+(FK `ON DELETE CASCADE` sur `project_members.project_id`).
+
+**Tests :** `db/index.test.js` → « suppression projet : cascade sur les memberships ».
+
+### RG-GANTT-1205
+
+La suppression d'un collaborateur retire en cascade toutes ses
+memberships, quel que soit le nombre de projets concernés.
+
+**Tests :** `db/index.test.js` → « suppression collab : cascade sur les memberships ».
+
+---
+
+## Famille 13 — Allocations % (v2.0 / F2)
+
+Périodes de capacité d'un membre sur un projet. Chaque période = un %
+(parmi 25/50/75/100) sur un intervalle de dates. Le moteur consomme cette
+capacité jour par jour pour calculer la date de fin d'une activité.
+
+### RG-GANTT-1300
+
+L'ajout d'une période d'allocation impose que le collaborateur soit
+**déjà membre** du projet. Sinon, l'opération est refusée (`NOT_PROJECT_MEMBER`).
+Pour les routes API `POST /api/projects/:id/members/.../allocations`, le
+serveur renvoie 400.
+
+**Tests :** `db/index.test.js` → « addMemberAllocation : ajoute une période propre » ; « non membre rejeté ».
+
+### RG-GANTT-1301
+
+Pour un même couple `(projet, collaborateur)`, deux périodes ne peuvent
+**pas se chevaucher**, même partiellement. Le DAL rejette toute
+insertion qui violerait cet invariant (`ALLOCATION_OVERLAP`). Des
+périodes contiguës (par exemple `01-15` puis `16-30`) sont autorisées.
+
+**Tests :** `db/index.test.js` → « chevauchement rejeté » ; « périodes contiguës sans chevauchement OK ».
+
+### RG-GANTT-1302
+
+Le pourcentage d'allocation est restreint à `{25, 50, 75, 100}`. Toute
+autre valeur est rejetée par Zod côté API et par le DAL côté serveur
+(`INVALID_ALLOCATION_PCT`).
+
+**Tests :** `db/index.test.js` → « % invalide rejeté ».
+
+### RG-GANTT-1303
+
+Une période est supprimable par son `id` via le DAL et l'API
+`DELETE /api/allocations/:id`. La suppression est traçable (changement
+de version).
+
+**Tests :** `db/index.test.js` → « deleteMemberAllocation : retire par id ».
+
+### RG-GANTT-1304
+
+La suppression d'un membership (collab ou projet) supprime toutes les
+allocations correspondantes en cascade (`ON DELETE CASCADE`).
+
+**Tests :** `db/index.test.js` → « suppression collab : cascade sur allocations ».
+
+### RG-GANTT-1305
+
+Au boot v2.0, pour chaque membership qui n'a aucune allocation existante,
+une période 100 % est auto-créée :
+
+- couvrant `[MIN(task.start_date), MAX(task.end_date)]` des tâches existantes
+  du couple (projet, collab),
+- à défaut, sur une plage par défaut très large.
+
+De même, `addProjectMember` insère automatiquement une allocation 100 %
+par défaut (`2020-01-01 → 2099-12-31`) pour éviter qu'un nouveau membre
+n'ait 0 % de capacité.
+
+**Tests :** `db/index.test.js` → « migration auto-pop : allocation 100 % par défaut ».
+
+### RG-GANTT-1310
+
+La date de fin d'une activité affectée à un collaborateur est calculée
+en consommant l'**allocation quotidienne** du collab sur le projet :
+chaque jour ouvré couvert par une période contribue `pct/100` à la
+charge totale. La fin est le **dernier jour ayant contribué**.
+
+Exemple : charge de 5 jours @ 50 % depuis lundi 08/06/2026 → fin
+vendredi 19/06/2026 (10 jours ouvrés effectifs, 0,5 j-personne consommé
+chacun, total 5,0).
+
+**Tests :** `utils.test.ts` → « alloc 100 % sur toute la période : fin identique à F0 » ; « alloc 50 % : charge 5 j → 10 jours ouvrés » ; `db/index.test.js` → « charge 5j @ 50 % → 10 jours ouvrés ».
+
+### RG-GANTT-1311
+
+Une activité **sans collaborateur affecté** est calculée comme en F0 (1
+j-personne par jour ouvré). L'allocation n'est consommée que lorsqu'un
+collab est explicitement affecté.
+
+**Tests :** `utils.test.ts` → « ctx sans collab : fallback F0 » ; `db/index.test.js` → « tâche sans collab : end = addWorkingDays (F0) ».
+
+### RG-GANTT-1312
+
+Auto-heal côté DAL : créer une tâche affectée à un collab non encore
+membre du projet crée automatiquement (1) la membership et (2) une
+allocation 100 % par défaut. La contrainte « doit être membre » reste
+portée par l'UI (filtrage strict de la dropdown du TaskEditor).
+
+**Tests :** `db/index.test.js` → « auto-heal : membership + allocation 100 % ».
+
+### RG-GANTT-1313
+
+`GET /api/state` expose la liste `member_allocations` (toutes les périodes
+du projet courant, toutes paires confondues). Consommée côté client par :
+le moteur de calcul de fin (`computeEndFromCharge`), le plan de charge
+pondéré (`computeWorkload`), le replan (`replanTasks`), et l'UI
+« Affectation projet ».
+
+**Tests :** `db/index.test.js` → « getFullState : member_allocations exposé ».
+
+---
+
 ## Synthèse de couverture
 
-| Famille                     | Règles |          Couverture |
-| --------------------------- | -----: | ------------------: |
-| 1 — Communes                |      7 |               7 / 7 |
-| 2 — Activités               |      6 |               6 / 6 |
-| 3 — Jalons                  |      7 |               7 / 7 |
-| 4 — Phases                  |     10 |             10 / 10 |
-| 5 — Prédécesseur et délai   |     10 |             10 / 10 |
-| 6 — Priorité                |      5 |               5 / 5 |
-| 7 — Surcharge collaborateur |      7 |               7 / 7 |
-| 8 — SNET                    |     10 |             10 / 10 |
-| 9 — Cohérence               |      8 |               8 / 8 |
-| 10 — Replanification        |     10 |             10 / 10 |
-| 11 — Calendrier             |      5 |               5 / 5 |
-| 12 — Hiérarchie / Projets   |      8 |               8 / 8 |
-| **Total**                   | **93** | **93 / 93 (100 %)** |
+| Famille                       |  Règles |            Couverture |
+| ----------------------------- | ------: | --------------------: |
+| 1 — Communes                  |       7 |                 7 / 7 |
+| 2 — Activités                 |       6 |                 6 / 6 |
+| 3 — Jalons                    |       7 |                 7 / 7 |
+| 4 — Phases                    |      10 |               10 / 10 |
+| 5 — Prédécesseur et délai     |      10 |               10 / 10 |
+| 6 — Priorité                  |       5 |                 5 / 5 |
+| 7 — Surcharge collaborateur   |       7 |                 7 / 7 |
+| 8 — SNET                      |      10 |               10 / 10 |
+| 9 — Cohérence                 |       8 |                 8 / 8 |
+| 10 — Replanification          |      10 |               10 / 10 |
+| 11 — Calendrier               |       5 |                 5 / 5 |
+| 12 — Hiérarchie / Projets     |       8 |                 8 / 8 |
+| 12bis — Memberships (v2.0/F1) |       6 |                 6 / 6 |
+| 13 — Allocations % (v2.0/F2)  |      10 |               10 / 10 |
+| 14 — Charge stockée (v2.0/F0) |       5 |                 5 / 5 |
+| **Total**                     | **114** | **114 / 114 (100 %)** |

@@ -17,6 +17,7 @@ import GanttChart from './components/GanttChart'
 import TaskEditor from './components/TaskEditor'
 import WorkloadChart from './components/WorkloadChart'
 import CoherenceAlert from './components/CoherenceAlert'
+import ProjectMembers from './components/ProjectMembers'
 import {
   checkCoherence,
   clampDayWidth,
@@ -59,8 +60,11 @@ const LS_HIGHLIGHT_UNDERLOAD = 'gantt.highlightUnderload'
 /** v1.20 — Clé localStorage pour mémoriser les phases repliées (JSON: string[]). */
 const LS_COLLAPSED_PHASES = 'gantt.collapsedPhases'
 
-/** v1.16 — Vues disponibles dans l'app : planning ou plan de charge. */
-type View = 'gantt' | 'workload'
+/** v1.16 / v2.0 — Vues disponibles dans l'app :
+ *    • 'gantt'    → planning (par défaut)
+ *    • 'workload' → plan de charge par collaborateur
+ *    • 'members'  → v2.0 / F1 : affectation des collaborateurs au projet */
+type View = 'gantt' | 'workload' | 'members'
 
 /** État réseau pour le badge en haut à droite. */
 type NetStatus = 'idle' | 'loading' | 'ok' | 'error'
@@ -160,9 +164,13 @@ export default function App() {
    * « workload » pour afficher le plan de charge par collaborateur.
    * Persisté en localStorage pour revenir sur la même vue à l'ouverture.
    */
-  const [view, setView] = useState<View>(() =>
-    lsGet(LS_VIEW) === 'workload' ? 'workload' : 'gantt',
-  )
+  const [view, setView] = useState<View>(() => {
+    // v2.0 / F1 — Ajout de la vue 'members'. On valide explicitement la valeur
+    // lue dans localStorage pour éviter qu'une valeur exotique ne casse l'UI.
+    const stored = lsGet(LS_VIEW)
+    if (stored === 'workload' || stored === 'members') return stored
+    return 'gantt'
+  })
   /**
    * v1.17 — Met en évidence les sous-charges (< 1 jour) en jaune sur la
    * vue Plan de charge, de manière symétrique au rouge appliqué aux
@@ -351,6 +359,57 @@ export default function App() {
     mutate('POST', '/api/reset')
   }
 
+  /**
+   * v2.0 / F1 — Ajoute un collaborateur à l'équipe du projet courant. Aucun
+   * effet si la base n'a pas encore de projet (cas tout début, on évite un
+   * POST en 400). L'API est idempotente : un re-clic sur un collab déjà
+   * membre ne fait rien (et n'incrémente pas la version).
+   */
+  const handleAddProjectMember = useCallback(
+    (collaboratorId: string) => {
+      if (!currentProjectId) return
+      mutate(
+        'POST',
+        `/api/projects/${encodeURIComponent(currentProjectId)}/members`,
+        { collaborator_id: collaboratorId },
+      )
+    },
+    [currentProjectId, mutate],
+  )
+
+  /**
+   * v2.0 / F2 — Ajoute une période d'allocation pour un membre du projet
+   * courant. Le serveur valide les invariants (% ∈ {25,50,75,100}, pas de
+   * chevauchement, membership existante) et renvoie 400 en cas de violation
+   * — le helper `mutate` affichera l'erreur dans une alert.
+   */
+  const handleAddMemberAllocation = useCallback(
+    (
+      collaboratorId: string,
+      body: { start_date: string; end_date: string; allocation_pct: number },
+    ) => {
+      if (!currentProjectId) return
+      mutate(
+        'POST',
+        `/api/projects/${encodeURIComponent(currentProjectId)}/members/${encodeURIComponent(collaboratorId)}/allocations`,
+        body,
+      )
+    },
+    [currentProjectId, mutate],
+  )
+
+  /**
+   * v2.0 / F2 — Supprime une période d'allocation par son id. 404 silencieux
+   * (l'UI se rafraîchit de toute façon via fetchState).
+   */
+  const handleDeleteMemberAllocation = useCallback(
+    (allocationId: string) => {
+      if (!confirm('Supprimer cette période d’allocation ?')) return
+      mutate('DELETE', `/api/allocations/${encodeURIComponent(allocationId)}`)
+    },
+    [mutate],
+  )
+
   /** Capture le bloc Gantt en PNG et déclenche le téléchargement. */
   const handleScreenshot = async () => {
     if (!ganttRef.current) return
@@ -455,7 +514,13 @@ export default function App() {
         const res = await fetch(url)
         if (!res.ok) return
         const data: GanttState = await res.json()
-        const moves = replanTasks(sortTasksHierarchically(data.tasks))
+        // v2.0 / F2 — Replan automatique post-save : consomme aussi la
+        // capacité allouée pour rester cohérent avec le replan manuel.
+        const moves = replanTasks(
+          sortTasksHierarchically(data.tasks),
+          undefined,
+          data.member_allocations,
+        )
         await submitReplanMoves(moves)
       } catch (err) {
         console.error('[auto-replan]', err)
@@ -684,13 +749,17 @@ export default function App() {
    */
   const handleOpenReplan = (scope: 'full' | 'partial' = 'full') => {
     if (!state) return
+    // v2.0 / F2 — Le replan consomme la capacité quotidienne réelle de chaque
+    // collab : on lui passe `member_allocations` du projet courant.
+    const allocs = state.member_allocations
     const moves =
       scope === 'partial'
         ? replanTasks(
             orderedTasks,
             concernedTaskIds(coherenceIssues, orderedTasks),
+            allocs,
           )
-        : replanTasks(orderedTasks)
+        : replanTasks(orderedTasks, undefined, allocs)
     if (moves.length === 0) {
       alert(
         scope === 'partial'
@@ -990,7 +1059,10 @@ export default function App() {
                 onReplanPartial={() => handleOpenReplan('partial')}
               />
             )}
-            {view === 'gantt' ? (
+            {/* v2.0 / F1 — Trois vues désormais : 'gantt', 'workload' ou
+                'members'. On bascule explicitement (les sonarjs ternaires
+                imbriqués deviendraient ingérables sinon). */}
+            {view === 'gantt' && (
               <GanttChart
                 windowStart={startIso}
                 windowEnd={endIso}
@@ -1009,15 +1081,29 @@ export default function App() {
                 collapsedPhases={collapsedPhases}
                 onToggleCollapse={toggleCollapse}
               />
-            ) : (
+            )}
+            {view === 'workload' && (
               <WorkloadChart
                 windowStart={startIso}
                 windowEnd={endIso}
                 dayWidth={dayWidth}
                 tasks={orderedTasks}
                 collaborators={state.collaborators}
+                memberAllocations={state.member_allocations}
                 highlightUnderload={highlightUnderload}
                 onShiftWindow={shiftWindow}
+              />
+            )}
+            {view === 'members' && (
+              <ProjectMembers
+                collaborators={state.collaborators}
+                memberIds={state.current_project_members}
+                memberAllocations={state.member_allocations}
+                projectName={currentProject?.name ?? null}
+                projectId={state.current_project_id}
+                onAddMember={handleAddProjectMember}
+                onAddAllocation={handleAddMemberAllocation}
+                onDeleteAllocation={handleDeleteMemberAllocation}
               />
             )}
           </div>
@@ -1056,6 +1142,9 @@ export default function App() {
               : undefined
           }
           collaborators={state.collaborators}
+          memberIds={state.current_project_members}
+          memberAllocations={state.member_allocations}
+          projectId={state.current_project_id}
           tasks={orderedTasks}
           onSave={handleSaveTask}
           onClose={() => {
@@ -1151,6 +1240,22 @@ function ViewTabs({
         title="Vue plan de charge par collaborateur"
       >
         Charge
+      </button>
+      {/* v2.0 / F1 — Onglet « Affectation projet » : liste les collaborateurs
+          membres du projet courant et permet d'en ajouter. */}
+      <button
+        className={[
+          'h-7 px-2 text-xs font-medium border-l border-slate-300',
+          view === 'members'
+            ? 'bg-blue-100 text-blue-700'
+            : 'bg-white text-slate-700 hover:bg-slate-100',
+        ].join(' ')}
+        onClick={() => onChange('members')}
+        role="tab"
+        aria-selected={view === 'members'}
+        title="Affecter les collaborateurs au projet"
+      >
+        Affectation
       </button>
     </div>
   )

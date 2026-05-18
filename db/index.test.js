@@ -4,15 +4,20 @@
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
+  addMemberAllocation,
+  addProjectMember,
   createCollaborator,
   createTask,
   deleteCollaborator,
+  deleteMemberAllocation,
   deleteTask,
   DEMO_STATE,
   getFullState,
   getVersion,
   initDb,
   isDatabaseEmpty,
+  listMemberAllocations,
+  listProjectMembers,
   moveTask,
   replaceFullState,
   resetToDemo,
@@ -60,6 +65,63 @@ describe('initDb', () => {
       .all()
       .map((c) => c.name)
     expect(cols).toContain('predecessor_id')
+    db.close()
+  })
+
+  // v2.0 — Migration ensureChargeColumn : base ancienne SANS charge_jours
+  // contenant des activités → la colonne est ajoutée et chaque activité
+  // reçoit une charge_jours back-dérivée de son écart courant. Les jalons
+  // restent à NULL (pas de notion de charge).
+  it('v2.0 / RG-GANTT-0100 — migration : charge_jours initialisée depuis l`écart courant', async () => {
+    const Database = (await import('better-sqlite3')).default
+    const tmpFile = `/tmp/gantt-charge-migration-test-${Date.now()}.db`
+    const old = new Database(tmpFile)
+    // Base v1.x : schéma complet SAUF charge_jours.
+    old.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE collaborators (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        color TEXT NOT NULL DEFAULT '#3b82f6', position INTEGER NOT NULL
+      );
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, position INTEGER NOT NULL
+      );
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'task',
+        start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+        progress INTEGER NOT NULL DEFAULT 0,
+        collaborator_id TEXT, color TEXT,
+        parent_id TEXT, predecessor_id TEXT,
+        predecessor_lag INTEGER NOT NULL DEFAULT 0,
+        priority INTEGER, not_before_date TEXT,
+        position INTEGER NOT NULL, project_id TEXT
+      );
+      INSERT INTO projects(id, name, position) VALUES ('p1', 'P', 0);
+      -- Une activité de 5 jours ouvrés (lundi → vendredi).
+      INSERT INTO tasks(id, name, kind, start_date, end_date, progress,
+                        position, project_id, priority)
+        VALUES ('t_act', 'Act', 'task', '2026-05-18', '2026-05-22', 0, 0, 'p1', 3);
+      -- Un jalon (start == end).
+      INSERT INTO tasks(id, name, kind, start_date, end_date, progress,
+                        position, project_id)
+        VALUES ('m_jal', 'Jal', 'milestone', '2026-05-20', '2026-05-20', 0, 1, 'p1');
+      INSERT INTO meta(key, value) VALUES ('version', '10');
+    `)
+    old.close()
+
+    const db = initDb(tmpFile)
+    const cols = db
+      .prepare(`PRAGMA table_info(tasks)`)
+      .all()
+      .map((c) => c.name)
+    expect(cols).toContain('charge_jours')
+    // Activité → charge_jours back-dérivée (5 jours ouvrés).
+    const act = db.prepare(`SELECT * FROM tasks WHERE id = 't_act'`).get()
+    expect(act.charge_jours).toBe(5)
+    // Jalon → charge_jours toujours NULL.
+    const jal = db.prepare(`SELECT * FROM tasks WHERE id = 'm_jal'`).get()
+    expect(jal.charge_jours).toBeNull()
     db.close()
   })
 })
@@ -245,6 +307,73 @@ describe('createTask', () => {
     })
     expect(r.task.collaborator_id).toBeNull()
   })
+
+  // v2.0 — RG-GANTT-0100 (charge stockée) : à la création d'une activité avec
+  // un `end_date` mais pas de `charge_jours`, le DAL back-dérive la charge
+  // depuis l'écart en jours ouvrés. Lundi → vendredi = 5 jours ouvrés.
+  it('v2.0 / RG-GANTT-0100 — activité créée sans charge_jours : charge back-dérivée depuis (start, end)', () => {
+    const r = createTask(db, {
+      id: 't_back',
+      name: 'Back-dérivation',
+      start_date: '2026-05-18', // lundi
+      end_date: '2026-05-22', // vendredi de la même semaine
+    })
+    expect(r.task.charge_jours).toBe(5)
+    expect(r.task.end_date).toBe('2026-05-22')
+  })
+
+  // v2.0 — RG-GANTT-0100 : si `charge_jours` est fournie explicitement, elle
+  // gagne sur `end_date`. La fin est recalculée depuis (start + charge).
+  it('v2.0 / RG-GANTT-0100 — charge_jours explicite à la création : end recalculée', () => {
+    const r = createTask(db, {
+      id: 't_charge',
+      name: 'Charge explicite',
+      start_date: '2026-05-18', // lundi
+      end_date: '2026-05-18', // ignoré
+      charge_jours: 5,
+    })
+    expect(r.task.charge_jours).toBe(5)
+    expect(r.task.end_date).toBe('2026-05-22') // lundi + 5 ouvrés = vendredi
+  })
+
+  // v2.0 — La charge saute week-ends ET fériés FR (1er mai 2026 = vendredi).
+  // Du jeudi 30/04 + 3 jours ouvrés : 30/04, 4/05, 5/05 (1er mai férié sauté).
+  it('v2.0 / RG-GANTT-0100 — charge_jours saute les fériés français', () => {
+    const r = createTask(db, {
+      id: 't_ferie',
+      name: 'Charge avec férié',
+      start_date: '2026-04-30', // jeudi
+      charge_jours: 3,
+    })
+    // 30/04 (J1) → 01/05 férié → 04/05 lundi (J2) → 05/05 mardi (J3)
+    expect(r.task.end_date).toBe('2026-05-05')
+  })
+
+  // v2.0 — Jalon : charge_jours est toujours NULL (un jalon est ponctuel).
+  it('v2.0 / RG-GANTT-0201 — jalon : charge_jours forcée à NULL même si fournie', () => {
+    const r = createTask(db, {
+      id: 'm_charge',
+      name: 'Jalon avec charge',
+      kind: 'milestone',
+      start_date: '2026-05-18',
+      charge_jours: 7,
+    })
+    expect(r.task.charge_jours).toBeNull()
+    expect(r.task.end_date).toBe('2026-05-18')
+  })
+
+  // v2.0 — Phase : charge_jours est toujours NULL (dates dérivées des enfants).
+  it('v2.0 / RG-GANTT-0301 — phase : charge_jours toujours NULL', () => {
+    const r = createTask(db, {
+      id: 'p_charge',
+      name: 'Phase',
+      kind: 'phase',
+      start_date: '2026-05-18',
+      end_date: '2026-05-22',
+      charge_jours: 99,
+    })
+    expect(r.task.charge_jours).toBeNull()
+  })
 })
 
 describe('updateTask', () => {
@@ -391,6 +520,46 @@ describe('updateTask', () => {
     expect(getFullState(db).tasks[0].collaborator_id).toBe('c1')
     updateTask(db, 't1', { kind: 'milestone' })
     expect(getFullState(db).tasks[0].collaborator_id).toBeNull()
+  })
+
+  // v2.0 — Patch charge_jours seule : end_date est recalculée depuis (start + charge).
+  it('v2.0 / RG-GANTT-0100 — patch charge_jours : end_date recalculée', () => {
+    // 't1' a été créé dans le beforeEach avec start=2026-05-01, end=2026-05-10.
+    // On force d'abord un start propre (lundi 18 mai) pour avoir un cas net.
+    updateTask(db, 't1', { start_date: '2026-05-18', charge_jours: 1 })
+    let t = getFullState(db).tasks.find((x) => x.id === 't1')
+    expect(t.start_date).toBe('2026-05-18')
+    expect(t.charge_jours).toBe(1)
+    expect(t.end_date).toBe('2026-05-18') // 1 jour ouvré = lundi seul
+
+    updateTask(db, 't1', { charge_jours: 5 })
+    t = getFullState(db).tasks.find((x) => x.id === 't1')
+    expect(t.charge_jours).toBe(5)
+    expect(t.end_date).toBe('2026-05-22') // lundi + 5 ouvrés = vendredi
+  })
+
+  // v2.0 — Patch end_date seul (simulation drag bord droit dans GanttChart,
+  // Q1 option a) : la charge est back-dérivée depuis (start, new end).
+  it('v2.0 / RG-GANTT-0100 — patch end_date seul : charge back-dérivée (drag bord droit)', () => {
+    updateTask(db, 't1', { start_date: '2026-05-18', charge_jours: 3 })
+    // Drag bord droit : on étire la fin de mercredi (J3) à vendredi (J5).
+    updateTask(db, 't1', { end_date: '2026-05-22' })
+    const t = getFullState(db).tasks.find((x) => x.id === 't1')
+    expect(t.end_date).toBe('2026-05-22')
+    expect(t.charge_jours).toBe(5) // back-dérivée
+  })
+
+  // v2.0 — Patch start_date seul (simulation drag horizontal "move") : la
+  // charge est PRÉSERVÉE et end_date est recalculée depuis le nouveau start.
+  // Semaine du 08/06 choisie volontairement (aucun férié FR mobile à proximité).
+  it('v2.0 / RG-GANTT-0100 — patch start_date seul : charge préservée, end suit', () => {
+    updateTask(db, 't1', { start_date: '2026-06-01', charge_jours: 5 })
+    // Drag horizontal d'une semaine vers la droite.
+    updateTask(db, 't1', { start_date: '2026-06-08' })
+    const t = getFullState(db).tasks.find((x) => x.id === 't1')
+    expect(t.start_date).toBe('2026-06-08')
+    expect(t.charge_jours).toBe(5) // charge inchangée
+    expect(t.end_date).toBe('2026-06-12') // 08/06 + 5 ouvrés = vendredi 12/06
   })
 })
 
@@ -1057,5 +1226,395 @@ describe('replaceFullState / resetToDemo', () => {
     replaceFullState(db, { collaborators: [], tasks: [] })
     expect(getFullState(db).tasks).toHaveLength(0)
     expect(getVersion(db)).toBeGreaterThan(v1)
+  })
+})
+
+// =============================================================================
+// v2.0 / F1 — Memberships projet ↔ collaborateur
+// =============================================================================
+// Couvre :
+//   • migration auto-population : les couples (projet, collab) déjà présents
+//     dans les tâches deviennent des memberships au boot ;
+//   • listProjectMembers : ne renvoie que les membres du projet demandé ;
+//   • addProjectMember : idempotent, valide projet/collab ;
+//   • ensureCollabIsMember (indirectement) : créer une tâche avec un collab
+//     non encore membre crée la membership à la volée.
+// =============================================================================
+
+describe('v2.0 / F1 — project_members', () => {
+  let db
+  beforeEach(() => {
+    db = initDb(':memory:')
+    // Seed minimal : 2 projets, 2 collabs.
+    db.prepare(`INSERT INTO projects(id, name, position) VALUES (?, ?, ?)`).run(
+      'pA',
+      'Projet A',
+      0,
+    )
+    db.prepare(`INSERT INTO projects(id, name, position) VALUES (?, ?, ?)`).run(
+      'pB',
+      'Projet B',
+      1,
+    )
+    createCollaborator(db, { id: 'c1', name: 'Léa', color: '#3b82f6' })
+    createCollaborator(db, { id: 'c2', name: 'Karim', color: '#10b981' })
+  })
+
+  // v2.0 / RG-GANTT-1201 — `listProjectMembers` renvoie un tableau vide pour
+  // un projet sans membre.
+  it('v2.0 / RG-GANTT-1201 — projet vide d`équipe : liste vide', () => {
+    expect(listProjectMembers(db, 'pA')).toEqual([])
+  })
+
+  // v2.0 / RG-GANTT-1201 — `addProjectMember` crée la membership et bump la
+  // version. Un 2e appel sur la même paire est idempotent (added=false).
+  it('v2.0 / RG-GANTT-1201 — addProjectMember : idempotent + bump version', () => {
+    const v0 = getVersion(db)
+    const r1 = addProjectMember(db, 'pA', 'c1')
+    expect(r1.added).toBe(true)
+    expect(r1.version).toBeGreaterThan(v0)
+    expect(listProjectMembers(db, 'pA')).toEqual(['c1'])
+    // 2e appel sur la même paire : no-op, version inchangée.
+    const r2 = addProjectMember(db, 'pA', 'c1')
+    expect(r2.added).toBe(false)
+    expect(r2.version).toBe(r1.version)
+  })
+
+  // v2.0 / RG-GANTT-1201 — projet inexistant → erreur typée.
+  it('v2.0 / RG-GANTT-1201 — addProjectMember rejette un projet inconnu', () => {
+    expect(() => addProjectMember(db, 'unknown', 'c1')).toThrow(/Project/)
+  })
+
+  // v2.0 / RG-GANTT-1201 — collab inexistant → erreur typée.
+  it('v2.0 / RG-GANTT-1201 — addProjectMember rejette un collab inconnu', () => {
+    expect(() => addProjectMember(db, 'pA', 'unknown')).toThrow(/Collaborator/)
+  })
+
+  // v2.0 / RG-GANTT-1200 — créer une tâche avec un collab non membre crée
+  // automatiquement la membership (auto-heal côté DAL ; l'UI filtre en amont).
+  it('v2.0 / RG-GANTT-1200 — createTask avec collab non-membre auto-ajoute la membership', () => {
+    expect(listProjectMembers(db, 'pA')).toEqual([])
+    createTask(db, {
+      id: 't1',
+      name: 'Tâche affectée',
+      start_date: '2026-06-08',
+      end_date: '2026-06-08',
+      collaborator_id: 'c1',
+      project_id: 'pA',
+    })
+    expect(listProjectMembers(db, 'pA')).toEqual(['c1'])
+    // Et la même tâche sur le projet B → membership distincte.
+    createTask(db, {
+      id: 't2',
+      name: 'Tâche projet B',
+      start_date: '2026-06-08',
+      end_date: '2026-06-08',
+      collaborator_id: 'c1',
+      project_id: 'pB',
+    })
+    expect(listProjectMembers(db, 'pB')).toEqual(['c1'])
+    // Les memberships du projet A n'ont pas bougé.
+    expect(listProjectMembers(db, 'pA')).toEqual(['c1'])
+  })
+
+  // v2.0 / RG-GANTT-1202 — la migration auto-pop : sur une base v1.x qui
+  // contient déjà des affectations, les memberships sont créées au boot.
+  it('v2.0 / RG-GANTT-1202 — migration : auto-pop des memberships depuis les tâches', async () => {
+    const Database = (await import('better-sqlite3')).default
+    const tmpFile = `/tmp/gantt-members-migration-${Date.now()}.db`
+    const old = new Database(tmpFile)
+    // Base v1.x complète (sans project_members) avec des tâches affectées.
+    old.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE collaborators (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        color TEXT NOT NULL DEFAULT '#3b82f6', position INTEGER NOT NULL
+      );
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, position INTEGER NOT NULL
+      );
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'task',
+        start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+        progress INTEGER NOT NULL DEFAULT 0,
+        collaborator_id TEXT, color TEXT,
+        parent_id TEXT, predecessor_id TEXT,
+        predecessor_lag INTEGER NOT NULL DEFAULT 0,
+        priority INTEGER, not_before_date TEXT,
+        position INTEGER NOT NULL, project_id TEXT
+      );
+      INSERT INTO collaborators(id, name, color, position) VALUES ('c1', 'L', '#3b82f6', 0);
+      INSERT INTO collaborators(id, name, color, position) VALUES ('c2', 'K', '#10b981', 1);
+      INSERT INTO projects(id, name, position) VALUES ('pA', 'A', 0);
+      INSERT INTO projects(id, name, position) VALUES ('pB', 'B', 1);
+      INSERT INTO tasks(id, name, kind, start_date, end_date, progress,
+                        collaborator_id, position, project_id, priority)
+        VALUES ('t1', 'T1', 'task', '2026-06-08', '2026-06-08', 0, 'c1', 0, 'pA', 3);
+      INSERT INTO tasks(id, name, kind, start_date, end_date, progress,
+                        collaborator_id, position, project_id, priority)
+        VALUES ('t2', 'T2', 'task', '2026-06-08', '2026-06-08', 0, 'c2', 1, 'pA', 3);
+      INSERT INTO tasks(id, name, kind, start_date, end_date, progress,
+                        collaborator_id, position, project_id, priority)
+        VALUES ('t3', 'T3', 'task', '2026-06-08', '2026-06-08', 0, 'c1', 2, 'pB', 3);
+      INSERT INTO meta(key, value) VALUES ('version', '20');
+    `)
+    old.close()
+
+    const fresh = initDb(tmpFile)
+    // Les memberships ont été auto-créées : (pA,c1), (pA,c2), (pB,c1).
+    expect(listProjectMembers(fresh, 'pA').sort()).toEqual(['c1', 'c2'])
+    expect(listProjectMembers(fresh, 'pB')).toEqual(['c1'])
+    fresh.close()
+  })
+
+  // v2.0 / RG-GANTT-1203 — getFullState renvoie `current_project_members`
+  // alignée avec le projet courant retourné par le serveur.
+  it('v2.0 / RG-GANTT-1203 — getFullState expose current_project_members', () => {
+    addProjectMember(db, 'pA', 'c1')
+    addProjectMember(db, 'pB', 'c2')
+    const stateA = getFullState(db, 'pA')
+    expect(stateA.current_project_id).toBe('pA')
+    expect(stateA.current_project_members).toEqual(['c1'])
+    const stateB = getFullState(db, 'pB')
+    expect(stateB.current_project_id).toBe('pB')
+    expect(stateB.current_project_members).toEqual(['c2'])
+  })
+
+  // v2.0 / RG-GANTT-1204 — suppression d'un projet → ses memberships sont
+  // retirées en cascade (FK ON DELETE CASCADE).
+  it('v2.0 / RG-GANTT-1204 — suppression projet : cascade sur les memberships', () => {
+    addProjectMember(db, 'pA', 'c1')
+    addProjectMember(db, 'pA', 'c2')
+    db.prepare(`DELETE FROM projects WHERE id = ?`).run('pA')
+    expect(listProjectMembers(db, 'pA')).toEqual([])
+  })
+
+  // v2.0 / RG-GANTT-1205 — suppression d'un collab → ses memberships sont
+  // retirées en cascade.
+  it('v2.0 / RG-GANTT-1205 — suppression collab : cascade sur les memberships', () => {
+    addProjectMember(db, 'pA', 'c1')
+    addProjectMember(db, 'pB', 'c1')
+    deleteCollaborator(db, 'c1')
+    expect(listProjectMembers(db, 'pA')).toEqual([])
+    expect(listProjectMembers(db, 'pB')).toEqual([])
+  })
+})
+
+// =============================================================================
+// v2.0 / F2 — Allocations (périodes %) + impact sur end_date
+// =============================================================================
+
+describe('v2.0 / F2 — member_allocations', () => {
+  let db
+  /** Helper : retire toutes les allocations du couple (pA, c1) pour partir
+   *  d'une page blanche dans les tests qui ne testent pas l'auto-pop. */
+  function clearAllocations() {
+    for (const a of listMemberAllocations(db, 'pA', 'c1')) {
+      deleteMemberAllocation(db, a.id)
+    }
+  }
+  beforeEach(() => {
+    db = initDb(':memory:')
+    db.prepare(`INSERT INTO projects(id, name, position) VALUES (?, ?, ?)`).run(
+      'pA',
+      'Projet A',
+      0,
+    )
+    createCollaborator(db, { id: 'c1', name: 'Léa', color: '#3b82f6' })
+    addProjectMember(db, 'pA', 'c1')
+    // `addProjectMember` insère désormais une allocation 100 % par défaut
+    // (2020 → 2099). Les tests qui testent l'auto-pop la lisent telle quelle ;
+    // les autres appellent `clearAllocations()` pour partir d'un état vide.
+  })
+
+  // RG-GANTT-1300 — Ajout d'une période propre.
+  it('v2.0 / RG-GANTT-1300 — addMemberAllocation : ajoute une période propre', () => {
+    clearAllocations()
+    const r = addMemberAllocation(db, {
+      project_id: 'pA',
+      collaborator_id: 'c1',
+      start_date: '2026-06-01',
+      end_date: '2026-06-30',
+      allocation_pct: 50,
+    })
+    expect(r.allocation.allocation_pct).toBe(50)
+    const list = listMemberAllocations(db, 'pA', 'c1')
+    expect(list).toHaveLength(1)
+    expect(list[0].start_date).toBe('2026-06-01')
+  })
+
+  // RG-GANTT-1301 — Chevauchement strictement interdit.
+  it('v2.0 / RG-GANTT-1301 — chevauchement rejeté', () => {
+    clearAllocations()
+    addMemberAllocation(db, {
+      project_id: 'pA',
+      collaborator_id: 'c1',
+      start_date: '2026-06-01',
+      end_date: '2026-06-30',
+      allocation_pct: 50,
+    })
+    expect(() =>
+      addMemberAllocation(db, {
+        project_id: 'pA',
+        collaborator_id: 'c1',
+        start_date: '2026-06-15',
+        end_date: '2026-07-15',
+        allocation_pct: 75,
+      }),
+    ).toThrow(/overlap/)
+  })
+
+  // RG-GANTT-1301 — Deux périodes adjacentes (sans intersection) acceptées.
+  it('v2.0 / RG-GANTT-1301 — périodes contiguës sans chevauchement OK', () => {
+    clearAllocations()
+    addMemberAllocation(db, {
+      project_id: 'pA',
+      collaborator_id: 'c1',
+      start_date: '2026-06-01',
+      end_date: '2026-06-15',
+      allocation_pct: 50,
+    })
+    // Note : 06-15 et 06-16 = bornes adjacentes mais distinctes → OK
+    const r = addMemberAllocation(db, {
+      project_id: 'pA',
+      collaborator_id: 'c1',
+      start_date: '2026-06-16',
+      end_date: '2026-06-30',
+      allocation_pct: 100,
+    })
+    expect(r.allocation.allocation_pct).toBe(100)
+  })
+
+  // RG-GANTT-1302 — % ∈ {25, 50, 75, 100}.
+  it('v2.0 / RG-GANTT-1302 — % invalide rejeté', () => {
+    expect(() =>
+      addMemberAllocation(db, {
+        project_id: 'pA',
+        collaborator_id: 'c1',
+        start_date: '2026-06-01',
+        end_date: '2026-06-30',
+        allocation_pct: 60,
+      }),
+    ).toThrow(/25,50,75,100/)
+  })
+
+  // RG-GANTT-1300 — Non-membre rejeté.
+  it('v2.0 / RG-GANTT-1300 — non membre rejeté', () => {
+    createCollaborator(db, { id: 'c2', name: 'Karim', color: '#10b981' })
+    expect(() =>
+      addMemberAllocation(db, {
+        project_id: 'pA',
+        collaborator_id: 'c2',
+        start_date: '2026-06-01',
+        end_date: '2026-06-30',
+        allocation_pct: 100,
+      }),
+    ).toThrow(/Not a member/)
+  })
+
+  // RG-GANTT-1303 — Suppression d'une période par id.
+  it('v2.0 / RG-GANTT-1303 — deleteMemberAllocation : retire par id', () => {
+    clearAllocations()
+    const r = addMemberAllocation(db, {
+      project_id: 'pA',
+      collaborator_id: 'c1',
+      start_date: '2026-06-01',
+      end_date: '2026-06-30',
+      allocation_pct: 100,
+    })
+    const id = r.allocation.id
+    const del = deleteMemberAllocation(db, id)
+    expect(del.changed).toBe(true)
+    expect(listMemberAllocations(db, 'pA', 'c1')).toHaveLength(0)
+  })
+
+  // RG-GANTT-1304 — Cascade suppression membership → ses allocations.
+  it('v2.0 / RG-GANTT-1304 — suppression collab : cascade sur allocations', () => {
+    clearAllocations()
+    addMemberAllocation(db, {
+      project_id: 'pA',
+      collaborator_id: 'c1',
+      start_date: '2026-06-01',
+      end_date: '2026-06-30',
+      allocation_pct: 100,
+    })
+    deleteCollaborator(db, 'c1')
+    expect(listMemberAllocations(db, 'pA', 'c1')).toHaveLength(0)
+  })
+
+  // RG-GANTT-1305 — Auto-pop migration : memberships F1 → allocation 100 %.
+  it('v2.0 / RG-GANTT-1305 — migration auto-pop : allocation 100 % par défaut', () => {
+    // L'app de test charge 'c1' membre de 'pA' via le beforeEach.
+    // ensureMemberAllocationsTable a déjà tourné lors du initDb.
+    const list = listMemberAllocations(db, 'pA', 'c1')
+    expect(list.length).toBeGreaterThan(0)
+    expect(list[0].allocation_pct).toBe(100)
+  })
+
+  // RG-GANTT-1310 — Impact moteur : 5j charge @ 50% → end = start + 9 ouvrés.
+  // Lundi 8 juin 2026 + 5 jours d'effort à 50 % :
+  //   J1=08/06 (0.5), J2=09/06 (1.0), J3=10/06 (1.5), J4=11/06 (2.0),
+  //   J5=12/06 (2.5), J6=15/06 (3.0), J7=16/06 (3.5), J8=17/06 (4.0),
+  //   J9=18/06 (4.5), J10=19/06 (5.0) → fin = 19/06 (vendredi).
+  it('v2.0 / RG-GANTT-1310 — charge 5j @ 50 % → 10 jours ouvrés', () => {
+    // Vide d'abord l'allocation auto-pop (100 % par défaut), puis pose 50 %.
+    for (const a of listMemberAllocations(db, 'pA', 'c1')) {
+      deleteMemberAllocation(db, a.id)
+    }
+    addMemberAllocation(db, {
+      project_id: 'pA',
+      collaborator_id: 'c1',
+      start_date: '2026-01-01',
+      end_date: '2026-12-31',
+      allocation_pct: 50,
+    })
+    const r = createTask(db, {
+      id: 't_alloc',
+      name: 'Tâche 50%',
+      start_date: '2026-06-08',
+      charge_jours: 5,
+      collaborator_id: 'c1',
+      project_id: 'pA',
+    })
+    expect(r.task.charge_jours).toBe(5)
+    expect(r.task.end_date).toBe('2026-06-19') // 10e jour ouvré depuis lundi 08/06
+  })
+
+  // RG-GANTT-1311 — Sans collab affecté : pas d'effet allocation (F0).
+  it('v2.0 / RG-GANTT-1311 — tâche sans collab : end = addWorkingDays (F0)', () => {
+    const r = createTask(db, {
+      id: 't_solo',
+      name: 'Tâche sans collab',
+      start_date: '2026-06-08',
+      charge_jours: 5,
+      project_id: 'pA',
+    })
+    expect(r.task.end_date).toBe('2026-06-12') // 5 ouvrés depuis lundi
+  })
+
+  // RG-GANTT-1312 — Auto-heal : créer une tâche avec un collab non-membre
+  // crée la membership + une allocation 100 % par défaut.
+  it('v2.0 / RG-GANTT-1312 — auto-heal : membership + allocation 100 %', () => {
+    createCollaborator(db, { id: 'c2', name: 'Karim', color: '#10b981' })
+    createTask(db, {
+      id: 't_heal',
+      name: 'Auto-heal',
+      start_date: '2026-06-08',
+      charge_jours: 3,
+      collaborator_id: 'c2',
+      project_id: 'pA',
+    })
+    expect(listProjectMembers(db, 'pA').sort()).toEqual(['c1', 'c2'])
+    const allocs = listMemberAllocations(db, 'pA', 'c2')
+    expect(allocs.length).toBeGreaterThan(0)
+    expect(allocs[0].allocation_pct).toBe(100)
+  })
+
+  // RG-GANTT-1313 — getFullState expose member_allocations.
+  it('v2.0 / RG-GANTT-1313 — getFullState : member_allocations exposé', () => {
+    const state = getFullState(db, 'pA')
+    expect(Array.isArray(state.member_allocations)).toBe(true)
+    expect(state.member_allocations.length).toBeGreaterThan(0)
   })
 })

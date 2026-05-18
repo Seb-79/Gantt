@@ -319,6 +319,129 @@ export function addWorkingDays(startIso: string, charge: number): string {
 }
 
 /**
+ * v2.0 / F2 — Structure d'une période d'allocation côté client (miroir
+ * exact de la ligne SQL `member_allocations`). Le moteur de calcul de fin
+ * et le plan de charge la consomment pour pondérer la capacité quotidienne.
+ */
+export interface MemberAllocation {
+  id: string
+  project_id: string
+  collaborator_id: string
+  start_date: string
+  end_date: string
+  allocation_pct: number
+}
+
+/**
+ * v2.0 / F2 — Capacité quotidienne d'un collaborateur sur un projet à une
+ * date donnée, sous forme de fraction (0..1).
+ *
+ *   • Jour non ouvré (week-end OU férié FR) → 0 (jamais de travail).
+ *   • Aucune allocation couvrant la date → 0 (le collab n'est pas dispo).
+ *   • Sinon → `allocation_pct / 100` de la période en vigueur.
+ *
+ * Hypothèse : aucune période ne se chevauche pour un même (projet, collab)
+ * — invariant garanti par le DAL (RG-GANTT-1301). En cas anormal de
+ * chevauchement, on prend la 1ʳᵉ période qui couvre la date.
+ *
+ * @param dateIso    Date à évaluer (YYYY-MM-DD).
+ * @param allocations Liste des allocations du projet (toutes paires confondues).
+ * @param projectId  Projet de la tâche.
+ * @param collabId   Collaborateur affecté.
+ * @returns          Fraction de capacité dans [0, 1].
+ */
+export function getDailyAllocation(
+  dateIso: string,
+  allocations: MemberAllocation[],
+  projectId: string,
+  collabId: string,
+): number {
+  const d = isoToDate(dateIso)
+  if (isNonWorkingDay(d)) return 0
+  for (const a of allocations) {
+    if (a.project_id !== projectId) continue
+    if (a.collaborator_id !== collabId) continue
+    if (dateIso >= a.start_date && dateIso <= a.end_date) {
+      return a.allocation_pct / 100
+    }
+  }
+  return 0
+}
+
+/**
+ * v2.0 / F0 puis F2 — Calcule la date de fin d'une activité à partir de sa
+ * date de début et de sa charge en jours ouvrés.
+ *
+ * Politique v2.0 :
+ *   • Sans contexte d'allocation (pas de `ctx` fourni OU pas de collab affecté
+ *     OU pas d'allocations) → comportement F0 : `addWorkingDays` simple
+ *     (chaque jour ouvré contribue 1 jour de charge, fériés sautés).
+ *   • Avec contexte d'allocation → itération jour par jour : on consomme
+ *     `getDailyAllocation(date)` de la charge à chaque jour calendaire jusqu'à
+ *     atteindre la charge cible. La fin est le DERNIER jour où une fraction
+ *     a été consommée (cohérent avec l'invariant « fin = dernier jour de
+ *     travail »).
+ *
+ * Garde-fou : on borne le scan à `max(charge * 30, 10000)` jours pour ne
+ * jamais boucler en cas d'allocations toutes à 0 % (la fonction renvoie alors
+ * la date du dernier jour scanné — l'UI affichera une alerte de cohérence).
+ *
+ * @param startIso  Date de début YYYY-MM-DD.
+ * @param charge    Charge en jours ouvrés (≥ 1).
+ * @param ctx       Optionnel : { projectId, collaboratorId, allocations }.
+ * @returns         Date de fin YYYY-MM-DD (incluse).
+ */
+export function computeEndFromCharge(
+  startIso: string,
+  charge: number,
+  ctx?: {
+    projectId: string | null
+    collaboratorId: string | null
+    allocations: MemberAllocation[]
+  },
+): string {
+  // F0 path : sans allocations explicites, on reste sur la sémantique
+  // « charge = N jours ouvrés contigus » (rétrocompat tests v1.x).
+  if (
+    !ctx ||
+    !ctx.projectId ||
+    !ctx.collaboratorId ||
+    !ctx.allocations ||
+    ctx.allocations.length === 0
+  ) {
+    return addWorkingDays(startIso, charge)
+  }
+  // F2 path : itération jour calendaire par jour calendaire, consommation
+  // pondérée par l'allocation. On démarre à `startIso` (inclus) et on
+  // accumule jusqu'à atteindre `charge` jours-personne.
+  const needed = Math.max(1, charge)
+  let consumed = 0
+  let cur = startIso
+  let lastWorked = startIso
+  // Garde-fou : 10 000 jours = ~27 ans, largement suffisant.
+  const maxScan = Math.max(needed * 30, 10000)
+  for (let i = 0; i < maxScan; i++) {
+    const a = getDailyAllocation(
+      cur,
+      ctx.allocations,
+      ctx.projectId,
+      ctx.collaboratorId,
+    )
+    if (a > 0) {
+      consumed += a
+      lastWorked = cur
+      // Atteint la cible : on s'arrête sur le dernier jour qui a contribué.
+      // Tolérance numérique (cumul de fractions 0.25/0.5/0.75/1.0).
+      if (consumed >= needed - 1e-9) return lastWorked
+    }
+    cur = addDaysIso(cur, 1)
+  }
+  // Boucle de sécurité atteinte sans avoir consommé la charge complète :
+  // on renvoie le dernier jour effectivement travaillé (ou start si aucun).
+  return lastWorked
+}
+
+/**
  * v1.9 — Ajoute N jours calendaires (peu importe le type) à une date ISO.
  * Helper pour le drag des barres dans le Gantt (où on raisonne en pixels
  * → jours calendaires, puis on snape en jours ouvrés via les helpers ci-dessus).
@@ -635,29 +758,61 @@ export function groupByWeek(
  *                      `buildDateRange(windowStart, windowEnd)`).
  * @returns             Map id → tableau de longueur `dates.length`.
  */
+/**
+ * v2.0 / F2 — Cumule la contribution d'une tâche sur la timeline du
+ * collaborateur. Extrait pour limiter la complexité cognitive de
+ * `computeWorkload` (cf. sonarjs/cognitive-complexity).
+ *
+ *   • 1 jour ouvré couvert + 100 % alloué → +1
+ *   • 1 jour ouvré couvert + 50 % alloué  → +0.5
+ *   • férié / week-end / hors période     → +0
+ *   • sans allocations passées            → +1 par jour ouvré (fallback F1)
+ */
+function accumulateTaskWorkload(
+  t: Task,
+  arr: number[],
+  dates: Date[],
+  allocations: MemberAllocation[],
+): void {
+  const start = isoToDate(t.start_date).getTime()
+  const end = isoToDate(t.end_date).getTime()
+  const useAllocations = allocations.length > 0
+  for (let i = 0; i < dates.length; i++) {
+    const d = dates[i]
+    const ts = d.getTime()
+    if (ts < start || ts > end) continue
+    if (isNonWorkingDay(d)) continue
+    if (useAllocations) {
+      arr[i] += getDailyAllocation(
+        dateToIso(d),
+        allocations,
+        t.project_id,
+        t.collaborator_id as string,
+      )
+    } else {
+      arr[i] += 1
+    }
+  }
+}
+
 export function computeWorkload(
   tasks: Task[],
   collaborators: Collaborator[],
   dates: Date[],
+  allocations: MemberAllocation[] = [],
 ): Map<string, number[]> {
   const result = new Map<string, number[]>()
   for (const c of collaborators) {
     result.set(c.id, new Array(dates.length).fill(0))
   }
+  // v2.0 / F2 — La contribution d'une tâche à un jour donné est désormais
+  // pondérée par l'allocation effective du collab ce jour-là sur ce projet.
+  // Sans allocations → fallback F0/F1 : contribution = 1 par jour ouvré.
   for (const t of tasks) {
     if (t.kind !== 'task' || !t.collaborator_id) continue
     const arr = result.get(t.collaborator_id)
     if (!arr) continue
-    const start = isoToDate(t.start_date).getTime()
-    const end = isoToDate(t.end_date).getTime()
-    for (let i = 0; i < dates.length; i++) {
-      const d = dates[i]
-      const ts = d.getTime()
-      if (ts < start || ts > end) continue
-      // v1.23 — Les fériés français comptent comme non-ouvrés (= 0 charge).
-      if (isNonWorkingDay(d)) continue
-      arr[i] += 1
-    }
+    accumulateTaskWorkload(t, arr, dates, allocations)
   }
   return result
 }
@@ -1022,8 +1177,17 @@ function placeTaskInTimeline(
   tasksById: Map<string, Task>,
   proposed: Map<string, { start: string; end: string }>,
   timeline: Map<string, Array<[string, string]>>,
+  allocations: MemberAllocation[],
 ): void {
-  const charge = Math.max(1, workingDaysBetween(t.start_date, t.end_date))
+  // v2.0 — La charge est désormais lue depuis `task.charge_jours` (source de
+  // vérité). Pour les tâches issues de bases anciennes ou de tests qui ne
+  // l'auraient pas encore peuplée, on retombe sur l'écart courant pour rester
+  // rétro-compatible (filet de sécurité ; la migration `ensureChargeColumn`
+  // peuple toujours la colonne au boot).
+  const charge =
+    t.charge_jours && t.charge_jours >= 1
+      ? t.charge_jours
+      : Math.max(1, workingDaysBetween(t.start_date, t.end_date))
   const earliest = computeReplanEarliestStart(t, tasksById, proposed)
   const intervals = t.collaborator_id
     ? timeline.get(t.collaborator_id) || []
@@ -1031,7 +1195,14 @@ function placeTaskInTimeline(
   const newStart = t.collaborator_id
     ? findFreeSlot(intervals, earliest, charge)
     : earliest
-  const newEnd = addWorkingDays(newStart, charge)
+  // v2.0 / F2 — La fin est calculée en consommant la capacité quotidienne
+  // (allocation %) du collab sur le projet. Sans allocations, on retombe sur
+  // l'ancien comportement F0 via `computeEndFromCharge`.
+  const newEnd = computeEndFromCharge(newStart, charge, {
+    projectId: t.project_id,
+    collaboratorId: t.collaborator_id,
+    allocations,
+  })
   proposed.set(t.id, { start: newStart, end: newEnd })
   if (t.collaborator_id) {
     pushTimelineInterval(timeline, t.collaborator_id, newStart, newEnd)
@@ -1090,6 +1261,7 @@ function buildReplanMoves(
 export function replanTasks(
   tasks: Task[],
   concernedIds?: Set<string>,
+  allocations: MemberAllocation[] = [],
 ): ReplanMove[] {
   // v1.21 — `concernedIds` actif → replan PARTIEL : seules les tâches
   // listées peuvent voir leurs dates modifiées. Les autres sont LOCKÉES à
@@ -1097,6 +1269,10 @@ export function replanTasks(
   // obstacles à contourner). Si `concernedIds` est `undefined`, le replan
   // est COMPLET (comportement historique : toutes les tâches `task` sont
   // candidates au déplacement).
+  // v2.0 / F2 — `allocations` est la liste des périodes d'allocation du
+  // projet : le moteur consomme la capacité quotidienne (allocation %) pour
+  // calculer la fin de chaque tâche, au lieu de simples jours ouvrés bruts.
+  // Tableau vide → comportement F0 (fin = start + charge en jours ouvrés).
   const isPartial = !!concernedIds
   const isConcerned = (id: string) =>
     !isPartial || (concernedIds as Set<string>).has(id)
@@ -1119,7 +1295,7 @@ export function replanTasks(
 
   for (const t of order) {
     if (!isConcerned(t.id)) continue
-    placeTaskInTimeline(t, tasksById, proposed, timeline)
+    placeTaskInTimeline(t, tasksById, proposed, timeline, allocations)
   }
 
   return buildReplanMoves(order, proposed)

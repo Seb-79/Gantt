@@ -31,7 +31,7 @@ import {
   workloadCellStyle,
 } from '../lib/utils'
 import { useHorizontalPan } from '../lib/useHorizontalPan'
-import type { Collaborator, Task } from '../lib/types'
+import type { Collaborator, MemberAllocation, Task } from '../lib/types'
 
 /** Hauteur d'une ligne (px) — alignée sur la vue Gantt pour la cohérence. */
 const ROW_HEIGHT = 26
@@ -52,6 +52,10 @@ interface Props {
   tasks: Task[]
   /** Collaborateurs visibles (1 ligne par collab, même sans tâche). */
   collaborators: Collaborator[]
+  /** v2.0 / F2 — Allocations du projet courant (pondèrent la contribution
+   *  quotidienne de chaque tâche : 100 % = 1, 50 % = 0.5, etc.). Vide →
+   *  comportement F1 (1 par jour ouvré couvert). */
+  memberAllocations?: MemberAllocation[]
   /**
    * v1.17 — Si `true`, met en évidence les sous-charges (`sum < 1` sur les
    * jours ouvrés) avec une palette jaune (cellule libre = jaune pâle,
@@ -77,6 +81,7 @@ export default function WorkloadChart({
   dayWidth,
   tasks,
   collaborators,
+  memberAllocations = [],
   highlightUnderload = false,
   onShiftWindow,
 }: Props) {
@@ -132,8 +137,11 @@ export default function WorkloadChart({
    * Recalcul seulement quand `tasks`, `collaborators` ou `dates` changent.
    */
   const workload = useMemo(
-    () => computeWorkload(tasks, collaborators, dates),
-    [tasks, collaborators, dates],
+    // v2.0 / F2 — `memberAllocations` pondère la contribution quotidienne de
+    // chaque tâche (allocation %). Sans allocations, comportement F1 (1 par
+    // jour ouvré couvert).
+    () => computeWorkload(tasks, collaborators, dates, memberAllocations),
+    [tasks, collaborators, dates, memberAllocations],
   )
 
   /**

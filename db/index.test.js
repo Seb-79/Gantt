@@ -519,6 +519,202 @@ describe('v1.9 — cascade aux successeurs', () => {
   })
 })
 
+// =============================================================================
+// v1.21 — Multi-prédécesseurs (table N:M `task_predecessors`)
+// =============================================================================
+describe('v1.21 — multi-prédécesseurs', () => {
+  let db
+  beforeEach(() => {
+    db = initDb(':memory:')
+    // Base : deux activités sources A (08→12/06) et B (08→17/06).
+    createTask(db, {
+      id: 'A',
+      name: 'A',
+      start_date: '2026-06-08',
+      end_date: '2026-06-12',
+    })
+    createTask(db, {
+      id: 'B',
+      name: 'B',
+      start_date: '2026-06-08',
+      end_date: '2026-06-17',
+    })
+  })
+
+  /** Helper de lecture d'une tâche par id depuis l'état courant. */
+  function get(id) {
+    return getFullState(db).tasks.find((t) => t.id === id)
+  }
+
+  it('createTask avec predecessors[] = 2 préds → start = MAX(pred.end)', () => {
+    createTask(db, {
+      id: 'Y',
+      name: 'Y',
+      start_date: '2026-06-01',
+      end_date: '2026-06-02',
+      predecessors: [
+        { id: 'A', lag: 0 },
+        { id: 'B', lag: 0 },
+      ],
+    })
+    const y = get('Y')
+    // B finit plus tard (17/06) que A (12/06) → MAX = 17/06.
+    expect(y.start_date).toBe('2026-06-17')
+    // La liste est exposée et triée par id ASC (déterministe).
+    expect(y.predecessors).toEqual([
+      { id: 'A', lag: 0 },
+      { id: 'B', lag: 0 },
+    ])
+  })
+
+  it('lag par lien : MAX prend le plus tardif (pred + lag)', () => {
+    // Sémantique v1.23 de `computeSuccessorStart(predEnd, lag)` :
+    //   • lag = 0 → start = snapForward(predEnd)
+    //   • lag > 0 → start = addWorkingDays(snapForward(predEnd), lag + 2)
+    // A.end = ven 12/06 + lag=5 → 12→(15→16→17→18→19→22) = lun 22/06.
+    // B.end = mer 17/06 + lag=0 → mer 17/06.
+    // MAX = lun 22/06.
+    createTask(db, {
+      id: 'Y',
+      name: 'Y',
+      start_date: '2026-06-01',
+      end_date: '2026-06-02',
+      predecessors: [
+        { id: 'A', lag: 5 },
+        { id: 'B', lag: 0 },
+      ],
+    })
+    expect(get('Y').start_date).toBe('2026-06-22')
+  })
+
+  it("cascade MAX : allonger un pred non-critique ne bouge pas Y tant qu'il ne devient pas le MAX", () => {
+    createTask(db, {
+      id: 'Y',
+      name: 'Y',
+      start_date: '2026-06-01',
+      end_date: '2026-06-03',
+      predecessors: [
+        { id: 'A', lag: 0 },
+        { id: 'B', lag: 0 },
+      ],
+    })
+    // Y.start = MAX(A.end=12, B.end=17) = 17/06.
+    expect(get('Y').start_date).toBe('2026-06-17')
+    // Allonger A jusqu'au 15/06 (toujours < B.end=17) → Y reste sur 17/06.
+    updateTask(db, 'A', { end_date: '2026-06-15' })
+    expect(get('Y').start_date).toBe('2026-06-17')
+    // Allonger A jusqu'au 22/06 → A devient le MAX → Y est repoussé à 22/06.
+    updateTask(db, 'A', { end_date: '2026-06-22' })
+    expect(get('Y').start_date).toBe('2026-06-22')
+  })
+
+  it('updateTask predecessors[] vide → la liste est supprimée', () => {
+    createTask(db, {
+      id: 'Y',
+      name: 'Y',
+      start_date: '2026-06-01',
+      end_date: '2026-06-02',
+      predecessors: [{ id: 'A', lag: 0 }],
+    })
+    expect(get('Y').predecessors.length).toBe(1)
+    updateTask(db, 'Y', { predecessors: [] })
+    expect(get('Y').predecessors).toEqual([])
+  })
+
+  it('anti-cycle indirect : A→B→C, on rejette silencieusement le lien C→A', () => {
+    // On construit le chemin A→B→C (= B.preds=[A], C.preds=[B]), puis on
+    // tente d'ajouter C comme prédécesseur de A : refermerait la boucle.
+    updateTask(db, 'B', { predecessors: [{ id: 'A', lag: 0 }] })
+    createTask(db, {
+      id: 'C',
+      name: 'C',
+      start_date: '2026-06-20',
+      end_date: '2026-06-21',
+      predecessors: [{ id: 'B', lag: 0 }],
+    })
+    updateTask(db, 'A', { predecessors: [{ id: 'C', lag: 0 }] })
+    // Le lien cyclique C→A est filtré → A n'a toujours aucun prédécesseur.
+    expect(get('A').predecessors).toEqual([])
+  })
+
+  it("suppression d'un prédécesseur → CASCADE depuis task_predecessors", () => {
+    createTask(db, {
+      id: 'Y',
+      name: 'Y',
+      start_date: '2026-06-01',
+      end_date: '2026-06-02',
+      predecessors: [
+        { id: 'A', lag: 0 },
+        { id: 'B', lag: 0 },
+      ],
+    })
+    expect(get('Y').predecessors.length).toBe(2)
+    // Supprime A → la ligne (Y, A) disparaît automatiquement (ON DELETE CASCADE).
+    deleteTask(db, 'A')
+    expect(get('Y').predecessors).toEqual([{ id: 'B', lag: 0 }])
+  })
+
+  it('alias rétro-compat : predecessor_id = 1er pred, predecessor_lag = son lag', () => {
+    createTask(db, {
+      id: 'Y',
+      name: 'Y',
+      start_date: '2026-06-01',
+      end_date: '2026-06-02',
+      predecessors: [
+        { id: 'B', lag: 4 },
+        { id: 'A', lag: 1 },
+      ],
+    })
+    const y = get('Y')
+    // Tri par id ASC : A vient avant B.
+    expect(y.predecessor_id).toBe('A')
+    expect(y.predecessor_lag).toBe(1)
+  })
+
+  it('migration : une base v1.20 (predecessor_id en colonne) migre vers task_predecessors', async () => {
+    const Database = (await import('better-sqlite3')).default
+    const tmpFile = `/tmp/gantt-v121-migration-${Date.now()}.db`
+    const old = new Database(tmpFile)
+    // Schéma v1.20 simplifié : colonnes predecessor_id / predecessor_lag, pas
+    // de table task_predecessors. On insère 1 tâche avec un prédécesseur.
+    old.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE collaborators (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        color TEXT NOT NULL DEFAULT '#3b82f6', position INTEGER NOT NULL
+      );
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, position INTEGER NOT NULL
+      );
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'task',
+        start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+        progress INTEGER NOT NULL DEFAULT 0,
+        collaborator_id TEXT, color TEXT, parent_id TEXT,
+        predecessor_id TEXT, predecessor_lag INTEGER NOT NULL DEFAULT 0,
+        priority INTEGER, not_before_date TEXT,
+        position INTEGER NOT NULL, project_id TEXT
+      );
+      INSERT INTO projects(id, name, position) VALUES ('p1', 'P1', 0);
+      INSERT INTO tasks (id, name, kind, start_date, end_date, position, project_id)
+        VALUES ('a','A','task','2026-06-08','2026-06-12',0,'p1');
+      INSERT INTO tasks (id, name, kind, start_date, end_date, position,
+                        predecessor_id, predecessor_lag, project_id)
+        VALUES ('b','B','task','2026-06-12','2026-06-15',1,'a',3,'p1');
+    `)
+    old.close()
+    // initDb rouvre et déclenche la migration v1.21.
+    const migrated = initDb(tmpFile)
+    const state = getFullState(migrated)
+    const b = state.tasks.find((t) => t.id === 'b')
+    expect(b.predecessors).toEqual([{ id: 'a', lag: 3 }])
+    expect(b.predecessor_id).toBe('a') // alias rétro-compat
+    expect(b.predecessor_lag).toBe(3)
+    migrated.close()
+  })
+})
+
 describe('deleteTask', () => {
   let db
   beforeEach(() => {

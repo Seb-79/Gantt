@@ -814,6 +814,21 @@ export default function GanttChart({
  * Les indices y des tâches sont calculés à partir de leur ordre dans
  * `tasks` (qui doit être l'ordre d'affichage = ordre hiérarchique trié).
  */
+/**
+ * v1.21 — Renvoie les ids des prédécesseurs d'une tâche, en privilégiant le
+ * nouveau format `task.predecessors` et en retombant sur l'alias mono-pred
+ * `task.predecessor_id` si la liste est absente (rétro-compat tests).
+ *
+ * Extrait pour éviter un ternaire imbriqué dans le JSX (sonarjs/no-nested-conditional).
+ */
+function resolveTaskPredecessorIds(t: Task): string[] {
+  if (t.predecessors && t.predecessors.length > 0) {
+    return t.predecessors.map((p) => p.id)
+  }
+  if (t.predecessor_id) return [t.predecessor_id]
+  return []
+}
+
 function PredecessorArrows({
   tasks,
   windowStart,
@@ -875,58 +890,63 @@ function PredecessorArrows({
           <path d="M0,0 L8,3 L0,6 Z" fill="#475569" />
         </marker>
       </defs>
-      {tasks.map((t, i) => {
-        if (!t.predecessor_id) return null
-        const pred = byId.get(t.predecessor_id)
-        if (!pred) return null
-        const x1 = endX(pred.task)
-        const y1 = pred.row * ROW_HEIGHT + ROW_HEIGHT / 2
-        const x2 = startX(t)
-        const y2 = i * ROW_HEIGHT + ROW_HEIGHT / 2
-        // Petit décrochement pour ne pas coller à la barre.
-        const offset = Math.max(6, Math.min(14, dayWidth))
-        let d: string
-        if (x2 >= x1 + offset) {
-          // Cas normal : le successeur démarre suffisamment à droite.
-          // Forme en escalier : droite → vertical → droite (arrive par la gauche).
-          if (Math.abs(y1 - y2) < 1) {
-            d = `M ${x1} ${y1} L ${x2} ${y2}`
-          } else {
-            d = `M ${x1} ${y1} L ${x1 + offset} ${y1} L ${x1 + offset} ${y2} L ${x2} ${y2}`
-          }
-        } else {
-          // Le successeur commence AVANT ou JUSTE après la fin du prédécesseur
-          // (typiquement quand les activités s'enchaînent end-to-start). On
-          // contourne par-dessus/dessous pour arriver par la gauche du
-          // successeur, sinon la flèche se replierait sur elle-même.
-          const backOffset = Math.max(offset, dayWidth)
-          if (Math.abs(y1 - y2) < 1) {
-            // Même ligne mais successeur "derrière" : petit détour vertical.
-            const midY = y1 + ROW_HEIGHT / 2
-            d =
-              `M ${x1} ${y1} L ${x1 + offset} ${y1} L ${x1 + offset} ${midY} ` +
-              `L ${x2 - backOffset} ${midY} L ${x2 - backOffset} ${y2} L ${x2} ${y2}`
-          } else {
-            // Forme en U/Z : on remonte/descend à mi-chemin entre les deux
-            // lignes, puis on revient sur la gauche du successeur.
-            const midY = (y1 + y2) / 2
-            d =
-              `M ${x1} ${y1} L ${x1 + offset} ${y1} L ${x1 + offset} ${midY} ` +
-              `L ${x2 - backOffset} ${midY} L ${x2 - backOffset} ${y2} L ${x2} ${y2}`
-          }
-        }
-        return (
-          <path
-            key={t.id}
-            d={d}
-            // v1.19.2 — slate-600 + 2 px : visible sur les colonnes WE grises
-            // et au-dessus des barres de phase (cf. zIndex SVG = 1).
-            stroke="#475569"
-            strokeWidth="2"
-            fill="none"
-            markerEnd="url(#gantt-arrow)"
-          />
-        )
+      {tasks.flatMap((t, i) => {
+        // v1.21 — Une tâche peut avoir N prédécesseurs : on récupère la liste
+        // depuis `task.predecessors` si présente (nouveau format), sinon on
+        // retombe sur l'alias mono-pred `predecessor_id` (rétro-compat tests).
+        const predList = resolveTaskPredecessorIds(t)
+        if (predList.length === 0) return []
+        const y2Base = i * ROW_HEIGHT + ROW_HEIGHT / 2
+        return predList
+          .map((predId, predIdx) => {
+            const pred = byId.get(predId)
+            if (!pred) return null
+            const x1 = endX(pred.task)
+            const y1 = pred.row * ROW_HEIGHT + ROW_HEIGHT / 2
+            const x2 = startX(t)
+            // v1.21 — Quand une tâche reçoit N flèches entrantes, on décale
+            // verticalement leur point d'arrivée pour qu'elles ne se
+            // superposent pas (3 px par rang). La flèche d'index 0 arrive au
+            // centre, les suivantes en dessous.
+            const y2 = y2Base + predIdx * 3
+            // Décrochement pour ne pas coller à la barre. Léger offset
+            // additionnel par index pour répartir les chemins quand plusieurs
+            // flèches partent du même prédécesseur (peu fréquent).
+            const offset = Math.max(6, Math.min(14, dayWidth)) + predIdx * 2
+            let d: string
+            if (x2 >= x1 + offset) {
+              if (Math.abs(y1 - y2) < 1) {
+                d = `M ${x1} ${y1} L ${x2} ${y2}`
+              } else {
+                d = `M ${x1} ${y1} L ${x1 + offset} ${y1} L ${x1 + offset} ${y2} L ${x2} ${y2}`
+              }
+            } else {
+              const backOffset = Math.max(offset, dayWidth)
+              if (Math.abs(y1 - y2) < 1) {
+                const midY = y1 + ROW_HEIGHT / 2
+                d =
+                  `M ${x1} ${y1} L ${x1 + offset} ${y1} L ${x1 + offset} ${midY} ` +
+                  `L ${x2 - backOffset} ${midY} L ${x2 - backOffset} ${y2} L ${x2} ${y2}`
+              } else {
+                const midY = (y1 + y2) / 2
+                d =
+                  `M ${x1} ${y1} L ${x1 + offset} ${y1} L ${x1 + offset} ${midY} ` +
+                  `L ${x2 - backOffset} ${midY} L ${x2 - backOffset} ${y2} L ${x2} ${y2}`
+              }
+            }
+            return (
+              <path
+                key={`${t.id}__${predId}`}
+                d={d}
+                stroke="#475569"
+                strokeWidth="2"
+                fill="none"
+                markerEnd="url(#gantt-arrow)"
+                data-pred-link={`${predId}->${t.id}`}
+              />
+            )
+          })
+          .filter(Boolean)
       })}
     </svg>
   )

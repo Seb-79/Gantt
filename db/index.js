@@ -53,6 +53,11 @@ export function initDb(dbPath) {
   // volée s'il n'existe pas encore).
   ensureProjectsMigration(db)
 
+  // v1.21 — Crée la table task_predecessors (N:M tasks ↔ prédécesseurs) si
+  // elle n'existe pas, puis migre une fois pour toutes les anciennes liaisons
+  // mono-prédécesseur (`tasks.predecessor_id`) vers la nouvelle table.
+  ensureTaskPredecessorsTable(db)
+
   // Initialise la version à 0 si la ligne meta n'existe pas encore.
   db.prepare(
     `INSERT OR IGNORE INTO meta(key, value) VALUES ('version', '0')`,
@@ -322,6 +327,243 @@ function ensureKindAcceptsPhase(db) {
 }
 
 /**
+ * v1.21 — Migration idempotente : crée la table `task_predecessors` si elle
+ * n'existe pas, puis migre les anciennes liaisons mono-prédécesseur de la
+ * colonne `tasks.predecessor_id` vers la nouvelle table N:M.
+ *
+ * Comportement :
+ *   1. CREATE TABLE IF NOT EXISTS + index (sûr à rejouer).
+ *   2. Pour chaque tâche `t` avec `t.predecessor_id` non-null pointant vers
+ *      une tâche existante ET sans ligne correspondante dans
+ *      `task_predecessors`, insère `(t.id, t.predecessor_id, t.predecessor_lag)`.
+ *   3. Les colonnes `predecessor_id` / `predecessor_lag` sur `tasks` sont
+ *      conservées pour ne pas casser les bases anciennes mais ne sont plus
+ *      lues ni écrites par le code v1.21+ — la source de vérité est désormais
+ *      la table `task_predecessors`.
+ *
+ * @param {import('better-sqlite3').Database} db
+ */
+function ensureTaskPredecessorsTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_predecessors (
+      task_id        TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      predecessor_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      lag            INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (task_id, predecessor_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_predecessors_pred
+      ON task_predecessors(predecessor_id);
+  `)
+  // Pas de colonne `predecessor_id` (base ultra-ancienne) → rien à migrer.
+  const cols = db
+    .prepare(`PRAGMA table_info(tasks)`)
+    .all()
+    .map((c) => c.name)
+  if (!cols.includes('predecessor_id')) return
+  // Lignes à migrer : tâche avec un prédécesseur valide (la cible existe) et
+  // qui n'a PAS déjà été migrée (pas de ligne dans task_predecessors).
+  const rows = db
+    .prepare(
+      `SELECT t.id AS task_id, t.predecessor_id, t.predecessor_lag
+         FROM tasks t
+         WHERE t.predecessor_id IS NOT NULL
+           AND EXISTS (SELECT 1 FROM tasks p WHERE p.id = t.predecessor_id)
+           AND NOT EXISTS (
+             SELECT 1 FROM task_predecessors tp
+              WHERE tp.task_id = t.id AND tp.predecessor_id = t.predecessor_id
+           )`,
+    )
+    .all()
+  if (rows.length === 0) return
+  const ins = db.prepare(
+    `INSERT INTO task_predecessors(task_id, predecessor_id, lag) VALUES (?, ?, ?)`,
+  )
+  for (const r of rows) {
+    ins.run(
+      r.task_id,
+      r.predecessor_id,
+      Math.max(0, Number(r.predecessor_lag) || 0),
+    )
+  }
+  console.log(
+    `[INIT] Migration v1.21 : ${rows.length} liaison(s) prédécesseur migrée(s) vers task_predecessors.`,
+  )
+}
+
+/**
+ * v1.21 — Lit tous les prédécesseurs d'une tâche, triés par id pour un ordre
+ * déterministe (utile pour les tests et l'affichage des flèches).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} taskId
+ * @returns {Array<{id:string, lag:number}>}
+ */
+function listPredecessorsForTask(db, taskId) {
+  return db
+    .prepare(
+      `SELECT predecessor_id AS id, lag
+         FROM task_predecessors
+         WHERE task_id = ?
+         ORDER BY predecessor_id ASC`,
+    )
+    .all(taskId)
+}
+
+/**
+ * v1.21 — Remplace ATOMIQUEMENT la liste des prédécesseurs d'une tâche.
+ * Les entrées invalides (auto-référence, lag négatif) sont nettoyées.
+ * Les doublons sur `predecessor_id` sont silencieusement fusionnés (1ʳᵉ entrée
+ * conservée) grâce à la PRIMARY KEY composite.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} taskId
+ * @param {Array<{id:string, lag?:number}>} list
+ */
+function setPredecessorsForTask(db, taskId, list) {
+  db.prepare(`DELETE FROM task_predecessors WHERE task_id = ?`).run(taskId)
+  if (!Array.isArray(list) || list.length === 0) return
+  const ins = db.prepare(
+    `INSERT OR IGNORE INTO task_predecessors(task_id, predecessor_id, lag) VALUES (?, ?, ?)`,
+  )
+  for (const p of list) {
+    if (!p || typeof p.id !== 'string') continue
+    if (p.id === taskId) continue // anti-auto-référence
+    // Anti-cycle indirect : on rejette silencieusement le lien si l'ajout
+    // refermerait une boucle (A→B→C, refus de C→A). La validation amont
+    // (UI / Zod) devrait empêcher d'en arriver là — c'est une garde de
+    // dernière ligne pour préserver l'invariant DAG.
+    if (wouldCreateCycle(db, taskId, p.id)) continue
+    // Le prédécesseur doit exister. On lance une erreur explicite (la route
+    // API la convertit en 400) au lieu de laisser SQLite échouer sur la FK :
+    // cohérent avec le comportement legacy (v1.20-).
+    const exists = db.prepare(`SELECT 1 FROM tasks WHERE id = ?`).get(p.id)
+    if (!exists) {
+      const err = new Error(`Predecessor not found: ${p.id}`)
+      err.code = 'PREDECESSOR_NOT_FOUND'
+      throw err
+    }
+    const lag = Math.max(0, Math.floor(Number(p.lag) || 0))
+    ins.run(taskId, p.id, lag)
+  }
+}
+
+/**
+ * v1.21 — Synchronise la table `task_predecessors` pour une tâche selon le
+ * patch reçu. Extrait de `updateTask` pour limiter sa complexité cognitive
+ * (cf. eslint sonarjs/cognitive-complexity).
+ *
+ * Cas gérés (par ordre de priorité) :
+ *   1. Phase : la liste est toujours vidée.
+ *   2. `patch.predecessors` (nouveau format) OU `patch.predecessor_id`
+ *      non-null (legacy) → la liste est remplacée.
+ *   3. `patch.predecessor_id === null` explicitement (legacy : retrait) →
+ *      la liste est vidée.
+ *   4. `patch.predecessor_lag` seul (legacy mono-pred : ajustement du lag) →
+ *      le lag de toutes les entrées existantes est mis à jour.
+ *   5. Aucun des cas ci-dessus → no-op (la liste courante est préservée).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} taskId
+ * @param {string} kind   Type final de la tâche (après application du patch).
+ * @param {object} patch
+ */
+function syncPredecessorsFromPatch(db, taskId, kind, patch) {
+  if (kind === 'phase') {
+    setPredecessorsForTask(db, taskId, [])
+    return
+  }
+  const predecessorsInPatch = resolvePredecessorsInput(patch)
+  if (predecessorsInPatch !== null) {
+    setPredecessorsForTask(db, taskId, predecessorsInPatch)
+    return
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(patch, 'predecessor_id') &&
+    patch.predecessor_id === null
+  ) {
+    setPredecessorsForTask(db, taskId, [])
+    return
+  }
+  if (patch.predecessor_lag !== undefined) {
+    const newLag = Math.max(0, Math.floor(Number(patch.predecessor_lag) || 0))
+    const existing = listPredecessorsForTask(db, taskId)
+    if (existing.length > 0) {
+      setPredecessorsForTask(
+        db,
+        taskId,
+        existing.map((p) => ({ id: p.id, lag: newLag })),
+      )
+    }
+  }
+}
+
+/**
+ * v1.21 — Compat-shim : convertit le format historique `predecessor_id` /
+ * `predecessor_lag` en `predecessors: [{id, lag}]`. Si l'input fournit déjà
+ * un tableau `predecessors`, il est renvoyé tel quel (priorité au nouveau
+ * format). Sinon, on construit un tableau à un seul élément à partir de
+ * l'ancien champ (s'il est non-null). Renvoie `null` si aucun prédécesseur
+ * n'est exprimé (le DAL traite null comme « ne touche pas à la liste »).
+ *
+ * @param {{predecessors?:Array, predecessor_id?:string|null, predecessor_lag?:number}} input
+ * @returns {Array<{id:string, lag:number}>|null}
+ */
+function resolvePredecessorsInput(input) {
+  if (Array.isArray(input.predecessors)) {
+    return input.predecessors
+      .filter((p) => p && typeof p.id === 'string')
+      .map((p) => ({
+        id: p.id,
+        lag: Math.max(0, Math.floor(Number(p.lag) || 0)),
+      }))
+  }
+  if (input.predecessor_id) {
+    return [
+      {
+        id: input.predecessor_id,
+        lag: Math.max(0, Math.floor(Number(input.predecessor_lag) || 0)),
+      },
+    ]
+  }
+  return null
+}
+
+/**
+ * v1.21 — Détecte si l'ajout d'un lien `taskId ← candidateId` créerait un
+ * cycle dans le graphe des prédécesseurs. Utilisé en garde dans `setPredecessorsForTask`
+ * et au moment de la validation côté serveur. Algorithme : DFS depuis taskId
+ * en SUIVANT les arêtes "successeurs" (= arêtes inverses du graphe pred→succ).
+ * Si on retombe sur candidateId, c'est un cycle.
+ *
+ * Anti-cycle indirect : A→B→C, on refuse C→A car DFS depuis C atteint A.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} taskId       Tâche qui va recevoir un prédécesseur.
+ * @param {string} candidateId  Tâche candidate comme prédécesseur.
+ * @returns {boolean}           true si l'ajout créerait un cycle.
+ */
+function wouldCreateCycle(db, taskId, candidateId) {
+  if (taskId === candidateId) return true
+  // On regarde si `taskId` est (transitivement) un prédécesseur de candidateId :
+  // si oui, alors ajouter candidateId → taskId fermerait la boucle.
+  const stmt = db.prepare(
+    `SELECT predecessor_id FROM task_predecessors WHERE task_id = ?`,
+  )
+  const seen = new Set()
+  const queue = [candidateId]
+  while (queue.length > 0) {
+    const cur = queue.shift()
+    if (seen.has(cur)) continue
+    seen.add(cur)
+    if (cur === taskId) return true
+    for (const row of stmt.all(cur)) {
+      queue.push(row.predecessor_id)
+    }
+  }
+  return false
+}
+
+/**
  * Lit la version courante de l'état (entier monotone, incrémenté à chaque
  * mutation). Utilisée côté client pour détecter les changements en polling.
  *
@@ -402,8 +644,8 @@ export function getFullState(db, projectId) {
     ? db
         .prepare(
           `SELECT id, name, kind, start_date, end_date, progress,
-                  collaborator_id, color, parent_id, predecessor_id,
-                  predecessor_lag, priority, not_before_date,
+                  collaborator_id, color, parent_id,
+                  priority, not_before_date,
                   position, project_id
              FROM tasks
              WHERE project_id = ?
@@ -411,6 +653,38 @@ export function getFullState(db, projectId) {
         )
         .all(currentId)
     : []
+  // v1.21 — Joint les prédécesseurs depuis la table N:M. On fait une seule
+  // requête sur le projet courant et on regroupe en mémoire pour éviter N+1.
+  const predecessorsByTask = new Map()
+  if (currentId) {
+    const rows = db
+      .prepare(
+        `SELECT tp.task_id, tp.predecessor_id, tp.lag
+           FROM task_predecessors tp
+           JOIN tasks t ON t.id = tp.task_id
+           WHERE t.project_id = ?
+           ORDER BY tp.predecessor_id ASC`,
+      )
+      .all(currentId)
+    for (const r of rows) {
+      if (!predecessorsByTask.has(r.task_id)) {
+        predecessorsByTask.set(r.task_id, [])
+      }
+      predecessorsByTask
+        .get(r.task_id)
+        .push({ id: r.predecessor_id, lag: r.lag })
+    }
+  }
+  // Attache `predecessors` à chaque tâche (tableau, jamais null/undefined).
+  // v1.21 — Pour la rétro-compatibilité des clients/tests v1.20-, on dérive
+  // également `predecessor_id` et `predecessor_lag` du 1er prédécesseur
+  // (ordre par id ASC, déterministe). Ces alias seront retirés à la v1.22.
+  for (const t of tasks) {
+    const list = predecessorsByTask.get(t.id) || []
+    t.predecessors = list
+    t.predecessor_id = list[0]?.id ?? null
+    t.predecessor_lag = list[0]?.lag ?? 0
+  }
   return {
     version: getVersion(db),
     current_project_id: currentId,
@@ -845,70 +1119,61 @@ function computeShiftedDates(succ, targetStart) {
 }
 
 /**
- * v1.10 — Aligne les dates / le délai d'une tâche avec son prédécesseur.
+ * v1.21 — Calcule la borne basse de la date de début d'une tâche en agrégeant
+ * tous ses prédécesseurs : `MAX(pred.end + lag)` (règle PERT). Renvoie `null`
+ * si la tâche n'a aucun prédécesseur (ou que tous ses prédécesseurs ont été
+ * supprimés entre-temps).
  *
- * Trois cas selon le contenu du patch :
- *   • `predecessor_lag` fourni → délai = source de vérité ; on dérive
- *     start (et end via la charge).
- *   • `start_date` fourni OU le prédécesseur a changé → on INFÈRE le délai
- *     depuis l'écart entre la start (saisie ou existante) et pred.end.
- *     Si la start est antérieure à pred.end, on l'aligne (lag=0).
- *   • Aucun champ pertinent → no-op (l'invariant a été posé au précédent
- *     update ; `propagateToSuccessors` rattrapera plus tard si nécessaire).
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} taskId
+ * @returns {string|null}  Date 'YYYY-MM-DD' ou null.
+ */
+function computeMinStartFromPredecessors(db, taskId) {
+  const preds = listPredecessorsForTask(db, taskId)
+  if (preds.length === 0) return null
+  const placeholders = preds.map(() => '?').join(',')
+  const predRows = db
+    .prepare(`SELECT id, end_date FROM tasks WHERE id IN (${placeholders})`)
+    .all(...preds.map((p) => p.id))
+  const endById = new Map(predRows.map((r) => [r.id, r.end_date]))
+  let maxStart = null
+  for (const p of preds) {
+    const predEnd = endById.get(p.id)
+    if (!predEnd) continue
+    const candidate = computeSuccessorStart(predEnd, p.lag)
+    if (maxStart === null || candidate > maxStart) maxStart = candidate
+  }
+  return maxStart
+}
+
+/**
+ * v1.21 — Aligne la date de début d'une tâche sur la borne basse de ses
+ * prédécesseurs (MAX sur tous). Le lag est désormais porté par chaque ligne
+ * de `task_predecessors` (pas inféré depuis l'écart). Comportement :
+ *   • Si la tâche n'a aucun prédécesseur → no-op.
+ *   • Si `next.start_date >= MAX(pred.end + lag)` → on respecte la saisie
+ *     utilisateur (typique : un Replan a poussé plus loin pour résoudre une
+ *     surcharge ; le lag minimum est satisfait, on ne ramène pas en arrière).
+ *   • Sinon → on remonte start à la borne basse en préservant la charge en
+ *     jours ouvrés.
  *
- * Modifie `next` en place (start_date / end_date / predecessor_lag).
+ * Modifie `next` en place (start_date / end_date).
  *
  * @param {import('better-sqlite3').Database} db
  * @param {object} current  Tâche AVANT update (lue depuis la base).
  * @param {object} next     Tâche APRÈS application du patch (en cours d'éval).
- * @param {object} patch    Le patch d'origine (pour distinguer les champs
- *                          explicitement fournis des champs hérités).
  */
-function reconcilePredecessor(db, current, next, patch) {
-  const pred = db
-    .prepare(`SELECT end_date FROM tasks WHERE id = ?`)
-    .get(next.predecessor_id)
-  if (!pred) return
-  const lagInPatch = patch.predecessor_lag !== undefined
-  if (lagInPatch) {
-    // v1.23 — Le délai est désormais traité comme un MINIMUM : il fixe la
-    // borne basse de start, mais une `start_date` fournie au-delà de cette
-    // borne est respectée (cas typique : un Replan a poussé la tâche pour
-    // résoudre une surcharge, le délai reste à sa valeur saisie, le gap réel
-    // est plus large). Auparavant, lagInPatch écrasait inconditionnellement
-    // start_date avec la valeur dérivée du lag, ce qui faisait sauter le
-    // déplacement du replan et — comme `submitReplanMoves` n'envoyait pas le
-    // lag — entraînait une ré-inférence à 6 (bug v1.22 « Test délai »).
-    const minStart = computeSuccessorStart(pred.end_date, next.predecessor_lag)
-    if (next.start_date < minStart) {
-      const charge = Math.max(
-        1,
-        workingDaysBetweenServer(current.start_date, current.end_date),
-      )
-      next.start_date = minStart
-      if (next.kind !== 'milestone') {
-        next.end_date = addWorkingDaysServer(minStart, charge)
-      }
-    }
-    return
-  }
-  const predIdChanged = current.predecessor_id !== next.predecessor_id
-  const startInPatch = patch.start_date !== undefined
-  if (!startInPatch && !predIdChanged) return
-  // Cas commun : on infère le délai depuis (next.start_date - pred.end_date).
-  if (next.start_date < pred.end_date) {
-    // start incohérente avec le prédécesseur : alignement.
-    next.start_date = pred.end_date
-    next.predecessor_lag = 0
-  } else {
-    // v1.23 — Symétrique de `computeSuccessorStart(pred.end, lag) ⇒ addWorkingDays(base, lag + 2)`.
-    // Pour retrouver le lag à partir d'un gap, on retire 2 au lieu de 1 :
-    // `lag = max(0, workingDaysBetween(pred.end, start) - 2)`. Sur des bornes
-    // toutes deux jour-ouvré, ça donne 0 quand start = pred.end (gap = 1).
-    next.predecessor_lag = Math.max(
-      0,
-      workingDaysBetweenServer(pred.end_date, next.start_date) - 2,
-    )
+function reconcilePredecessors(db, current, next) {
+  const minStart = computeMinStartFromPredecessors(db, current.id)
+  if (minStart === null) return
+  if (next.start_date >= minStart) return
+  const charge = Math.max(
+    1,
+    workingDaysBetweenServer(current.start_date, current.end_date),
+  )
+  next.start_date = minStart
+  if (next.kind !== 'milestone') {
+    next.end_date = addWorkingDaysServer(minStart, charge)
   }
 }
 
@@ -927,13 +1192,12 @@ function reconcilePredecessor(db, current, next, patch) {
  * @param {string} rootId  Id de la tâche dont les dates viennent de changer.
  */
 function propagateToSuccessors(db, rootId) {
-  const fetch = db.prepare(
-    `SELECT id, kind, start_date, end_date FROM tasks WHERE id = ?`,
-  )
+  // v1.21 — Successeurs récupérés via la table N:M (un succ peut avoir N préds).
   const fetchSuccessors = db.prepare(
-    `SELECT id, kind, start_date, end_date, parent_id, predecessor_lag
-       FROM tasks
-       WHERE predecessor_id = ?`,
+    `SELECT t.id, t.kind, t.start_date, t.end_date, t.parent_id
+       FROM task_predecessors tp
+       JOIN tasks t ON t.id = tp.task_id
+       WHERE tp.predecessor_id = ?`,
   )
   const updateDates = db.prepare(
     `UPDATE tasks SET start_date = ?, end_date = ? WHERE id = ?`,
@@ -945,21 +1209,15 @@ function propagateToSuccessors(db, rootId) {
     const curId = queue.shift()
     if (seen.has(curId)) continue
     seen.add(curId)
-    const cur = fetch.get(curId)
-    if (!cur) continue
 
     for (const succ of fetchSuccessors.all(curId)) {
-      // v1.23 — Le lag est traité comme un MINIMUM (cf. `reconcilePredecessor`) :
-      // on ne POUSSE le successeur que si sa start courante viole cette borne.
-      // Sinon on le laisse en place (ex. : le replan l'avait déjà déplacé plus
-      // loin pour résoudre une surcharge — on ne défait pas son geste). Un
-      // raccourcissement du prédécesseur ne ramène plus le successeur en
-      // arrière (changement vs. v1.10), au profit de la cohérence avec
-      // l'intention « lag = délai minimum ».
-      const minStart = computeSuccessorStart(
-        cur.end_date,
-        succ.predecessor_lag || 0,
-      )
+      // v1.21 — La borne basse de chaque successeur est MAX sur TOUS ses
+      // prédécesseurs (pas seulement celui qui vient de bouger). Le lag est
+      // toujours traité comme un MINIMUM : si succ.start est déjà ≥ minStart
+      // (ex. décalage volontaire saisi par l'utilisateur ou poussée par
+      // Replan), on ne ramène pas la tâche en arrière.
+      const minStart = computeMinStartFromPredecessors(db, succ.id)
+      if (minStart === null) continue
       if (succ.start_date >= minStart) continue
       const { newStart, newEnd } = computeShiftedDates(succ, minStart)
       if (newStart === succ.start_date && newEnd === succ.end_date) continue
@@ -1153,42 +1411,49 @@ function nextTaskPosition(db) {
  * @param {object} input  Payload de création (cf. createTask).
  * @returns {{startDate:string, lag:number}}
  */
-function resolveCreateStartAndLag(db, input) {
-  const requestedLag = Math.max(
-    0,
-    Math.floor(Number(input.predecessor_lag) || 0),
-  )
-  if (input.kind === 'phase' || !input.predecessor_id) {
-    return { startDate: input.start_date, lag: 0 }
+/**
+ * v1.21 — Calcule la date de début initiale d'une tâche à partir de la liste
+ * fournie de prédécesseurs (règle PERT : MAX(pred.end + lag)). Si la liste
+ * est vide ou si aucun prédécesseur n'existe encore dans la base, on respecte
+ * `input.start_date`. Si une borne basse calculée dépasse `input.start_date`,
+ * on aligne sur la borne (cohérent avec le comportement runtime de
+ * `reconcilePredecessors`).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {{start_date?:string, kind?:string}} input
+ * @param {Array<{id:string, lag:number}>|null} predecessors
+ * @returns {string}  Date 'YYYY-MM-DD'.
+ */
+function resolveCreateStart(db, input, predecessors) {
+  const fallback = input.start_date
+  if (input.kind === 'phase' || !predecessors || predecessors.length === 0) {
+    return fallback
   }
-  const pred = db
-    .prepare(`SELECT end_date FROM tasks WHERE id = ?`)
-    .get(input.predecessor_id)
-  if (!pred) {
-    return { startDate: input.start_date, lag: requestedLag }
+  const ids = predecessors.map((p) => p.id)
+  const placeholders = ids.map(() => '?').join(',')
+  const rows = db
+    .prepare(`SELECT id, end_date FROM tasks WHERE id IN (${placeholders})`)
+    .all(...ids)
+  const endById = new Map(rows.map((r) => [r.id, r.end_date]))
+  let minStart = null
+  for (const p of predecessors) {
+    const predEnd = endById.get(p.id)
+    if (!predEnd) continue
+    const cand = computeSuccessorStart(predEnd, p.lag)
+    if (minStart === null || cand > minStart) minStart = cand
   }
-  if (input.predecessor_lag !== undefined) {
-    return {
-      startDate: computeSuccessorStart(pred.end_date, requestedLag),
-      lag: requestedLag,
-    }
-  }
-  if (!input.start_date || input.start_date <= pred.end_date) {
-    return { startDate: pred.end_date, lag: 0 }
-  }
-  return {
-    startDate: input.start_date,
-    lag: Math.max(
-      0,
-      workingDaysBetweenServer(pred.end_date, input.start_date) - 1,
-    ),
-  }
+  if (minStart === null) return fallback
+  return fallback && fallback > minStart ? fallback : minStart
 }
 
 export function createTask(db, input) {
   const tx = db.transaction(() => {
     const kind = input.kind || 'task'
-    const { startDate, lag } = resolveCreateStartAndLag(db, input)
+    // v1.21 — Liste de prédécesseurs (nouveau format) ou conversion depuis
+    // l'ancien (`predecessor_id` seul). Pour les phases, toujours vide.
+    const predecessors =
+      kind === 'phase' ? null : resolvePredecessorsInput(input)
+    const startDate = resolveCreateStart(db, input, predecessors)
     // Pour un jalon, on ignore end_date envoyé par le client : un jalon est
     // ponctuel, donc end_date = start_date par construction.
     const endDate =
@@ -1243,8 +1508,12 @@ export function createTask(db, input) {
       kind === 'task' ? (input.collaborator_id ?? null) : null,
       input.color ?? null,
       input.parent_id ?? null,
-      kind === 'phase' ? null : (input.predecessor_id ?? null),
-      lag,
+      // v1.21 — Colonnes legacy mises à null/0 : la source de vérité est
+      // désormais la table `task_predecessors`. Elles restent dans le schéma
+      // pour ne pas casser les bases anciennes mais ne sont plus lues par
+      // le code v1.21+.
+      null,
+      0,
       // v1.18 / v1.24 — Pr2 : 3 par défaut sur les activités, null sur jalon/phase.
       normalizePriority(input.priority, kind),
       // v1.24 — SNET : valeur saisie ou null si phase / format invalide.
@@ -1252,11 +1521,22 @@ export function createTask(db, input) {
       position,
       projectId,
     )
+    // v1.21 — Persiste les prédécesseurs dans la table N:M (après l'INSERT,
+    // sinon la FK `task_id` rejette).
+    if (predecessors && predecessors.length > 0) {
+      setPredecessorsForTask(db, input.id, predecessors)
+    }
     // v1.6 — Si on vient d'ajouter une feuille (task / milestone) à une
     // phase, il faut recalculer les dates de cette phase et de ses ancêtres.
     recomputeAncestorPhases(db, input.id)
     const version = bumpVersion(db)
     const task = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(input.id)
+    // v1.21 — Enrichit le retour avec la liste de prédécesseurs et les alias
+    // rétro-compat `predecessor_id` / `predecessor_lag` (= 1er prédécesseur).
+    const preds = listPredecessorsForTask(db, input.id)
+    task.predecessors = preds
+    task.predecessor_id = preds[0]?.id ?? null
+    task.predecessor_lag = preds[0]?.lag ?? 0
     return { version, task }
   })
   return tx()
@@ -1283,24 +1563,16 @@ export function updateTask(db, id, patch) {
     if (!current) return { version: getVersion(db), changed: false }
 
     const next = { ...current, ...patch }
-    // Normalise predecessor_lag : entier ≥ 0 ; null/undefined/NaN → 0.
-    next.predecessor_lag = Math.max(
-      0,
-      Math.floor(Number(next.predecessor_lag) || 0),
-    )
 
-    // v1.10 — Contrainte de prédécesseur basée sur le DÉLAI :
-    //   • Si patch.predecessor_lag fourni OU predecessor_id changé
-    //     → on dérive start_date depuis pred.end + lag (le délai est la
-    //       source de vérité ; on préserve la charge en jours ouvrés).
-    //   • Sinon, si patch.start_date fourni → on INFÈRE le nouveau lag
-    //     depuis l'écart (cas du drag du corps de barre par l'utilisateur).
-    if (
-      next.kind !== 'phase' &&
-      next.predecessor_id &&
-      next.predecessor_id !== id
-    ) {
-      reconcilePredecessor(db, current, next, patch)
+    // v1.21 — Synchronise la table `task_predecessors` AVANT la logique
+    // de réconciliation des dates : la liste à jour est la source de vérité.
+    syncPredecessorsFromPatch(db, id, next.kind, patch)
+
+    // v1.21 — Aligne start_date sur MAX(pred.end + lag) si la liste actuelle
+    // l'impose. Si `next.start_date` est déjà au-delà (saisie utilisateur ou
+    // Replan), on respecte la valeur — le lag reste un MINIMUM.
+    if (next.kind !== 'phase') {
+      reconcilePredecessors(db, current, next)
     }
     // Cohérence : un jalon a end_date == start_date, toujours.
     if (next.kind === 'milestone') next.end_date = next.start_date
@@ -1310,15 +1582,12 @@ export function updateTask(db, id, patch) {
     // explicitement effacé) pour rester aligné avec la règle métier.
     if (next.kind === 'milestone') next.collaborator_id = null
 
-    // v1.6 — Une phase n'a pas de collaborateur ni de prédécesseur.
+    // v1.6 — Une phase n'a pas de collaborateur (et plus de prédécesseur ;
+    // on a déjà vidé sa liste juste au-dessus).
     if (next.kind === 'phase') {
       next.collaborator_id = null
-      next.predecessor_id = null
-      next.predecessor_lag = 0
       next.priority = null
     }
-    // Sans prédécesseur, le délai n'a pas de sens : on le force à 0.
-    if (!next.predecessor_id) next.predecessor_lag = 0
     // v1.18 / v1.24 — Normalise la priorité selon le type final de la tâche :
     //   • activité  → 1..5, défaut 3 si saisie invalide ;
     //   • jalon/phase → null (la priorité n'a pas de sens hors activité).
@@ -1329,16 +1598,16 @@ export function updateTask(db, id, patch) {
       next.not_before_date,
       next.kind,
     )
-    // v1.24 — Applique la contrainte SNET en dernière étape (le prédécesseur
-    // a déjà été réconcilié juste avant). Si SNET > borne basse actuelle,
-    // start (et end) sont relevés en respectant la charge en jours ouvrés.
+    // v1.24 — Applique la contrainte SNET en dernière étape (la borne basse
+    // prédécesseur a déjà été réconciliée juste avant). Si SNET > borne basse
+    // actuelle, start (et end) sont relevés en respectant la charge en jours ouvrés.
     enforceNotBeforeDate(next)
 
     db.prepare(
       `UPDATE tasks
          SET name = ?, kind = ?, start_date = ?, end_date = ?, progress = ?,
-             collaborator_id = ?, color = ?, parent_id = ?, predecessor_id = ?,
-             predecessor_lag = ?, priority = ?, not_before_date = ?
+             collaborator_id = ?, color = ?, parent_id = ?,
+             priority = ?, not_before_date = ?
          WHERE id = ?`,
     ).run(
       next.name,
@@ -1349,8 +1618,6 @@ export function updateTask(db, id, patch) {
       next.collaborator_id,
       next.color,
       next.parent_id,
-      next.predecessor_id,
-      next.predecessor_lag,
       next.priority,
       next.not_before_date,
       id,
@@ -1767,10 +2034,19 @@ export function replaceFullState(db, state) {
          position, project_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
+    // v1.21 — On insère d'abord toutes les tâches SANS leurs prédécesseurs,
+    // puis on remplit `task_predecessors` dans une 2ᵉ passe — sinon une
+    // liaison qui pointe vers une tâche pas encore insérée ferait échouer la
+    // FK. La liste de préds par tâche est mémorisée pendant la 1ʳᵉ passe.
+    const predsByTaskId = new Map()
     state.tasks.forEach((t, idx) => {
       const kind = t.kind || 'task'
       const endDate =
         kind === 'milestone' ? t.start_date : t.end_date || t.start_date
+      const predecessors = kind === 'phase' ? null : resolvePredecessorsInput(t)
+      if (predecessors && predecessors.length > 0) {
+        predsByTaskId.set(t.id, predecessors)
+      }
       insTask.run(
         t.id,
         t.name,
@@ -1782,9 +2058,10 @@ export function replaceFullState(db, state) {
         kind === 'task' ? (t.collaborator_id ?? null) : null,
         t.color ?? null,
         t.parent_id ?? null,
-        kind === 'phase' ? null : (t.predecessor_id ?? null),
-        // v1.10 — délai (jours ouvrés) ; 0 par défaut.
-        kind === 'phase' ? 0 : Math.max(0, Math.floor(t.predecessor_lag || 0)),
+        // v1.21 — Colonnes legacy figées à null/0. Source de vérité = table
+        // `task_predecessors` remplie dans la 2ᵉ passe ci-dessous.
+        null,
+        0,
         // v1.18 / v1.24 — priorité 1..5 (défaut 3) sur les activités, null
         // sur les jalons et les phases.
         normalizePriority(t.priority, kind),
@@ -1794,6 +2071,10 @@ export function replaceFullState(db, state) {
         t.project_id || fallbackProjectId,
       )
     })
+    // 2ᵉ passe : toutes les tâches existent désormais, on peut relier.
+    for (const [taskId, preds] of predsByTaskId) {
+      setPredecessorsForTask(db, taskId, preds)
+    }
 
     // v1.6 — Recalcul des dates de toutes les phases (depuis les feuilles
     // les plus profondes vers la racine pour gérer les phases imbriquées).

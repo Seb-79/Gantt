@@ -118,6 +118,16 @@ export const CollaboratorIdParams = z.object({ id: NonEmptyId })
  * tâche, il vaut start_date par défaut ; pour un jalon, on l'ignore et on
  * force end_date = start_date côté DAL.
  */
+/**
+ * v1.21 — Une entrée de la liste `predecessors` : l'id du prédécesseur et
+ * son délai (lag) en jours ouvrés (≥ 0). Le tableau complet remplace
+ * atomiquement la liste de liaisons de la tâche.
+ */
+const PredecessorEntry = z.object({
+  id: NonEmptyId,
+  lag: Lag.optional(),
+})
+
 export const CreateTaskBody = z
   .object({
     id: NonEmptyId,
@@ -129,8 +139,11 @@ export const CreateTaskBody = z
     collaborator_id: NonEmptyId.nullable().optional(),
     color: HexColor.nullable().optional(),
     parent_id: NonEmptyId.nullable().optional(),
-    // v1.2 — Tâche prédécesseur. Si renseignée, le DAL force la start_date
-    // sur la end_date du prédécesseur (cf. db/index.js).
+    // v1.21 — Liste de prédécesseurs (nouveau format). Si fournie, prend le
+    // pas sur `predecessor_id` / `predecessor_lag` (alias legacy).
+    predecessors: z.array(PredecessorEntry).optional(),
+    // v1.2 — Tâche prédécesseur (alias mono-pred). Si renseignée, le DAL
+    // force la start_date sur la end_date du prédécesseur.
     predecessor_id: NonEmptyId.nullable().optional(),
     // v1.10 — Délai en jours ouvrés entre le prédécesseur et cette tâche.
     predecessor_lag: Lag.optional(),
@@ -159,8 +172,10 @@ export const UpdateTaskBody = z
     collaborator_id: NonEmptyId.nullable().optional(),
     color: HexColor.nullable().optional(),
     parent_id: NonEmptyId.nullable().optional(),
-    predecessor_id: NonEmptyId.nullable().optional(), // v1.2
-    predecessor_lag: Lag.optional(), // v1.10
+    // v1.21 — Liste de prédécesseurs (nouveau format).
+    predecessors: z.array(PredecessorEntry).optional(),
+    predecessor_id: NonEmptyId.nullable().optional(), // v1.2 (alias legacy)
+    predecessor_lag: Lag.optional(), // v1.10 (alias legacy)
     priority: Priority.nullable().optional(), // v1.18
     not_before_date: IsoDate.nullable().optional(), // v1.24 — SNET
   })

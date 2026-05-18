@@ -56,10 +56,18 @@ export interface Task {
   color: string | null
   /** Tâche parent (regroupement en phases). */
   parent_id: string | null
-  /** Tâche prédécesseur (v1.2) : si défini, start_date == end_date du prédécesseur. */
+  /** v1.21 — Liste des prédécesseurs (N:M). Une tâche peut avoir 0..N
+   *  prédécesseurs, chacun avec son propre lag (jours ouvrés). Sa start_date
+   *  effective est MAX(pred.end + lag) sur tous les liens.
+   *  Tableau toujours présent (jamais null/undefined) côté serveur ; optionnel
+   *  dans le type pour permettre aux tests legacy de forger des tâches sans
+   *  ce champ. À durcir en `Task` (non-optionnel) une fois tous les tests migrés. */
+  predecessors?: { id: string; lag: number }[]
+  /** v1.2 / v1.21 — Alias rétro-compat : 1er prédécesseur de la liste
+   *  (tri par id ASC) ou null. Retiré à la v1.22 — utiliser `predecessors`. */
   predecessor_id: string | null
-  /** v1.10 — Délai (jours ouvrés) entre la fin du prédécesseur et le début de
-   *  cette tâche. 0 = enchaînement immédiat. Non significatif sans prédécesseur. */
+  /** v1.10 / v1.21 — Alias rétro-compat : lag du 1er prédécesseur ou 0.
+   *  Retiré à la v1.22 — utiliser `predecessors`. */
   predecessor_lag: number
   /** v1.18 / v1.24 — Priorité 1..5. Obligatoire sur les activités (3 par défaut) ;
    *  `null` pour les jalons et les phases. Sans effet sur l'affichage :

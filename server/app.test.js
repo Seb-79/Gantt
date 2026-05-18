@@ -180,6 +180,55 @@ describe('Tâches', () => {
     expect(r.body.task.start_date).toBe('2026-05-29')
   })
 
+  // ---- v1.21 — Multi-prédécesseurs (nouveau format API) ------------------
+
+  it('POST avec predecessors[] = 2 entrées : start = MAX(pred.end) et liste exposée', async () => {
+    // Démo : t1a finit 2026-05-29, t1c finit 2026-06-15. MAX = 2026-06-15.
+    const r = await request(app)
+      .post('/api/tasks')
+      .send({
+        id: 'tMulti',
+        name: 'Tâche multi-préd',
+        start_date: '2026-01-01',
+        end_date: '2026-01-02',
+        predecessors: [
+          { id: 't1a', lag: 0 },
+          { id: 't1c', lag: 0 },
+        ],
+      })
+      .expect(200)
+    expect(r.body.task.start_date).toBe('2026-06-15')
+    // L'API expose la liste complète, triée par id ASC.
+    expect(r.body.task.predecessors).toEqual([
+      { id: 't1a', lag: 0 },
+      { id: 't1c', lag: 0 },
+    ])
+    // Alias rétro-compat (= 1er pred par id ASC).
+    expect(r.body.task.predecessor_id).toBe('t1a')
+  })
+
+  it('PATCH predecessors[] : remplace atomiquement la liste', async () => {
+    // Crée une tâche avec t1a comme prédécesseur, puis bascule vers t1c.
+    await request(app)
+      .post('/api/tasks')
+      .send({
+        id: 'tSwap',
+        name: 'Tâche à modifier',
+        start_date: '2026-01-01',
+        end_date: '2026-01-02',
+        predecessors: [{ id: 't1a', lag: 0 }],
+      })
+      .expect(200)
+    await request(app)
+      .patch('/api/tasks/tSwap')
+      .send({ predecessors: [{ id: 't1c', lag: 0 }] })
+      .expect(200)
+    const state = await request(app).get('/api/state').expect(200)
+    const t = state.body.tasks.find((x) => x.id === 'tSwap')
+    expect(t.predecessors).toEqual([{ id: 't1c', lag: 0 }])
+    expect(t.start_date).toBe('2026-06-15') // recalé sur t1c.end
+  })
+
   // ---- v1.5 — Déplacement (drag & drop) ----------------------------------
 
   it('POST /move : insère avant un sibling', async () => {

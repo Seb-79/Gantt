@@ -370,6 +370,53 @@ describe('GanttChart — flèches prédécesseurs', () => {
     )
     expect(arrowPath).toBeTruthy()
   })
+
+  // v1.21 — Multi-prédécesseurs : une tâche avec N prédécesseurs doit
+  // afficher N flèches distinctes (une par lien).
+  it('rend N flèches quand task.predecessors contient N entrées', () => {
+    const tasks: Task[] = [
+      mkTask({
+        id: 'a',
+        name: 'A',
+        start_date: '2026-05-01',
+        end_date: '2026-05-05',
+      }),
+      mkTask({
+        id: 'b',
+        name: 'B',
+        start_date: '2026-05-06',
+        end_date: '2026-05-09',
+      }),
+      mkTask({
+        id: 'c',
+        name: 'C',
+        start_date: '2026-05-12',
+        end_date: '2026-05-15',
+        predecessors: [
+          { id: 'a', lag: 0 },
+          { id: 'b', lag: 0 },
+        ],
+      }),
+    ]
+    const { container } = render(
+      <GanttChart
+        windowStart="2026-05-01"
+        windowEnd="2026-05-31"
+        dayWidth={20}
+        tasks={tasks}
+        collaborators={COLLABS}
+      />,
+    )
+    // On filtre par l'attribut `data-pred-link` qu'on émet sur chaque
+    // chemin de flèche (pas dans le marker des `<defs>`).
+    const arrows = container.querySelectorAll('path[data-pred-link]')
+    expect(arrows.length).toBe(2)
+    // Les deux liens sont étiquetés a→c et b→c.
+    const labels = Array.from(arrows).map((p) =>
+      p.getAttribute('data-pred-link'),
+    )
+    expect(labels).toEqual(expect.arrayContaining(['a->c', 'b->c']))
+  })
 })
 
 // =============================================================================

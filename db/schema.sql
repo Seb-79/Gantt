@@ -93,3 +93,29 @@ CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
 -- db/index.js : il dépend d'une colonne ajoutée par migration ALTER TABLE,
 -- qui n'existe pas forcément quand `schema.sql` est rejoué sur une base
 -- créée avant la v1.2 (CREATE TABLE IF NOT EXISTS ne migre pas).
+
+-- =============================================================================
+-- v1.21 — Table de liaison N:M tasks ↔ prédécesseurs.
+-- Une tâche peut avoir 0..N prédécesseurs, chacun avec son propre délai
+-- (jours ouvrés). La date de début de la tâche est calculée comme
+-- MAX(pred_i.end_date + lag_i) — règle PERT standard.
+--
+-- L'ancien couple `tasks.predecessor_id` / `tasks.predecessor_lag` est
+-- conservé en colonne pour ne pas casser les bases antérieures (les valeurs
+-- y restent figées et ne sont plus utilisées par le code v1.21+) — il sera
+-- retiré dans une migration ultérieure de nettoyage.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS task_predecessors (
+  -- Tâche successeur : la liaison est supprimée si la tâche est supprimée.
+  task_id        TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  -- Tâche prédécesseur : la liaison est supprimée si le prédécesseur est
+  -- supprimé (comportement attendu : on perd la dépendance, pas la tâche
+  -- successeur — équivalent SQL au précédent ON DELETE SET NULL).
+  predecessor_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  -- Délai en jours ouvrés strictement entre pred.end_date et task.start_date.
+  -- 0 = enchaînement immédiat (le successeur démarre le jour ouvré suivant).
+  lag            INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (task_id, predecessor_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_predecessors_pred
+  ON task_predecessors(predecessor_id);

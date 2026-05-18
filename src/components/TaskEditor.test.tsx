@@ -171,7 +171,7 @@ describe('TaskEditor — édition', () => {
   })
 })
 
-describe('TaskEditor — prédécesseur', () => {
+describe('TaskEditor — prédécesseur (v1.22 picker arborescent)', () => {
   const PRED = mkTask({
     id: 'tA',
     name: 'Prédécesseur',
@@ -179,7 +179,19 @@ describe('TaskEditor — prédécesseur', () => {
     end_date: '2026-05-15',
   })
 
-  it('liste les jalons en plus des tâches dans le menu prédécesseur', () => {
+  /** Ouvre le popover du PredecessorPicker (bouton « + Ajouter… »). */
+  function openPicker() {
+    fireEvent.click(screen.getByText('+ Ajouter un prédécesseur'))
+  }
+
+  /** Clique dans le popover sur la ligne d'id donné pour l'ajouter. */
+  function pickTask(id: string) {
+    const row = document.querySelector(`[data-task-id="${id}"]`)
+    if (!row) throw new Error(`Ligne tâche ${id} introuvable dans le picker`)
+    fireEvent.click(row)
+  }
+
+  it("liste les jalons en plus des tâches dans l'arbre du picker", () => {
     const milestone = mkTask({
       id: 'mA',
       name: 'Jalon',
@@ -197,11 +209,11 @@ describe('TaskEditor — prédécesseur', () => {
         onClose={vi.fn()}
       />,
     )
-    const select = screen.getByLabelText(/Prédécesseur/) as HTMLSelectElement
-    const optionLabels = Array.from(select.options).map((o) => o.text)
-    expect(optionLabels.some((l) => /Prédécesseur/.test(l))).toBe(true)
-    // Le préfixe ◆ identifie les jalons.
-    expect(optionLabels.some((l) => /◆ Jalon/.test(l))).toBe(true)
+    openPicker()
+    // Les deux tâches sont rendues dans l'arbre, le jalon préfixé par ◆.
+    expect(document.querySelector('[data-task-id="tA"]')).toBeInTheDocument()
+    const mRow = document.querySelector('[data-task-id="mA"]')!
+    expect(mRow.textContent).toMatch(/◆/)
   })
 
   it('initialise start_date sur la end_date du prédécesseur choisi', () => {
@@ -223,17 +235,16 @@ describe('TaskEditor — prédécesseur', () => {
     fireEvent.change(screen.getByLabelText(/Nom/), {
       target: { value: 'Nouvelle' },
     })
-    fireEvent.change(screen.getByLabelText(/Prédécesseur/), {
-      target: { value: 'tA' },
-    })
-    // La date de début doit avoir été poussée à 2026-05-15 (fin du prédécesseur).
+    openPicker()
+    pickTask('tA')
+    // La date de début est poussée à 2026-05-15 (fin du prédécesseur).
     expect(screen.getByLabelText(/^Début/)).toHaveValue('2026-05-15')
     fireEvent.click(screen.getByRole('button', { name: 'Créer' }))
     expect(onSave.mock.calls[0][0].start_date).toBe('2026-05-15')
-    expect(onSave.mock.calls[0][0].predecessor_id).toBe('tA')
+    expect(onSave.mock.calls[0][0].predecessors).toEqual([{ id: 'tA', lag: 0 }])
   })
 
-  it('refuse une start_date < fin du prédécesseur', () => {
+  it('refuse une start_date < borne basse (MAX prédécesseur)', () => {
     const onSave = vi.fn()
     render(
       <TaskEditor
@@ -250,19 +261,19 @@ describe('TaskEditor — prédécesseur', () => {
       />,
     )
     fireEvent.change(screen.getByLabelText(/Nom/), { target: { value: 'X' } })
-    fireEvent.change(screen.getByLabelText(/Prédécesseur/), {
-      target: { value: 'tA' },
-    })
-    // Si on essaie de remettre une date AVANT 2026-05-15, l'erreur s'affiche.
+    openPicker()
+    pickTask('tA')
     fireEvent.change(screen.getByLabelText(/^Début/), {
       target: { value: '2026-05-10' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Créer' }))
     expect(onSave).not.toHaveBeenCalled()
-    expect(screen.getByRole('alert')).toHaveTextContent(/≥ fin du prédécesseur/)
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      /max des fins de prédécesseurs/,
+    )
   })
 
-  it('autorise une start_date > fin du prédécesseur (décalage volontaire)', () => {
+  it('autorise une start_date > borne basse (décalage volontaire)', () => {
     const onSave = vi.fn()
     render(
       <TaskEditor
@@ -279,15 +290,49 @@ describe('TaskEditor — prédécesseur', () => {
       />,
     )
     fireEvent.change(screen.getByLabelText(/Nom/), { target: { value: 'X' } })
-    fireEvent.change(screen.getByLabelText(/Prédécesseur/), {
-      target: { value: 'tA' },
-    })
+    openPicker()
+    pickTask('tA')
     fireEvent.change(screen.getByLabelText(/^Début/), {
       target: { value: '2026-05-20' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Créer' }))
     expect(onSave).toHaveBeenCalledTimes(1)
     expect(onSave.mock.calls[0][0].start_date).toBe('2026-05-20')
+  })
+
+  it('multi-prédécesseurs : start_date alignée sur MAX et envoyée dans predecessors[]', () => {
+    const PRED2 = mkTask({
+      id: 'tB',
+      name: 'Pred B',
+      start_date: '2026-05-10',
+      end_date: '2026-05-25',
+    })
+    const onSave = vi.fn()
+    render(
+      <TaskEditor
+        task={null}
+        defaults={{ name: 'Multi', start_date: '2026-05-01' }}
+        collaborators={COLLABS}
+        tasks={[PRED, PRED2]}
+        onSave={onSave}
+        onClose={vi.fn()}
+      />,
+    )
+    fireEvent.change(screen.getByLabelText(/Nom/), {
+      target: { value: 'Multi' },
+    })
+    openPicker()
+    pickTask('tA')
+    pickTask('tB')
+    // MAX(15/05, 25/05) = 25/05 ; mais le 25/05/2026 est le lundi de
+    // Pentecôte (férié FR) → snap forward au mardi 26/05.
+    expect(screen.getByLabelText(/^Début/)).toHaveValue('2026-05-26')
+    fireEvent.click(screen.getByRole('button', { name: 'Créer' }))
+    expect(onSave.mock.calls[0][0].start_date).toBe('2026-05-26')
+    expect(onSave.mock.calls[0][0].predecessors).toEqual([
+      { id: 'tA', lag: 0 },
+      { id: 'tB', lag: 0 },
+    ])
   })
 })
 
@@ -468,11 +513,11 @@ describe('TaskEditor — case "Replanifier après enregistrement" (v1.22)', () =
 // docs/regles-metier.md). Chaque test cite la règle qu'il garantit.
 // =============================================================================
 
-describe('v1.24 — RG-GANTT-0400 — anti-cycle sur le menu prédécesseur', () => {
-  it('un descendant de la tâche éditée n`apparaît PAS dans le menu Prédécesseur', () => {
+describe('v1.24 — RG-GANTT-0400 — anti-cycle sur le picker prédécesseur', () => {
+  it("un descendant de la tâche éditée est grisé (non-cliquable) dans l'arbre", () => {
     // Garantit qu'une tâche ne peut pas avoir l'un de ses descendants comme
-    // prédécesseur (sinon cycle infini de dépendance). L'UI filtre le menu
-    // via descendantIds().
+    // prédécesseur (sinon cycle infini). En v1.22 l'arbre AFFICHE la tâche
+    // mais la marque `aria-disabled="true"` (grisée + tooltip explicatif).
     const parent = mkTask({
       id: 'p',
       name: 'Parent',
@@ -495,26 +540,27 @@ describe('v1.24 — RG-GANTT-0400 — anti-cycle sur le menu prédécesseur', ()
     })
     render(
       <TaskEditor
-        task={parent} // on édite le PARENT
+        task={parent}
         collaborators={COLLABS}
         tasks={[parent, child, grandChild]}
         onSave={vi.fn()}
         onClose={vi.fn()}
       />,
     )
-    const select = screen.getByLabelText(/Prédécesseur/) as HTMLSelectElement
-    const options = Array.from(select.options).map((o) => o.textContent || '')
-    // Le parent lui-même, ses enfants directs et indirects sont exclus.
-    expect(options.some((o) => o.includes('Parent'))).toBe(false)
-    expect(options.some((o) => o.includes('Enfant'))).toBe(false)
-    expect(options.some((o) => o.includes('Petit-enfant'))).toBe(false)
+    fireEvent.click(screen.getByText('+ Ajouter un prédécesseur'))
+    // Le parent (lui-même), l'enfant et le petit-enfant sont aria-disabled.
+    for (const id of ['p', 'c', 'gc']) {
+      const row = document.querySelector(`[data-task-id="${id}"]`)!
+      expect(row.getAttribute('aria-disabled')).toBe('true')
+    }
   })
 })
 
-describe('v1.24 — RG-GANTT-0305 — le menu prédécesseur exclut les phases', () => {
-  it('une phase existante n`apparaît PAS dans le menu déroulant Prédécesseur', () => {
+describe('v1.24 — RG-GANTT-0305 — le picker prédécesseur grise les phases', () => {
+  it("une phase est rendue dans l'arbre mais reste non-cliquable", () => {
     // Garantit la règle RG-GANTT-0305 : une phase ne peut pas servir de
-    // prédécesseur à une autre tâche.
+    // prédécesseur à une autre tâche. En v1.22 elle apparaît dans l'arbre
+    // pour donner le contexte de hiérarchie mais reste grisée.
     const phase = mkTask({
       id: 'ph1',
       name: 'PhaseA',
@@ -538,10 +584,11 @@ describe('v1.24 — RG-GANTT-0305 — le menu prédécesseur exclut les phases',
         onClose={vi.fn()}
       />,
     )
-    const select = screen.getByLabelText(/Prédécesseur/) as HTMLSelectElement
-    const options = Array.from(select.options).map((o) => o.textContent || '')
-    expect(options.some((o) => o.includes('PhaseA'))).toBe(false)
-    expect(options.some((o) => o.includes('TâcheB'))).toBe(true)
+    fireEvent.click(screen.getByText('+ Ajouter un prédécesseur'))
+    const phaseRow = document.querySelector('[data-task-id="ph1"]')!
+    const taskRow = document.querySelector('[data-task-id="t_other"]')!
+    expect(phaseRow.getAttribute('aria-disabled')).toBe('true')
+    expect(taskRow.getAttribute('aria-disabled')).not.toBe('true')
   })
 })
 

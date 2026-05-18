@@ -407,6 +407,74 @@ export function computeSuccessorStart(predEnd: string, lag: number): string {
 }
 
 /**
+ * v1.21 — Calcule la borne basse de la date de début d'une tâche à partir de
+ * sa liste de prédécesseurs : `MAX(pred.end + lag)` (règle PERT). Miroir
+ * exact du `computeMinStartFromPredecessors` serveur (db/index.js).
+ *
+ * Renvoie `''` (chaîne vide) si la liste est vide ou si aucun prédécesseur
+ * ne correspond à une tâche connue (cas pathologique : id orphelin).
+ *
+ * @param predecessors  Liste { id, lag } des prédécesseurs.
+ * @param allTasks      Toutes les tâches du projet (pour résoudre les end_date).
+ * @returns             Date de borne basse YYYY-MM-DD, ou '' si pas de borne.
+ */
+export function computeMaxStartFromPredecessors(
+  predecessors: { id: string; lag: number }[],
+  allTasks: { id: string; end_date: string }[],
+): string {
+  if (!predecessors || predecessors.length === 0) return ''
+  const endById = new Map(allTasks.map((t) => [t.id, t.end_date]))
+  let maxStart = ''
+  for (const p of predecessors) {
+    const predEnd = endById.get(p.id)
+    if (!predEnd) continue
+    const cand = computeSuccessorStart(predEnd, p.lag)
+    if (cand > maxStart) maxStart = cand
+  }
+  return maxStart
+}
+
+/**
+ * v1.22 — Renvoie une liste hiérarchique aplatie des tâches : chaque entrée
+ * porte la tâche et sa profondeur dans l'arbre des phases (parent_id). L'ordre
+ * de parcours respecte `position` à chaque niveau, et les enfants viennent
+ * juste après leur parent (parcours préfixe). Une tâche dont le `parent_id`
+ * pointe vers un parent inconnu est considérée comme racine.
+ *
+ * Utilisé par `PredecessorPicker` pour rendre l'arbre des tâches avec les
+ * phases comme groupes non-sélectionnables.
+ *
+ * @param tasks  Toutes les tâches du projet.
+ * @returns      Liste plate ordonnée avec la profondeur de chaque entrée.
+ */
+export function flattenTaskTree(
+  tasks: { id: string; parent_id: string | null; position: number }[],
+): { id: string; depth: number }[] {
+  // Index par parent (incl. null pour les racines).
+  const childrenByParent = new Map<string | null, typeof tasks>()
+  const ids = new Set(tasks.map((t) => t.id))
+  for (const t of tasks) {
+    const key = t.parent_id && ids.has(t.parent_id) ? t.parent_id : null
+    if (!childrenByParent.has(key)) childrenByParent.set(key, [])
+    childrenByParent.get(key)!.push(t)
+  }
+  // Tri stable par position pour chaque niveau.
+  for (const arr of childrenByParent.values()) {
+    arr.sort((a, b) => a.position - b.position)
+  }
+  const out: { id: string; depth: number }[] = []
+  const walk = (parentId: string | null, depth: number) => {
+    const arr = childrenByParent.get(parentId) || []
+    for (const t of arr) {
+      out.push({ id: t.id, depth })
+      walk(t.id, depth + 1)
+    }
+  }
+  walk(null, 0)
+  return out
+}
+
+/**
  * v1.9 — Compte les jours OUVRÉS (lundi-vendredi) inclus dans l'intervalle
  * [startIso, endIso]. Inverse de `addWorkingDays` :
  *   workingDaysBetween(s, addWorkingDays(s, n)) === n   (pour s jour ouvré)

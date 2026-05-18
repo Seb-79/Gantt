@@ -26,6 +26,8 @@ import {
   isoToDate,
   isWeekendDay,
   computeSuccessorStart,
+  computeMaxStartFromPredecessors,
+  flattenTaskTree,
   makeId,
   maxIso,
   mondayOnOrBefore,
@@ -1333,5 +1335,112 @@ describe('v1.24 — RG-GANTT-0805 — detectNotBeforeViolations lève une erreur
     })
     const issues = checkCoherence([phase])
     expect(issues.some((i) => i.kind === 'not_before')).toBe(false)
+  })
+})
+
+// =============================================================================
+// v1.21 / v1.22 — multi-prédécesseurs (helpers purs côté client)
+// =============================================================================
+describe('computeMaxStartFromPredecessors (v1.21)', () => {
+  // Trois tâches sources : ven 12/06, mar 16/06, ven 19/06.
+  const allTasks = [
+    { id: 'A', end_date: '2026-06-12' },
+    { id: 'B', end_date: '2026-06-16' },
+    { id: 'C', end_date: '2026-06-19' },
+  ]
+
+  it('liste vide → renvoie ""', () => {
+    expect(computeMaxStartFromPredecessors([], allTasks)).toBe('')
+  })
+
+  it('1 prédécesseur, lag 0 → start = pred.end snappé jour ouvré', () => {
+    expect(
+      computeMaxStartFromPredecessors([{ id: 'A', lag: 0 }], allTasks),
+    ).toBe('2026-06-12')
+  })
+
+  it('2 prédécesseurs sans lag → MAX des fins', () => {
+    expect(
+      computeMaxStartFromPredecessors(
+        [
+          { id: 'A', lag: 0 },
+          { id: 'B', lag: 0 },
+        ],
+        allTasks,
+      ),
+    ).toBe('2026-06-16')
+  })
+
+  it('lag par lien : le pred + lag le plus tardif gagne', () => {
+    // A.end=12/06 + lag=5 → lun 22/06 ; C.end=19/06 + lag=0 → ven 19/06 ; MAX = 22/06.
+    expect(
+      computeMaxStartFromPredecessors(
+        [
+          { id: 'A', lag: 5 },
+          { id: 'C', lag: 0 },
+        ],
+        allTasks,
+      ),
+    ).toBe('2026-06-22')
+  })
+
+  it('id inconnu ignoré silencieusement', () => {
+    expect(
+      computeMaxStartFromPredecessors(
+        [
+          { id: 'INCONNU', lag: 0 },
+          { id: 'A', lag: 0 },
+        ],
+        allTasks,
+      ),
+    ).toBe('2026-06-12')
+  })
+})
+
+describe('flattenTaskTree (v1.22)', () => {
+  // Hiérarchie :
+  //   P1 (pos 0)
+  //     A (pos 0)
+  //     B (pos 1)
+  //   P2 (pos 1)
+  //     C (pos 0)
+  //       D (pos 0)
+  //   E (pos 2, racine)
+  const tasks = [
+    { id: 'P1', parent_id: null, position: 0 },
+    { id: 'A', parent_id: 'P1', position: 0 },
+    { id: 'B', parent_id: 'P1', position: 1 },
+    { id: 'P2', parent_id: null, position: 1 },
+    { id: 'C', parent_id: 'P2', position: 0 },
+    { id: 'D', parent_id: 'C', position: 0 },
+    { id: 'E', parent_id: null, position: 2 },
+  ]
+
+  it('parcours préfixe : parent avant enfants, ordre par position', () => {
+    expect(flattenTaskTree(tasks)).toEqual([
+      { id: 'P1', depth: 0 },
+      { id: 'A', depth: 1 },
+      { id: 'B', depth: 1 },
+      { id: 'P2', depth: 0 },
+      { id: 'C', depth: 1 },
+      { id: 'D', depth: 2 },
+      { id: 'E', depth: 0 },
+    ])
+  })
+
+  it('parent_id pointant vers un id inconnu → traité comme racine', () => {
+    expect(
+      flattenTaskTree([
+        { id: 'X', parent_id: 'FANTOME', position: 0 },
+        { id: 'Y', parent_id: null, position: 1 },
+      ]),
+    ).toEqual([
+      { id: 'X', depth: 0 },
+      { id: 'Y', depth: 0 },
+    ])
+  })
+
+  it('liste vide → liste vide', () => {
+    expect(flattenTaskTree([])).toEqual([])
   })
 })

@@ -26,14 +26,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   addWorkingDays,
-  computeSuccessorStart,
+  computeMaxStartFromPredecessors,
   DEFAULT_TASK_COLOR,
-  descendantIds,
   effectiveTaskColor,
   isNonWorkingDay,
   maxIso,
   workingDaysBetween,
 } from '../lib/utils'
+import PredecessorPicker, { type PredecessorEntry } from './PredecessorPicker'
 import type { Collaborator, Task, TaskKind } from '../lib/types'
 
 interface Props {
@@ -78,17 +78,18 @@ export default function TaskEditor({
   const [progress, setProgress] = useState(0)
   const [collabId, setCollabId] = useState<string>('')
   const [parentId, setParentId] = useState<string>('')
-  const [predecessorId, setPredecessorId] = useState<string>('')
+  /** v1.22 — Liste multi-prédécesseurs (1 entrée = 1 lien avec son lag).
+   *  Remplace l'ancien couple `predecessorId` / `lag` (mono-pred). La date de
+   *  début est alignée sur MAX(pred.end + lag) à chaque mutation de la liste. */
+  const [predecessorsList, setPredecessorsList] = useState<PredecessorEntry[]>(
+    [],
+  )
   /** Couleur custom (hex, vide = utiliser la couleur effective). */
   const [color, setColor] = useState<string>('')
   /** v1.9 — Charge en jours ouvrés (uniquement pour kind='task'). La date
    *  de fin est dérivée de start_date + charge ; éditer end_date met à jour
    *  charge en miroir pour rester cohérent. */
   const [charge, setCharge] = useState<number>(1)
-  /** v1.10 — Délai (jours ouvrés) entre la fin du prédécesseur et le début
-   *  de cette tâche. 0 = enchaînement immédiat. Visible uniquement quand
-   *  un prédécesseur est sélectionné. */
-  const [lag, setLag] = useState<number>(0)
   /** v1.18 / v1.24 — Priorité d'une activité : entier 1..5 obligatoire,
    *  défaut **3**. Sur les jalons et les phases, la priorité n'a pas de sens
    *  et reste à `null` (le champ est masqué dans le formulaire). */
@@ -122,7 +123,26 @@ export default function TaskEditor({
     setProgress(src.progress ?? 0)
     setCollabId(src.collaborator_id || '')
     setParentId(src.parent_id || '')
-    setPredecessorId(src.predecessor_id || '')
+    // v1.22 — Liste de prédécesseurs : privilégie le nouveau format
+    // `predecessors[]` ; retombe sur l'alias mono-pred `predecessor_id` /
+    // `predecessor_lag` pour les tâches/tests issus de v1.20-.
+    if (Array.isArray(src.predecessors) && src.predecessors.length > 0) {
+      setPredecessorsList(
+        src.predecessors.map((p) => ({
+          id: p.id,
+          lag: Math.max(0, Math.floor(Number(p.lag) || 0)),
+        })),
+      )
+    } else if (src.predecessor_id) {
+      setPredecessorsList([
+        {
+          id: src.predecessor_id,
+          lag: Math.max(0, Math.floor(Number(src.predecessor_lag) || 0)),
+        },
+      ])
+    } else {
+      setPredecessorsList([])
+    }
     setColor(src.color || '')
     // v1.9 — Charge initiale = nb de jours ouvrés entre start et end existants.
     // Min 1 pour rester cohérent avec la convention "une tâche dure au moins 1 jour".
@@ -131,10 +151,6 @@ export default function TaskEditor({
         ? Math.max(1, workingDaysBetween(initStart, initEnd))
         : 1,
     )
-    // v1.10 — Délai initial : la valeur stockée (si tâche existante), 0
-    // par défaut. À l'ouverture, on fait confiance au backend qui garantit
-    // déjà l'invariant start = pred.end + lag.
-    setLag(Math.max(0, Math.floor(Number(src.predecessor_lag) || 0)))
     // v1.18 / v1.24 — Priorité d'une activité :
     //   • si la tâche en édition est une activité : on charge la valeur en
     //     base ; si invalide / absente, on initialise à 3 (défaut métier Pr2),
@@ -173,39 +189,9 @@ export default function TaskEditor({
     } else {
       setEndDate((current) => maxIso(current, value))
     }
-    // v1.10 / v1.23 — Synchronise le délai si un prédécesseur est défini.
-    // Inverse de `computeSuccessorStart` (cf. utils.ts) :
-    // `lag = max(0, workingDaysBetween(pred.end, start) - 2)`.
-    if (predecessorId) {
-      const pred = tasks.find((t) => t.id === predecessorId)
-      if (pred && value && value >= pred.end_date) {
-        setLag(Math.max(0, workingDaysBetween(pred.end_date, value) - 2))
-      }
-    }
-    setError(null)
-  }
-
-  /**
-   * v1.10 — Modifie le délai (jours ouvrés) entre le prédécesseur et cette
-   * tâche → recalcule start_date (et end_date via la charge).
-   *
-   * @param raw  Valeur saisie (string venant de l'input number).
-   */
-  function handleLagChange(raw: string) {
-    const n = Math.max(0, Math.floor(Number(raw) || 0))
-    setLag(n)
-    if (!predecessorId) return
-    const pred = tasks.find((t) => t.id === predecessorId)
-    if (!pred) return
-    const newStart = computeSuccessorStart(pred.end_date, n)
-    setStartDate(newStart)
-    if (kind === 'task') {
-      setEndDate(addWorkingDays(newStart, charge))
-    } else if (kind === 'milestone') {
-      setEndDate(newStart)
-    } else {
-      setEndDate((current) => maxIso(current, newStart))
-    }
+    // v1.22 — Plus d'inférence de lag depuis l'écart : le lag est porté par
+    // chaque lien dans `predecessorsList` et édité explicitement dans le
+    // PredecessorPicker. La validation du minimum est faite à la sauvegarde.
     setError(null)
   }
 
@@ -240,33 +226,27 @@ export default function TaskEditor({
   }
 
   /**
-   * Sélectionne (ou retire) un prédécesseur.
+   * v1.22 — Callback de mutation de la liste de prédécesseurs (depuis le
+   * PredecessorPicker). On met à jour l'état local puis on aligne
+   * automatiquement `start_date` sur la borne basse `MAX(pred.end + lag)` SI
+   * la borne actuelle est dépassée. Une `start_date` déjà postérieure à la
+   * borne est respectée (le lag fonctionne comme un MINIMUM).
    *
-   * v1.10 — Quand un prédécesseur est choisi, on applique le délai courant
-   * (0 par défaut) : start = pred.end + lag. La charge est conservée pour
-   * recalculer end. Quand on retire le prédécesseur, le délai n'a plus de
-   * sens : on le remet à 0 (start_date reste inchangée).
-   *
-   * @param value  Id du prédécesseur (ou '' pour retirer).
+   * @param next  Nouvelle liste { id, lag }.
    */
-  function handlePredecessorChange(value: string) {
-    setPredecessorId(value)
-    if (value) {
-      const pred = tasks.find((t) => t.id === value)
-      if (pred) {
-        const newStart = computeSuccessorStart(pred.end_date, lag)
-        setStartDate(newStart)
-        if (kind === 'task') {
-          setEndDate(addWorkingDays(newStart, charge))
-        } else if (kind === 'milestone') {
-          setEndDate(newStart)
-        } else {
-          setEndDate((current) => maxIso(current, newStart))
-        }
+  function handlePredecessorsChange(next: PredecessorEntry[]) {
+    setPredecessorsList(next)
+    if (kind === 'phase') return
+    const minStart = computeMaxStartFromPredecessors(next, tasks)
+    if (minStart && startDate < minStart) {
+      setStartDate(minStart)
+      if (kind === 'task') {
+        setEndDate(addWorkingDays(minStart, charge))
+      } else if (kind === 'milestone') {
+        setEndDate(minStart)
+      } else {
+        setEndDate((current) => maxIso(current, minStart))
       }
-    } else {
-      // Plus de prédécesseur → on remet le délai à 0 (sans toucher aux dates).
-      setLag(0)
     }
     setError(null)
   }
@@ -284,24 +264,14 @@ export default function TaskEditor({
     return DEFAULT_TASK_COLOR
   }, [collabId, collaborators])
 
-  /** Liste des prédécesseurs valides : toutes les tâches OU jalons sauf
-   *  elle-même et ses descendants (anti-cycle). Les phases (regroupements)
-   *  sont exclues car leurs dates sont calculées automatiquement. */
-  const validPredecessors = useMemo(() => {
-    const isEligible = (t: Task) => t.kind === 'task' || t.kind === 'milestone'
-    if (!task) return tasks.filter(isEligible)
-    const banned = descendantIds(task.id, tasks)
-    banned.add(task.id)
-    return tasks.filter((t) => isEligible(t) && !banned.has(t.id))
-  }, [task, tasks])
-
-  /** Prédécesseur sélectionné (ou null). Sa end_date sert de borne MIN. */
-  const predecessor = useMemo(
-    () => (predecessorId ? tasks.find((t) => t.id === predecessorId) : null),
-    [predecessorId, tasks],
+  /**
+   * v1.22 — Date minimale autorisée pour `start_date` = `MAX(pred.end + lag)`
+   * sur la liste actuelle de prédécesseurs (PERT). Chaîne vide = pas de borne.
+   */
+  const minStart = useMemo(
+    () => computeMaxStartFromPredecessors(predecessorsList, tasks),
+    [predecessorsList, tasks],
   )
-  /** Date minimale autorisée pour start_date (= fin du prédécesseur, ou ''). */
-  const minStart = predecessor?.end_date || ''
 
   /**
    * Calcule le tooltip à afficher sur le champ "Début" selon le contexte.
@@ -309,8 +279,8 @@ export default function TaskEditor({
    */
   function startDateTooltip(): string | undefined {
     if (kind === 'phase') return 'Calculée automatiquement à partir des enfants'
-    if (predecessor)
-      return `Doit être ≥ fin du prédécesseur « ${predecessor.name} » (${minStart})`
+    if (minStart)
+      return `Doit être ≥ ${minStart} (max des fins de prédécesseurs + lag)`
     return undefined
   }
 
@@ -339,11 +309,12 @@ export default function TaskEditor({
       setError('La date de début est obligatoire.')
       return
     }
-    // Le début ne peut pas être antérieur à la fin du prédécesseur, mais
-    // peut tout à fait être postérieur (décalage volontaire).
-    if (predecessor && kind !== 'phase' && startDate < predecessor.end_date) {
+    // v1.22 — Le début ne peut pas être antérieur à la borne basse calculée
+    // depuis les prédécesseurs (MAX(pred.end + lag)). Décalage plus tardif
+    // autorisé (le lag est traité comme un MINIMUM).
+    if (kind !== 'phase' && minStart && startDate < minStart) {
       setError(
-        `La date de début doit être ≥ fin du prédécesseur « ${predecessor.name} » (${predecessor.end_date}).`,
+        `La date de début doit être ≥ ${minStart} (max des fins de prédécesseurs + lag).`,
       )
       return
     }
@@ -378,10 +349,8 @@ export default function TaskEditor({
         // v1.24 — Règle J3 : un jalon n'a pas non plus de collaborateur.
         collaborator_id: kind === 'task' ? collabId || null : null,
         parent_id: parentId || null,
-        predecessor_id: kind === 'phase' ? null : predecessorId || null,
-        // v1.10 — Délai en jours ouvrés (uniquement si prédécesseur défini ;
-        // sinon le DAL le force à 0).
-        predecessor_lag: kind === 'phase' || !predecessorId ? 0 : lag,
+        // v1.22 — Liste multi-prédécesseurs (nouveau format). Phase → vide.
+        predecessors: kind === 'phase' ? [] : predecessorsList,
         // v1.18 / v1.24 — Priorité obligatoire (1..5, défaut 3) UNIQUEMENT
         // pour les activités. Pour les jalons et les phases, on envoie null.
         priority: kind === 'task' ? (priority ?? 3) : null,
@@ -472,10 +441,10 @@ export default function TaskEditor({
           <label className="block text-sm flex-1">
             <span className="text-slate-600">
               Début
-              {predecessor && (
+              {minStart && (
                 <span
                   className="ml-1 text-xs text-slate-400"
-                  title={`Minimum : ${minStart} (fin du prédécesseur)`}
+                  title={`Minimum : ${minStart} (max des fins de prédécesseurs + lag)`}
                 >
                   (≥ {minStart})
                 </span>
@@ -568,51 +537,25 @@ export default function TaskEditor({
           </select>
         </label>
 
-        {/* Prédécesseur — masqué pour les phases. */}
+        {/* v1.22 — Prédécesseurs (multi). Masqué pour les phases (qui n'ont
+            jamais de prédécesseur). Le PredecessorPicker affiche les chips
+            sélectionnées + un popover arborescent pour en ajouter. */}
         {kind !== 'phase' && (
-          <div className="flex gap-2 items-end">
-            <label className="block text-sm flex-1">
-              <span className="text-slate-600">
-                Prédécesseur
-                <span className="ml-1 text-xs text-slate-400">
-                  (facultatif — détermine la date de début)
-                </span>
+          <div className="text-sm">
+            <span className="text-slate-600">
+              Prédécesseurs
+              <span className="ml-1 text-xs text-slate-400">
+                (facultatif — la date de début se cale sur le plus tardif)
               </span>
-              <select
-                className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
-                value={predecessorId}
-                onChange={(e) => handlePredecessorChange(e.target.value)}
-              >
-                <option value="">— aucun —</option>
-                {validPredecessors.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.kind === 'milestone' ? '◆ ' : ''}
-                    {t.name} (fin : {t.end_date})
-                  </option>
-                ))}
-              </select>
-            </label>
-            {/* v1.10 — Délai (jours ouvrés) entre la fin du prédécesseur et le
-                début. Visible uniquement quand un prédécesseur est sélectionné. */}
-            {predecessorId && (
-              <label className="block text-sm w-28">
-                <span
-                  className="text-slate-600"
-                  title="Délai (jours ouvrés) entre la fin du prédécesseur et le début de cette tâche. 0 = enchaînement immédiat."
-                >
-                  Délai (j)
-                </span>
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
-                  value={lag}
-                  onChange={(e) => handleLagChange(e.target.value)}
-                  title="0 = la tâche démarre dès la fin du prédécesseur. N = N jours ouvrés de délai supplémentaires."
-                />
-              </label>
-            )}
+            </span>
+            <div className="mt-1">
+              <PredecessorPicker
+                task={task}
+                allTasks={tasks}
+                value={predecessorsList}
+                onChange={handlePredecessorsChange}
+              />
+            </div>
           </div>
         )}
 

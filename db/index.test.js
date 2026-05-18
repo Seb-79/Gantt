@@ -152,6 +152,45 @@ describe('createTask', () => {
     })
     expect(r.task.end_date).toBe('2026-05-15')
   })
+
+  // v1.24 — Règle Pr2 : la priorité est obligatoire sur les activités (défaut 3),
+  // et inexistante sur les jalons.
+  it('v1.24 / Pr2 — activité créée sans priorité → priorité 3 par défaut', () => {
+    const r = createTask(db, {
+      id: 't_default_prio',
+      name: 'A',
+      start_date: '2026-06-08',
+      end_date: '2026-06-08',
+    })
+    expect(r.task.priority).toBe(3)
+  })
+
+  it('v1.24 / Pr2 — jalon créé avec priorité → priorité forcée à null', () => {
+    const r = createTask(db, {
+      id: 'm_prio',
+      name: 'Démo',
+      kind: 'milestone',
+      start_date: '2026-06-08',
+      priority: 1,
+    })
+    expect(r.task.priority).toBeNull()
+  })
+
+  // v1.24 — Règle J3 : un jalon créé avec un collaborateur ne le conserve pas.
+  it('v1.24 / J3 — un jalon créé avec un collaborateur a collaborator_id = null', () => {
+    // On crée d'abord un collaborateur de référence.
+    db.prepare(
+      `INSERT INTO collaborators(id, name, color, position) VALUES (?, ?, ?, ?)`,
+    ).run('c1', 'Léa', '#3b82f6', 0)
+    const r = createTask(db, {
+      id: 'm1',
+      name: 'Démo',
+      kind: 'milestone',
+      start_date: '2026-05-15',
+      collaborator_id: 'c1',
+    })
+    expect(r.task.collaborator_id).toBeNull()
+  })
 })
 
 describe('updateTask', () => {
@@ -175,6 +214,58 @@ describe('updateTask', () => {
     updateTask(db, 't1', { kind: 'milestone' })
     const t = getFullState(db).tasks[0]
     expect(t.end_date).toBe(t.start_date)
+  })
+
+  // v1.24 — Contrainte SNET : la date de début ne peut pas être antérieure
+  // à la date butoir. Si elle l'est, le serveur relève start au prochain
+  // jour ouvré de la date butoir et préserve la charge.
+  it('v1.24 / SNET — start_date relevée à la date butoir si en deçà', () => {
+    updateTask(db, 't1', {
+      start_date: '2026-05-01',
+      end_date: '2026-05-08',
+      not_before_date: '2026-05-15',
+    })
+    const t = getFullState(db).tasks[0]
+    expect(t.not_before_date).toBe('2026-05-15')
+    expect(t.start_date).toBe('2026-05-15')
+    // Charge préservée : 2026-05-01 → 2026-05-08 = 6 jours ouvrés
+    // (semaine du 27 au 1er ferié + 4 jours suivants + WE) — on vérifie
+    // simplement que la fin est postérieure ou égale au début.
+    expect(t.end_date >= t.start_date).toBe(true)
+  })
+
+  it('v1.24 / SNET — date butoir un week-end → snap au prochain jour ouvré', () => {
+    // 2026-05-16 = samedi → snap au lundi 18/05.
+    updateTask(db, 't1', {
+      start_date: '2026-05-01',
+      end_date: '2026-05-01',
+      not_before_date: '2026-05-16',
+    })
+    expect(getFullState(db).tasks[0].start_date).toBe('2026-05-18')
+  })
+
+  it('v1.24 / SNET — phase : la date butoir est forcée à null', () => {
+    createTask(db, {
+      id: 'ph_snet',
+      name: 'P',
+      kind: 'phase',
+      start_date: '2026-06-01',
+      end_date: '2026-06-01',
+      not_before_date: '2026-07-01',
+    })
+    const ph = getFullState(db).tasks.find((t) => t.id === 'ph_snet')
+    expect(ph.not_before_date).toBeNull()
+  })
+
+  // v1.24 — Règle J3 : passer une activité affectée en jalon efface le collab.
+  it('v1.24 / J3 — passage en jalon → collaborator_id forcé à null', () => {
+    db.prepare(
+      `INSERT INTO collaborators(id, name, color, position) VALUES (?, ?, ?, ?)`,
+    ).run('c1', 'Léa', '#3b82f6', 0)
+    updateTask(db, 't1', { collaborator_id: 'c1' })
+    expect(getFullState(db).tasks[0].collaborator_id).toBe('c1')
+    updateTask(db, 't1', { kind: 'milestone' })
+    expect(getFullState(db).tasks[0].collaborator_id).toBeNull()
   })
 })
 

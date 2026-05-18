@@ -65,11 +65,17 @@ CREATE TABLE IF NOT EXISTS tasks (
   -- N = Y.start = (N+1)-ème jour ouvré depuis X.end (cf. computeSuccessorStart).
   -- Pour les tâches sans prédécesseur, vaut 0 (non significatif).
   predecessor_lag INTEGER NOT NULL DEFAULT 0,
-  -- v1.18 — Priorité facultative (1 à 5). 1 = la plus prioritaire,
-  -- 5 = la moins. NULL = "pas de priorité saisie" (= moins prioritaire que
-  -- toute valeur 1..5). Utilisée uniquement par la fonction « Replan » pour
-  -- arbitrer entre deux tâches non liées d'un même collaborateur en surcharge.
+  -- v1.18 / v1.24 — Priorité (1 à 5). Désormais OBLIGATOIRE sur les activités
+  -- avec 3 comme défaut (porté par le DAL, pas par une contrainte SQL pour
+  -- rester compatible avec les bases anciennes). NULL pour les jalons et les
+  -- phases. Utilisée par « Replan » pour arbitrer entre deux activités d'un
+  -- même collaborateur en surcharge.
   priority        INTEGER,
+  -- v1.24 — Contrainte SNET (« Start No Earlier Than ») : date butoir en
+  -- dessous de laquelle la tâche ne peut pas commencer. NULL = pas de
+  -- contrainte. Applicable aux activités et aux jalons uniquement (jamais
+  -- aux phases dont les dates sont la synthèse des enfants).
+  not_before_date TEXT,
   position        INTEGER NOT NULL,
   -- v1.8 — project_id est ajouté à la table tasks pour les bases neuves ;
   -- pour les bases anciennes, c'est `ensureTaskColumns()` (db/index.js) qui

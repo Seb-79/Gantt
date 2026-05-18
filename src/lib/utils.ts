@@ -133,6 +133,11 @@ export function clampDayWidth(value: number): number {
 /**
  * Couleur effective d'une tâche : couleur custom > couleur du collab > défaut.
  *
+ * v1.24 — Règle J3 : un jalon (et une phase) n'a pas de collaborateur. On
+ * ignore donc toute valeur résiduelle de `collaborator_id` qui aurait pu
+ * traîner pour ne pas surprendre l'utilisateur avec une couleur héritée
+ * d'un collab fantôme. Seule la couleur custom (si présente) est respectée.
+ *
  * @param task           La tâche.
  * @param collaborators  Liste des collaborateurs disponibles.
  * @returns              Couleur hex à utiliser pour la barre.
@@ -142,7 +147,7 @@ export function effectiveTaskColor(
   collaborators: Collaborator[],
 ): string {
   if (task.color) return task.color
-  if (task.collaborator_id) {
+  if (task.kind === 'task' && task.collaborator_id) {
     const c = collaborators.find((x) => x.id === task.collaborator_id)
     if (c) return c.color
   }
@@ -813,10 +818,13 @@ function buildReplanOrder(tasks: Task[]): Task[] {
 
   const { inDeg, successors } = buildPredecessorGraph(taskKindTasks, tasksById)
 
-  /** Comparateur stable (priorité asc, puis position asc). */
+  /** Comparateur stable (priorité asc, puis position asc).
+   *  v1.24 — La priorité d'une activité est maintenant toujours définie (1..5)
+   *  grâce à la règle Pr2 ; on garde toutefois le fallback `?? 3` pour rester
+   *  robuste face à d'éventuelles données héritées d'une version antérieure. */
   const cmp = (a: Task, b: Task) => {
-    const pa = a.priority ?? 6
-    const pb = b.priority ?? 6
+    const pa = a.priority ?? 3
+    const pb = b.priority ?? 3
     if (pa !== pb) return pa - pb
     return (listPos.get(a.id) ?? 0) - (listPos.get(b.id) ?? 0)
   }
@@ -897,6 +905,14 @@ function computeReplanEarliestStart(
       const lagStart = computeSuccessorStart(predEnd, t.predecessor_lag || 0)
       if (lagStart > earliest) earliest = lagStart
     }
+  }
+  // v1.24 — Borne basse supplémentaire : la contrainte SNET « Ne doit pas
+  // démarrer avant le », snappée au prochain jour ouvré. La règle « plus
+  // tardif gagne » est portée par ce max successif (current_start, pred.end
+  // + lag, SNET).
+  if (t.not_before_date) {
+    const snet = snapForwardToWorkingDay(t.not_before_date)
+    if (snet > earliest) earliest = snet
   }
   return snapForwardToWorkingDay(earliest)
 }
@@ -1088,8 +1104,14 @@ export function filterCollapsed(
 // reste l'outil de remise en cohérence.
 // -----------------------------------------------------------------------------
 
-/** v1.21 — Catégorie d'incohérence détectée par `checkCoherence`. */
-export type CoherenceIssueKind = 'overload' | 'predecessor' | 'priority'
+/** v1.21 / v1.24 — Catégorie d'incohérence détectée par `checkCoherence`.
+ *  `not_before` (v1.24) signale une activité ou un jalon dont la date de
+ *  début est antérieure à sa contrainte SNET (« ne doit pas démarrer avant le »). */
+export type CoherenceIssueKind =
+  | 'overload'
+  | 'predecessor'
+  | 'priority'
+  | 'not_before'
 
 /** v1.21 — Une incohérence remontée pour affichage dans le bandeau. */
 export interface CoherenceIssue {
@@ -1276,11 +1298,42 @@ function detectPriorityViolations(tasks: Task[]): CoherenceIssue[] {
  * @param tasks  Toutes les tâches du projet (kind quelconque).
  * @returns      Liste plate d'incohérences ; vide = projet cohérent.
  */
+/**
+ * v1.24 — Détecte les violations de la contrainte SNET « Ne doit pas démarrer
+ * avant le ». Pour chaque activité ou jalon ayant une date butoir saisie, on
+ * compare sa date de début à la date butoir snappée au jour ouvré suivant.
+ * Si `start_date < not_before_date_snapped`, on lève une incohérence rouge
+ * (erreur bloquante logique, à corriger via Replan ou édition manuelle).
+ *
+ * Les phases sont ignorées (leurs dates sont synthétisées depuis les enfants ;
+ * la règle SNET ne s'applique pas).
+ *
+ * @param tasks  Toutes les tâches du projet.
+ * @returns      Une issue par tâche en violation.
+ */
+function detectNotBeforeViolations(tasks: Task[]): CoherenceIssue[] {
+  const issues: CoherenceIssue[] = []
+  for (const t of tasks) {
+    if (t.kind === 'phase' || !t.not_before_date) continue
+    const snapped = snapForwardToWorkingDay(t.not_before_date)
+    if (t.start_date < snapped) {
+      issues.push({
+        kind: 'not_before',
+        severity: 'error',
+        taskIds: [t.id],
+        message: `« Ne doit pas démarrer avant le » : « ${t.name} » commence le ${t.start_date}, avant la date butoir (${snapped}).`,
+      })
+    }
+  }
+  return issues
+}
+
 export function checkCoherence(tasks: Task[]): CoherenceIssue[] {
   return [
     ...detectOverloads(tasks),
     ...detectPredecessorViolations(tasks),
     ...detectPriorityViolations(tasks),
+    ...detectNotBeforeViolations(tasks),
   ]
 }
 

@@ -134,8 +134,12 @@ export const CreateTaskBody = z
     predecessor_id: NonEmptyId.nullable().optional(),
     // v1.10 — Délai en jours ouvrés entre le prédécesseur et cette tâche.
     predecessor_lag: Lag.optional(),
-    // v1.18 — Priorité facultative (1..5). `null` = « pas de priorité ».
+    // v1.18 / v1.24 — Priorité (1..5). Obligatoire sur les activités (défaut
+    // 3 si non fourni, géré par le DAL) ; null pour jalons et phases.
     priority: Priority.nullable().optional(),
+    // v1.24 — SNET « Ne doit pas démarrer avant le ». Date facultative
+    // (null = pas de contrainte). Forcée à null pour les phases côté DAL.
+    not_before_date: IsoDate.nullable().optional(),
     // v1.8 — Projet de rattachement (optionnel : si absent, le DAL utilise
     // le premier projet existant).
     project_id: NonEmptyId.optional(),
@@ -158,6 +162,7 @@ export const UpdateTaskBody = z
     predecessor_id: NonEmptyId.nullable().optional(), // v1.2
     predecessor_lag: Lag.optional(), // v1.10
     priority: Priority.nullable().optional(), // v1.18
+    not_before_date: IsoDate.nullable().optional(), // v1.24 — SNET
   })
   .refine((v) => Object.keys(v).length > 0, {
     message: 'au moins un champ doit être fourni',

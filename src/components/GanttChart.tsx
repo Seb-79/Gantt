@@ -787,6 +787,12 @@ export default function GanttChart({
                       // tâche et avec le clic dans la colonne gauche).
                       onTaskClick,
                     )}
+
+                {/* v1.24 — Repère SNET « Ne doit pas démarrer avant le ».
+                    Petit triangle gris discret affiché sous la ligne de la
+                    tâche concernée (activités et jalons uniquement). Aucun
+                    interactif : c'est un repère visuel pur. */}
+                {renderNotBeforeMarker(t, windowStart, dayWidth)}
               </div>
             ))}
           </div>
@@ -998,6 +1004,51 @@ function renderDateLabels(
         {formatShortDate(endIso)}
       </span>
     </>
+  )
+}
+
+/**
+ * v1.24 — Rend un petit triangle gris discret pour matérialiser la contrainte
+ * SNET « Ne doit pas démarrer avant le » d'une activité ou d'un jalon. Le
+ * triangle est positionné au centre de la cellule du jour butoir (ou du
+ * prochain jour ouvré quand la date butoir tombe un week-end / férié), juste
+ * sous la baseline de la barre. Aucune interaction : c'est un repère pur.
+ *
+ * @param task         Tâche à examiner (rien rendu si pas de SNET ou phase).
+ * @param windowStart  Borne gauche du calendrier.
+ * @param dayWidth     Largeur d'un jour en pixels.
+ */
+function renderNotBeforeMarker(
+  task: Task,
+  windowStart: string,
+  dayWidth: number,
+) {
+  if (task.kind === 'phase' || !task.not_before_date) return null
+  // Snap au prochain jour ouvré pour matérialiser ce que le serveur applique.
+  const snapped = snapForwardToWorkingDay(task.not_before_date)
+  const left = dateToX(snapped, windowStart, dayWidth) + dayWidth / 2 - 4
+  return (
+    <div
+      aria-hidden
+      title={`Ne doit pas démarrer avant le ${task.not_before_date}${
+        snapped !== task.not_before_date ? ` (appliqué au ${snapped})` : ''
+      }`}
+      style={{
+        position: 'absolute',
+        left,
+        bottom: 2,
+        width: 0,
+        height: 0,
+        borderLeft: '4px solid transparent',
+        borderRight: '4px solid transparent',
+        // Triangle pointant vers le HAUT : la pointe « accroche » la base de
+        // la barre pour signaler la borne basse temporelle.
+        borderBottom: '6px solid #94a3b8', // slate-400
+        opacity: 0.85,
+        pointerEvents: 'none',
+        zIndex: 3,
+      }}
+    />
   )
 }
 

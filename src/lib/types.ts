@@ -61,10 +61,14 @@ export interface Task {
   /** v1.10 — Délai (jours ouvrés) entre la fin du prédécesseur et le début de
    *  cette tâche. 0 = enchaînement immédiat. Non significatif sans prédécesseur. */
   predecessor_lag: number
-  /** v1.18 — Priorité facultative pour la replanification (1 = la plus prioritaire,
-   *  5 = la moins). `null` = pas de priorité saisie (= moins prioritaire que toute
-   *  valeur 1..5). Sans effet sur l'affichage : utilisée uniquement par « Replan ». */
+  /** v1.18 / v1.24 — Priorité 1..5. Obligatoire sur les activités (3 par défaut) ;
+   *  `null` pour les jalons et les phases. Sans effet sur l'affichage :
+   *  utilisée uniquement par « Replan ». */
   priority: number | null
+  /** v1.24 — Contrainte SNET « Ne doit pas démarrer avant le » : date butoir
+   *  ISO YYYY-MM-DD facultative en dessous de laquelle la tâche ne peut pas
+   *  commencer. `null` = pas de contrainte. Toujours `null` pour les phases. */
+  not_before_date: string | null
   /** Position d'affichage (ordre des lignes). */
   position: number
   /** Projet de rattachement (v1.8). */

@@ -30,6 +30,7 @@ import {
   DEFAULT_TASK_COLOR,
   descendantIds,
   effectiveTaskColor,
+  isNonWorkingDay,
   maxIso,
   workingDaysBetween,
 } from '../lib/utils'
@@ -88,10 +89,13 @@ export default function TaskEditor({
    *  de cette tâche. 0 = enchaînement immédiat. Visible uniquement quand
    *  un prédécesseur est sélectionné. */
   const [lag, setLag] = useState<number>(0)
-  /** v1.18 — Priorité facultative pour le « Replan » : 1..5, ou `null` quand
-   *  rien n'est saisi (la tâche est alors moins prioritaire que toute valeur
-   *  1..5 saisie sur une autre tâche du même collaborateur). */
-  const [priority, setPriority] = useState<number | null>(null)
+  /** v1.18 / v1.24 — Priorité d'une activité : entier 1..5 obligatoire,
+   *  défaut **3**. Sur les jalons et les phases, la priorité n'a pas de sens
+   *  et reste à `null` (le champ est masqué dans le formulaire). */
+  const [priority, setPriority] = useState<number | null>(3)
+  /** v1.24 — Contrainte SNET « Ne doit pas démarrer avant le » : chaîne ISO
+   *  YYYY-MM-DD ou vide (= pas de contrainte). Masquée pour les phases. */
+  const [notBeforeDate, setNotBeforeDate] = useState<string>('')
   /** Message d'erreur de validation à afficher dans le modal (null = OK). */
   const [error, setError] = useState<string | null>(null)
   /**
@@ -131,13 +135,21 @@ export default function TaskEditor({
     // par défaut. À l'ouverture, on fait confiance au backend qui garantit
     // déjà l'invariant start = pred.end + lag.
     setLag(Math.max(0, Math.floor(Number(src.predecessor_lag) || 0)))
-    // v1.18 — priorité : on n'accepte que 1..5 ; tout le reste devient null.
+    // v1.18 / v1.24 — Priorité d'une activité :
+    //   • si la tâche en édition est une activité : on charge la valeur en
+    //     base ; si invalide / absente, on initialise à 3 (défaut métier Pr2),
+    //   • sinon (jalon / phase) : null (le champ est masqué).
     const rawPrio = src.priority
-    setPriority(
-      typeof rawPrio === 'number' && rawPrio >= 1 && rawPrio <= 5
-        ? Math.floor(rawPrio)
-        : null,
-    )
+    const isTask = (src.kind || 'task') === 'task'
+    if (!isTask) {
+      setPriority(null)
+    } else if (typeof rawPrio === 'number' && rawPrio >= 1 && rawPrio <= 5) {
+      setPriority(Math.floor(rawPrio))
+    } else {
+      setPriority(3)
+    }
+    // v1.24 — Contrainte SNET initialisée depuis la base (vide si null).
+    setNotBeforeDate(src.not_before_date || '')
     setError(null)
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [task, defaults])
@@ -335,6 +347,17 @@ export default function TaskEditor({
       )
       return
     }
+    // v1.24 — Contrainte SNET « Ne doit pas démarrer avant le » : blocage
+    // explicite à la saisie. Si la date butoir tombe un jour non ouvré, on
+    // compare contre le jour ouvré snappé pour rester cohérent avec ce que
+    // le serveur appliquera. Une activité de start un jour non-ouvré qui
+    // tombe sur la même semaine que le SNET reste donc acceptée.
+    if (kind !== 'phase' && notBeforeDate && startDate < notBeforeDate) {
+      setError(
+        `La date de début ne peut pas être antérieure au « Ne doit pas démarrer avant le » (${notBeforeDate}).`,
+      )
+      return
+    }
     const finalEnd = kind === 'milestone' ? startDate : endDate || startDate
     if (kind !== 'milestone' && finalEnd < startDate) {
       setError(
@@ -352,14 +375,18 @@ export default function TaskEditor({
         progress,
         // v1.6 — Une phase n'a ni collaborateur ni prédécesseur (forcés à null
         // côté DAL aussi, mais on doublonne ici pour ne pas envoyer de bruit).
-        collaborator_id: kind === 'phase' ? null : collabId || null,
+        // v1.24 — Règle J3 : un jalon n'a pas non plus de collaborateur.
+        collaborator_id: kind === 'task' ? collabId || null : null,
         parent_id: parentId || null,
         predecessor_id: kind === 'phase' ? null : predecessorId || null,
         // v1.10 — Délai en jours ouvrés (uniquement si prédécesseur défini ;
         // sinon le DAL le force à 0).
         predecessor_lag: kind === 'phase' || !predecessorId ? 0 : lag,
-        // v1.18 — Priorité (1..5) ou null. Une phase n'a pas de priorité.
-        priority: kind === 'phase' ? null : priority,
+        // v1.18 / v1.24 — Priorité obligatoire (1..5, défaut 3) UNIQUEMENT
+        // pour les activités. Pour les jalons et les phases, on envoie null.
+        priority: kind === 'task' ? (priority ?? 3) : null,
+        // v1.24 — Contrainte SNET (vide → null). Forcée à null pour les phases.
+        not_before_date: kind === 'phase' ? null : notBeforeDate || null,
         // color: '' (vide) → null (= hériter automatiquement)
         color: color || null,
       },
@@ -501,8 +528,10 @@ export default function TaskEditor({
           </label>
         </div>
 
-        {/* Collaborateur — masqué pour les phases (qui n'en ont pas). */}
-        {kind !== 'phase' && (
+        {/* Collaborateur — masqué pour les phases ET les jalons (règle J3 v1.24 :
+            seules les activités sont affectées à un collaborateur ; un jalon est
+            un point de repère ponctuel, une phase est une synthèse). */}
+        {kind === 'task' && (
           <label className="block text-sm">
             <span className="text-slate-600">Collaborateur</span>
             <select
@@ -587,32 +616,60 @@ export default function TaskEditor({
           </div>
         )}
 
-        {/* v1.18 — Priorité facultative (1..5) pour la replanification.
-            Masquée pour les phases (qui n'ont pas de collaborateur, donc
-            jamais en surcharge). 1 = la plus prioritaire ; vide = pas de
-            priorité (= passe après toute valeur 1..5 saisie). */}
+        {/* v1.24 — Contrainte SNET « Ne doit pas démarrer avant le ».
+            Masquée pour les phases (dont les dates sont synthétisées depuis
+            les enfants). La validation au save bloque toute date de début
+            antérieure à cette borne ; un avertissement non-bloquant signale
+            une saisie tombant un week-end ou un jour férié français. */}
         {kind !== 'phase' && (
+          <label className="block text-sm">
+            <span className="text-slate-600">
+              Ne doit pas démarrer avant le
+              <span className="ml-1 text-xs text-slate-400">
+                (facultatif — date butoir indépendante du prédécesseur)
+              </span>
+            </span>
+            <input
+              type="date"
+              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+              value={notBeforeDate}
+              onChange={(e) => setNotBeforeDate(e.target.value)}
+              title="Date avant laquelle la tâche ne peut pas démarrer. La règle « plus tardive gagne » s'applique entre cette date et la fin du prédécesseur."
+            />
+            {/* Avertissement non-bloquant si la date tombe un jour non ouvré.
+                Le serveur snape automatiquement au prochain jour ouvré, mais
+                on prévient l'utilisateur pour qu'il puisse corriger si besoin. */}
+            {notBeforeDate &&
+              isNonWorkingDay(new Date(notBeforeDate + 'T00:00:00')) && (
+                <span className="block mt-1 text-xs text-amber-700">
+                  ⚠ Cette date tombe un week-end ou un jour férié. Elle sera
+                  appliquée au prochain jour ouvré.
+                </span>
+              )}
+          </label>
+        )}
+
+        {/* v1.18 / v1.24 — Priorité OBLIGATOIRE sur les activités (1..5,
+            défaut 3). Masquée pour les jalons et les phases (qui n'ont ni
+            collaborateur, ni replan applicable). 1 = la plus prioritaire,
+            5 = la moins. */}
+        {kind === 'task' && (
           <label className="block text-sm">
             <span className="text-slate-600">
               Priorité
               <span className="ml-1 text-xs text-slate-400">
-                (facultatif — utilisée par « Replan » pour départager les tâches
-                d'un collaborateur en surcharge)
+                (1 = plus prioritaire, 5 = moins ; utilisée par « Replan »)
               </span>
             </span>
             <select
               className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
-              value={priority === null ? '' : String(priority)}
-              onChange={(e) => {
-                const v = e.target.value
-                setPriority(v === '' ? null : Number(v))
-              }}
-              title="1 = la plus prioritaire, 5 = la moins. Vide = pas de priorité (passe après toute valeur saisie)."
+              value={String(priority ?? 3)}
+              onChange={(e) => setPriority(Number(e.target.value))}
+              title="1 = la plus prioritaire, 5 = la moins. Défaut : 3."
             >
-              <option value="">— aucune —</option>
               <option value="1">1 (la plus prioritaire)</option>
               <option value="2">2</option>
-              <option value="3">3</option>
+              <option value="3">3 (par défaut)</option>
               <option value="4">4</option>
               <option value="5">5 (la moins prioritaire)</option>
             </select>
@@ -643,6 +700,7 @@ export default function TaskEditor({
                     predecessor_id: null,
                     predecessor_lag: 0,
                     priority: null,
+                    not_before_date: null,
                     position: 0,
                     project_id: '',
                   },

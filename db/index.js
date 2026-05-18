@@ -181,6 +181,74 @@ function ensureTaskColumns(db) {
   if (!cols.includes('priority')) {
     db.exec(`ALTER TABLE tasks ADD COLUMN priority INTEGER`)
   }
+  // v1.24 — Contrainte SNET « Ne doit pas démarrer avant le ». Ajoutée en
+  // ALTER TABLE sur les bases d'avant la v1.24 ; valeur NULL par défaut
+  // (= pas de contrainte) — comportement identique au défaut nouvellement
+  // seedé. Aucune valeur résiduelle à nettoyer puisque la colonne est neuve.
+  if (!cols.includes('not_before_date')) {
+    db.exec(`ALTER TABLE tasks ADD COLUMN not_before_date TEXT`)
+  }
+  // v1.24 — Règle métier Pr2 : la priorité est désormais OBLIGATOIRE sur
+  // toute activité (valeur par défaut = 3). Inversement, un jalon ou une
+  // phase n'a plus de priorité du tout. Migration idempotente au boot :
+  //   • activités sans priorité saisie → priorité 3,
+  //   • jalons et phases avec priorité résiduelle → effacés.
+  const rPrioTask = db
+    .prepare(
+      `UPDATE tasks SET priority = 3 WHERE kind = 'task' AND priority IS NULL`,
+    )
+    .run()
+  if (rPrioTask.changes > 0) {
+    console.log(
+      `[INIT] Migration v1.24 (Pr2) : ${rPrioTask.changes} activité(s) sans priorité → initialisée(s) à 3.`,
+    )
+  }
+  const rPrioNonTask = db
+    .prepare(
+      `UPDATE tasks
+         SET priority = NULL
+         WHERE kind IN ('milestone', 'phase') AND priority IS NOT NULL`,
+    )
+    .run()
+  if (rPrioNonTask.changes > 0) {
+    console.log(
+      `[INIT] Migration v1.24 (Pr2) : ${rPrioNonTask.changes} jalon(s)/phase(s) avaient une priorité résiduelle — effacée(s).`,
+    )
+  }
+
+  // v1.24 — Règle SNET : une phase n'a jamais de date butoir « ne doit pas
+  // démarrer avant le » (ses dates sont une synthèse de ses enfants). On
+  // efface toute valeur résiduelle si la colonne existait déjà avec des
+  // données invalides.
+  const rSnetPhase = db
+    .prepare(
+      `UPDATE tasks
+         SET not_before_date = NULL
+         WHERE kind = 'phase' AND not_before_date IS NOT NULL`,
+    )
+    .run()
+  if (rSnetPhase.changes > 0) {
+    console.log(
+      `[INIT] Migration v1.24 (SNET) : ${rSnetPhase.changes} phase(s) avaient une date "ne doit pas démarrer avant le" — effacée(s).`,
+    )
+  }
+
+  // v1.24 — Règle métier J3 : un jalon n'a pas de collaborateur affecté
+  // (comme une phase). Nettoyage idempotent au boot : on efface toute
+  // affectation résiduelle posée par une version antérieure ou par un
+  // appel API externe (ex. anciens scripts de seed).
+  const r = db
+    .prepare(
+      `UPDATE tasks
+         SET collaborator_id = NULL
+         WHERE kind = 'milestone' AND collaborator_id IS NOT NULL`,
+    )
+    .run()
+  if (r.changes > 0) {
+    console.log(
+      `[INIT] Migration v1.24 (J3) : ${r.changes} jalon(s) avaient un collaborateur affecté — nettoyé(s).`,
+    )
+  }
   // Création de l'index APRÈS s'être assuré que la colonne existe.
   // `IF NOT EXISTS` rend l'opération idempotente (base neuve OU migrée).
   db.exec(
@@ -231,15 +299,19 @@ function ensureKindAcceptsPhase(db) {
       predecessor_lag INTEGER NOT NULL DEFAULT 0,
       -- v1.18 — priorité facultative, préservée lors de la migration.
       priority        INTEGER,
+      -- v1.24 — date butoir SNET, préservée lors de la migration.
+      not_before_date TEXT,
       position        INTEGER NOT NULL,
       CHECK (progress BETWEEN 0 AND 100)
     );
     INSERT INTO tasks_new
       (id, name, kind, start_date, end_date, progress,
-       collaborator_id, color, parent_id, predecessor_id, predecessor_lag, priority, position)
+       collaborator_id, color, parent_id, predecessor_id, predecessor_lag,
+       priority, not_before_date, position)
     SELECT
        id, name, kind, start_date, end_date, progress,
-       collaborator_id, color, parent_id, predecessor_id, predecessor_lag, priority, position
+       collaborator_id, color, parent_id, predecessor_id, predecessor_lag,
+       priority, not_before_date, position
     FROM tasks;
     DROP TABLE tasks;
     ALTER TABLE tasks_new RENAME TO tasks;
@@ -331,7 +403,8 @@ export function getFullState(db, projectId) {
         .prepare(
           `SELECT id, name, kind, start_date, end_date, progress,
                   collaborator_id, color, parent_id, predecessor_id,
-                  predecessor_lag, priority, position, project_id
+                  predecessor_lag, priority, not_before_date,
+                  position, project_id
              FROM tasks
              WHERE project_id = ?
              ORDER BY position ASC, id ASC`,
@@ -966,19 +1039,79 @@ function recomputeAncestorPhases(db, startId) {
 // -----------------------------------------------------------------------------
 
 /**
- * v1.18 — Normalise une valeur de priorité saisie : ne conserve qu'un entier
- * dans [1, 5] ; tout le reste (undefined / null / 0 / 6+ / NaN / 'foo') est
- * ramené à `null` (= « pas de priorité »). Garantit que le DAL ne stocke
- * jamais de valeur incohérente, indépendamment de la validation Zod.
+ * v1.18 / v1.24 — Normalise une valeur de priorité selon le type de tâche.
  *
- * @param {unknown} raw  Valeur reçue dans le payload.
+ * Règle métier Pr2 (v1.24) : la priorité est **obligatoire** sur les activités
+ * (kind='task'), avec **3 comme valeur par défaut**. Sur les jalons et les
+ * phases, la priorité **n'a pas de sens** et vaut toujours `null`.
+ *
+ * Toute valeur invalide (NaN, hors-bornes, type incompatible) est remplacée :
+ *   • pour une activité → 3 (défaut métier),
+ *   • pour un jalon / une phase → null.
+ *
+ * @param {unknown} raw   Valeur reçue dans le payload.
+ * @param {string}  kind  Type de la tâche ('task' | 'milestone' | 'phase').
  * @returns {number|null}
  */
-function normalizePriority(raw) {
-  if (raw === undefined || raw === null) return null
+function normalizePriority(raw, kind) {
+  if (kind !== 'task') return null
+  if (raw === undefined || raw === null) return 3
   const n = Math.floor(Number(raw))
-  if (!Number.isFinite(n) || n < 1 || n > 5) return null
+  if (!Number.isFinite(n) || n < 1 || n > 5) return 3
   return n
+}
+
+/**
+ * v1.24 — Normalise la date butoir SNET (« Ne doit pas démarrer avant le »).
+ *
+ * Règle métier SNET :
+ *   • Activités et jalons : valeur facultative au format `YYYY-MM-DD`, ou
+ *     `null` quand aucune contrainte.
+ *   • Phases : toujours `null` (la phase est une synthèse de ses enfants).
+ *   • Toute valeur de format invalide est ignorée (ramenée à `null`) pour
+ *     ne jamais corrompre la base, indépendamment de la validation Zod.
+ *
+ * @param {unknown} raw   Valeur reçue dans le payload.
+ * @param {string}  kind  Type de la tâche.
+ * @returns {string|null} Date ISO normalisée ou null.
+ */
+function normalizeNotBeforeDate(raw, kind) {
+  if (kind === 'phase') return null
+  if (raw === undefined || raw === null || raw === '') return null
+  if (typeof raw !== 'string') return null
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null
+  return raw
+}
+
+/**
+ * v1.24 — Applique la contrainte SNET en POUSSANT `start_date` au jour ouvré
+ * de la date butoir si elle est en deçà. La règle « le plus tardif gagne »
+ * est garantie en appelant cette fonction APRÈS la cascade de prédécesseur :
+ *   • si `pred.end + lag` > SNET → start déjà au bon endroit, SNET silencieux,
+ *   • si SNET > `pred.end + lag` → ici on relève start au niveau de SNET,
+ *   • sans prédécesseur → on relève juste start au niveau de SNET.
+ *
+ * La date butoir est snappée au prochain jour ouvré si elle tombe un week-end
+ * ou un jour férié (saisie libre côté UI, snap au runtime côté serveur).
+ *
+ * Mute `next` en place : start_date / end_date (charge en jours ouvrés
+ * préservée pour les activités, end = start pour les jalons).
+ *
+ * @param {object} next  Tâche en cours d'évaluation (kind, start_date, end_date, not_before_date).
+ */
+function enforceNotBeforeDate(next) {
+  const snet = normalizeNotBeforeDate(next.not_before_date, next.kind)
+  if (!snet) return
+  const snapped = snapForwardToWorkingDayServer(snet)
+  if (next.start_date >= snapped) return
+  // Préserve la charge en jours ouvrés pour les activités.
+  const charge =
+    next.kind === 'milestone'
+      ? 0
+      : Math.max(1, workingDaysBetweenServer(next.start_date, next.end_date))
+  next.start_date = snapped
+  next.end_date =
+    next.kind === 'milestone' ? snapped : addWorkingDaysServer(snapped, charge)
 }
 
 /**
@@ -1082,29 +1215,41 @@ export function createTask(db, input) {
         projectId = DEFAULT_PROJECT_ID
       }
     }
+    // v1.24 — SNET : on applique la contrainte « ne doit pas démarrer avant le »
+    // en dernière étape, après que la cascade prédécesseur a déjà fixé
+    // {startDate, endDate}. La règle « plus tardif gagne » est ainsi respectée.
+    const draft = {
+      kind,
+      start_date: startDate,
+      end_date: endDate,
+      not_before_date: normalizeNotBeforeDate(input.not_before_date, kind),
+    }
+    enforceNotBeforeDate(draft)
+
     db.prepare(
       `INSERT INTO tasks
         (id, name, kind, start_date, end_date, progress,
          collaborator_id, color, parent_id, predecessor_id,
-         predecessor_lag, priority, position, project_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         predecessor_lag, priority, not_before_date, position, project_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.id,
       input.name,
       kind,
-      startDate,
-      endDate,
+      draft.start_date,
+      draft.end_date,
       input.progress ?? 0,
       // v1.6 — Une phase n'est jamais affectée à un collaborateur.
-      kind === 'phase' ? null : (input.collaborator_id ?? null),
+      // v1.24 — Un jalon non plus (règle J3). Seules les activités le sont.
+      kind === 'task' ? (input.collaborator_id ?? null) : null,
       input.color ?? null,
       input.parent_id ?? null,
       kind === 'phase' ? null : (input.predecessor_id ?? null),
       lag,
-      // v1.18 — Priorité : on n'enregistre une valeur qu'entre 1 et 5 inclus ;
-      // toute autre saisie (undefined, null, hors-bornes) est ramenée à NULL
-      // (« pas de priorité saisie »). Les phases n'ont pas de priorité.
-      kind === 'phase' ? null : normalizePriority(input.priority),
+      // v1.18 / v1.24 — Pr2 : 3 par défaut sur les activités, null sur jalon/phase.
+      normalizePriority(input.priority, kind),
+      // v1.24 — SNET : valeur saisie ou null si phase / format invalide.
+      draft.not_before_date,
       position,
       projectId,
     )
@@ -1161,6 +1306,11 @@ export function updateTask(db, id, patch) {
     // Cohérence : un jalon a end_date == start_date, toujours.
     if (next.kind === 'milestone') next.end_date = next.start_date
 
+    // v1.24 — Règle J3 : un jalon n'a pas de collaborateur affecté.
+    // On force le nettoyage à chaque update (même si le client ne l'a pas
+    // explicitement effacé) pour rester aligné avec la règle métier.
+    if (next.kind === 'milestone') next.collaborator_id = null
+
     // v1.6 — Une phase n'a pas de collaborateur ni de prédécesseur.
     if (next.kind === 'phase') {
       next.collaborator_id = null
@@ -1170,15 +1320,26 @@ export function updateTask(db, id, patch) {
     }
     // Sans prédécesseur, le délai n'a pas de sens : on le force à 0.
     if (!next.predecessor_id) next.predecessor_lag = 0
-    // v1.18 — Normalise la priorité (1..5 ou null). Si le patch ne touche pas
-    // priority, on conserve la valeur en base (déjà copiée via {...current}).
-    next.priority = normalizePriority(next.priority)
+    // v1.18 / v1.24 — Normalise la priorité selon le type final de la tâche :
+    //   • activité  → 1..5, défaut 3 si saisie invalide ;
+    //   • jalon/phase → null (la priorité n'a pas de sens hors activité).
+    next.priority = normalizePriority(next.priority, next.kind)
+    // v1.24 — Normalise la date butoir SNET (null pour les phases, format
+    // ISO 'YYYY-MM-DD' sinon, null si invalide).
+    next.not_before_date = normalizeNotBeforeDate(
+      next.not_before_date,
+      next.kind,
+    )
+    // v1.24 — Applique la contrainte SNET en dernière étape (le prédécesseur
+    // a déjà été réconcilié juste avant). Si SNET > borne basse actuelle,
+    // start (et end) sont relevés en respectant la charge en jours ouvrés.
+    enforceNotBeforeDate(next)
 
     db.prepare(
       `UPDATE tasks
          SET name = ?, kind = ?, start_date = ?, end_date = ?, progress = ?,
              collaborator_id = ?, color = ?, parent_id = ?, predecessor_id = ?,
-             predecessor_lag = ?, priority = ?
+             predecessor_lag = ?, priority = ?, not_before_date = ?
          WHERE id = ?`,
     ).run(
       next.name,
@@ -1192,6 +1353,7 @@ export function updateTask(db, id, patch) {
       next.predecessor_id,
       next.predecessor_lag,
       next.priority,
+      next.not_before_date,
       id,
     )
     // v1.6 — Si la tâche modifiée est elle-même une phase, on recalcule ses
@@ -1602,8 +1764,9 @@ export function replaceFullState(db, state) {
       `INSERT INTO tasks
         (id, name, kind, start_date, end_date, progress,
          collaborator_id, color, parent_id, predecessor_id,
-         predecessor_lag, priority, position, project_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         predecessor_lag, priority, not_before_date,
+         position, project_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     state.tasks.forEach((t, idx) => {
       const kind = t.kind || 'task'
@@ -1616,15 +1779,18 @@ export function replaceFullState(db, state) {
         t.start_date,
         endDate,
         t.progress ?? 0,
-        // v1.6 — pas de collaborateur ni de prédécesseur sur une phase.
-        kind === 'phase' ? null : (t.collaborator_id ?? null),
+        // v1.6 / v1.24 — Ni les phases ni les jalons n'ont de collaborateur.
+        kind === 'task' ? (t.collaborator_id ?? null) : null,
         t.color ?? null,
         t.parent_id ?? null,
         kind === 'phase' ? null : (t.predecessor_id ?? null),
         // v1.10 — délai (jours ouvrés) ; 0 par défaut.
         kind === 'phase' ? 0 : Math.max(0, Math.floor(t.predecessor_lag || 0)),
-        // v1.18 — priorité (1..5) ou null par défaut.
-        kind === 'phase' ? null : normalizePriority(t.priority),
+        // v1.18 / v1.24 — priorité 1..5 (défaut 3) sur les activités, null
+        // sur les jalons et les phases.
+        normalizePriority(t.priority, kind),
+        // v1.24 — SNET : valeur saisie ou null (forcé à null si phase).
+        normalizeNotBeforeDate(t.not_before_date, kind),
         idx,
         t.project_id || fallbackProjectId,
       )

@@ -2,7 +2,7 @@
 
 **Version applicative couverte : v1.24**
 **Date de dernière mise à jour : 2026-05-18**
-**Couverture de test : 94 / 94 (100 %)**
+**Couverture de test : 93 / 93 (100 %)**
 
 Ce document est le **référentiel vivant** des règles de gestion métier de
 l'application. Chaque règle porte un identifiant stable de la forme
@@ -811,4 +811,4 @@ mais reportées à une version ultérieure :
 | 10 — Replanification        |     10 |             10 / 10 |
 | 11 — Calendrier             |      5 |               5 / 5 |
 | 12 — Hiérarchie / Projets   |      8 |               8 / 8 |
-| **Total**                   | **94** | **94 / 94 (100 %)** |
+| **Total**                   | **93** | **93 / 93 (100 %)** |

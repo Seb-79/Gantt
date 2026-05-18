@@ -494,19 +494,25 @@ export default function App() {
     await mutate('PATCH', `/api/projects/${currentProject.id}`, { name })
   }
 
-  /** Supprime le projet courant après confirmation. */
+  /** Supprime le projet courant après confirmation.
+   *
+   * v1.24 — Règle RG-GANTT-1106 : la suppression est désormais autorisée
+   * même si c'est le DERNIER projet. Dans ce cas, on confirme avec un
+   * message renforcé pour bien avertir l'utilisateur du résultat (base
+   * vide, plus rien à afficher). */
   const handleDeleteProject = async () => {
     if (!currentProject || !state) return
-    if (state.projects.length <= 1) {
-      alert('Impossible de supprimer le dernier projet.')
-      return
-    }
+    const isLast = state.projects.length <= 1
     const ok = confirm(
-      `Supprimer le projet « ${currentProject.name} » et toutes ses tâches ?\n\nCette action est irréversible.`,
+      isLast
+        ? `Supprimer le projet « ${currentProject.name} » ?\n\nC'est le dernier projet : la base sera vide après suppression. Vous pourrez créer un nouveau projet à tout moment.`
+        : `Supprimer le projet « ${currentProject.name} » et toutes ses tâches ?\n\nCette action est irréversible.`,
     )
     if (!ok) return
-    // On bascule sur un autre projet AVANT la suppression pour que le
-    // refetch suivant ne reparte pas sur un id invalide.
+    // Si un autre projet existe, on bascule dessus AVANT la suppression
+    // pour que le refetch ne reparte pas sur un id invalide. Sinon (cas
+    // « dernier projet »), le serveur renverra current_project_id = null
+    // et la vue affichera l'état vide.
     const fallback = state.projects.find((p) => p.id !== currentProject.id)
     if (fallback) handleSelectProject(fallback.id)
     await mutate('DELETE', `/api/projects/${currentProject.id}`)
@@ -730,13 +736,16 @@ export default function App() {
             >
               ✎
             </button>
+            {/* v1.24 — Règle RG-GANTT-1106 : la suppression est autorisée
+                même pour le dernier projet. Le bouton n'est désactivé que
+                lorsqu'il n'y a aucun projet courant (cas "base vide"). */}
             <button
               className="w-7 h-7 text-sm rounded border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
               onClick={handleDeleteProject}
-              disabled={!currentProject || state.projects.length <= 1}
+              disabled={!currentProject}
               title={
                 state.projects.length <= 1
-                  ? 'Impossible de supprimer le dernier projet'
+                  ? 'Supprimer le projet (base vide après suppression)'
                   : 'Supprimer le projet'
               }
             >

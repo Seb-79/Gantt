@@ -358,10 +358,16 @@ describe('Projets', () => {
     expect(state.body.projects.length).toBe(1)
   })
 
-  it('DELETE /api/projects/:id refuse de supprimer le dernier projet', async () => {
+  // v1.24 — RG-GANTT-1106 : la suppression du dernier projet est autorisée.
+  // La base se retrouve alors vide (current_project_id = null, tasks = []).
+  it('v1.24 / RG-GANTT-1106 — DELETE /api/projects/:id autorise la suppression du dernier projet', async () => {
     const list = await request(app).get('/api/projects').expect(200)
     const only = list.body.projects[0]
-    await request(app).delete(`/api/projects/${only.id}`).expect(400)
+    await request(app).delete(`/api/projects/${only.id}`).expect(200)
+    const after = await request(app).get('/api/state').expect(200)
+    expect(after.body.projects).toEqual([])
+    expect(after.body.current_project_id).toBeNull()
+    expect(after.body.tasks).toEqual([])
   })
 
   it('POST /api/tasks rattache la tâche au project_id fourni', async () => {

@@ -462,3 +462,107 @@ describe('TaskEditor — case "Replanifier après enregistrement" (v1.22)', () =
     expect(onSave.mock.calls[0][1]).toBeUndefined()
   })
 })
+
+// =============================================================================
+// v1.24 — Tests dédiés aux règles métier RG-GANTT-XXXX (cf.
+// docs/regles-metier.md). Chaque test cite la règle qu'il garantit.
+// =============================================================================
+
+describe('v1.24 — RG-GANTT-0305 — le menu prédécesseur exclut les phases', () => {
+  it('une phase existante n`apparaît PAS dans le menu déroulant Prédécesseur', () => {
+    // Garantit la règle RG-GANTT-0305 : une phase ne peut pas servir de
+    // prédécesseur à une autre tâche.
+    const phase = mkTask({
+      id: 'ph1',
+      name: 'PhaseA',
+      kind: 'phase',
+      start_date: '2026-06-01',
+      end_date: '2026-06-30',
+    })
+    const task = mkTask({
+      id: 't_other',
+      name: 'TâcheB',
+      start_date: '2026-06-15',
+      end_date: '2026-06-20',
+    })
+    render(
+      <TaskEditor
+        task={null}
+        defaults={{ start_date: '2026-07-01' }}
+        collaborators={COLLABS}
+        tasks={[phase, task]}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    const select = screen.getByLabelText(/Prédécesseur/) as HTMLSelectElement
+    const options = Array.from(select.options).map((o) => o.textContent || '')
+    expect(options.some((o) => o.includes('PhaseA'))).toBe(false)
+    expect(options.some((o) => o.includes('TâcheB'))).toBe(true)
+  })
+})
+
+describe('v1.24 — RG-GANTT-0706 — blocage saisie si start_date < SNET', () => {
+  it("refuse l'enregistrement avec un message d'erreur explicite", () => {
+    // L'utilisateur a tenté de placer le début 5 jours avant la contrainte
+    // « Ne doit pas démarrer avant le » → le formulaire bloque.
+    const onSave = vi.fn()
+    render(
+      <TaskEditor
+        task={mkTask({
+          start_date: '2026-06-10',
+          end_date: '2026-06-12',
+          not_before_date: '2026-06-15',
+        })}
+        collaborators={COLLABS}
+        tasks={[]}
+        onSave={onSave}
+        onClose={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Enregistrer/ }))
+    expect(onSave).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      /Ne doit pas démarrer avant le/i,
+    )
+  })
+})
+
+describe('v1.24 — RG-GANTT-0705 — avertissement non-bloquant si SNET non ouvré', () => {
+  it('affiche un avertissement quand la date saisie tombe un week-end', () => {
+    // 2026-05-16 = samedi → le système le reportera au prochain jour ouvré
+    // au moment de l'enregistrement, mais on prévient l'utilisateur AVANT.
+    render(
+      <TaskEditor
+        task={mkTask({
+          start_date: '2026-05-20',
+          end_date: '2026-05-20',
+          not_before_date: '2026-05-16',
+        })}
+        collaborators={COLLABS}
+        tasks={[]}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    expect(screen.getByText(/week-end ou un jour férié/i)).toBeInTheDocument()
+  })
+
+  it('n`affiche aucun avertissement quand la date tombe un jour ouvré ordinaire', () => {
+    // 2026-05-19 = mardi ouvré.
+    render(
+      <TaskEditor
+        task={mkTask({
+          start_date: '2026-05-20',
+          end_date: '2026-05-20',
+          not_before_date: '2026-05-19',
+        })}
+        collaborators={COLLABS}
+        tasks={[]}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    expect(screen.queryByText(/week-end ou un jour férié/i)).toBeNull()
+  })
+})

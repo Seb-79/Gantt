@@ -323,14 +323,17 @@ describe('App — gestion des projets', () => {
     })
   })
 
-  it('suppression : dernier projet → bouton désactivé', async () => {
+  // v1.24 — RG-GANTT-1106 : la suppression du dernier projet est AUTORISÉE.
+  // Le bouton reste actif tant qu'un projet est chargé ; le tooltip prévient
+  // simplement que la base sera vide après l'opération.
+  it('v1.24 / RG-GANTT-1106 — suppression : dernier projet → bouton actif (base vide après)', async () => {
     setupFetchMock(
       mkState({ projects: [{ id: 'p1', name: 'Seul', position: 0 }] }),
     )
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
-    const del = screen.getByTitle(/Impossible de supprimer le dernier projet/)
-    expect(del).toBeDisabled()
+    const del = screen.getByTitle(/base vide après suppression/i)
+    expect(del).not.toBeDisabled()
   })
 })
 

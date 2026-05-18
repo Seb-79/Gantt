@@ -217,9 +217,9 @@ describe('updateTask', () => {
   })
 
   // v1.24 — Contrainte SNET : la date de début ne peut pas être antérieure
-  // à la date butoir. Si elle l'est, le serveur relève start au prochain
-  // jour ouvré de la date butoir et préserve la charge.
-  it('v1.24 / SNET — start_date relevée à la date butoir si en deçà', () => {
+  // à la date de démarrage au plus tôt. Si elle l'est, le serveur relève start au prochain
+  // jour ouvré de la date de démarrage au plus tôt et préserve la charge.
+  it('v1.24 / SNET — start_date relevée à la date de démarrage au plus tôt si en deçà', () => {
     updateTask(db, 't1', {
       start_date: '2026-05-01',
       end_date: '2026-05-08',
@@ -234,7 +234,7 @@ describe('updateTask', () => {
     expect(t.end_date >= t.start_date).toBe(true)
   })
 
-  it('v1.24 / SNET — date butoir un week-end → snap au prochain jour ouvré', () => {
+  it('v1.24 / SNET — date de démarrage au plus tôt un week-end → snap au prochain jour ouvré', () => {
     // 2026-05-16 = samedi → snap au lundi 18/05.
     updateTask(db, 't1', {
       start_date: '2026-05-01',
@@ -244,7 +244,53 @@ describe('updateTask', () => {
     expect(getFullState(db).tasks[0].start_date).toBe('2026-05-18')
   })
 
-  it('v1.24 / SNET — phase : la date butoir est forcée à null', () => {
+  // v1.24 — RG-GANTT-0703 : si une tâche a à la fois un prédécesseur et un
+  // SNET, sa date de début effective doit respecter le PLUS TARDIF des deux.
+  it('v1.24 / SNET RG-GANTT-0703 — SNET > pred.end : le SNET gagne', () => {
+    // Pred X finit le 08/06/2026 (lundi). Y a un SNET au 22/06 (lundi suivant).
+    // → Y doit démarrer le 22/06, pas le 09/06.
+    createTask(db, {
+      id: 'x',
+      name: 'X',
+      start_date: '2026-06-08',
+      end_date: '2026-06-08',
+    })
+    createTask(db, {
+      id: 'y',
+      name: 'Y',
+      start_date: '2026-06-09',
+      end_date: '2026-06-09',
+      predecessor_id: 'x',
+      predecessor_lag: 0,
+      not_before_date: '2026-06-22',
+    })
+    const y = getFullState(db).tasks.find((t) => t.id === 'y')
+    expect(y.start_date).toBe('2026-06-22')
+  })
+
+  it('v1.24 / SNET RG-GANTT-0703 — pred.end > SNET : le prédécesseur gagne', () => {
+    // Pred X finit le 22/06. Y a un SNET au 08/06 (antérieur).
+    // → Y doit démarrer après la fin de X, le SNET est silencieusement satisfait.
+    createTask(db, {
+      id: 'x',
+      name: 'X',
+      start_date: '2026-06-15',
+      end_date: '2026-06-22',
+    })
+    createTask(db, {
+      id: 'y',
+      name: 'Y',
+      start_date: '2026-06-23',
+      end_date: '2026-06-23',
+      predecessor_id: 'x',
+      predecessor_lag: 0,
+      not_before_date: '2026-06-08', // antérieur à pred.end → sans effet
+    })
+    const y = getFullState(db).tasks.find((t) => t.id === 'y')
+    expect(y.start_date >= '2026-06-22').toBe(true)
+  })
+
+  it('v1.24 / SNET — phase : la date de démarrage au plus tôt est forcée à null', () => {
     createTask(db, {
       id: 'ph_snet',
       name: 'P',

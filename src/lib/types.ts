@@ -65,7 +65,7 @@ export interface Task {
    *  `null` pour les jalons et les phases. Sans effet sur l'affichage :
    *  utilisée uniquement par « Replan ». */
   priority: number | null
-  /** v1.24 — Contrainte SNET « Ne doit pas démarrer avant le » : date butoir
+  /** v1.24 — Contrainte SNET « Ne doit pas démarrer avant le » : date de démarrage au plus tôt
    *  ISO YYYY-MM-DD facultative en dessous de laquelle la tâche ne peut pas
    *  commencer. `null` = pas de contrainte. Toujours `null` pour les phases. */
   not_before_date: string | null

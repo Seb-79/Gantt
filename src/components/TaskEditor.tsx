@@ -348,7 +348,7 @@ export default function TaskEditor({
       return
     }
     // v1.24 — Contrainte SNET « Ne doit pas démarrer avant le » : blocage
-    // explicite à la saisie. Si la date butoir tombe un jour non ouvré, on
+    // explicite à la saisie. Si la date de démarrage au plus tôt tombe un jour non ouvré, on
     // compare contre le jour ouvré snappé pour rester cohérent avec ce que
     // le serveur appliquera. Une activité de start un jour non-ouvré qui
     // tombe sur la même semaine que le SNET reste donc acceptée.
@@ -626,7 +626,7 @@ export default function TaskEditor({
             <span className="text-slate-600">
               Ne doit pas démarrer avant le
               <span className="ml-1 text-xs text-slate-400">
-                (facultatif — date butoir indépendante du prédécesseur)
+                (facultatif — borne indépendante du prédécesseur)
               </span>
             </span>
             <input

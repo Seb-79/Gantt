@@ -1010,8 +1010,8 @@ function renderDateLabels(
 /**
  * v1.24 — Rend un petit triangle gris discret pour matérialiser la contrainte
  * SNET « Ne doit pas démarrer avant le » d'une activité ou d'un jalon. Le
- * triangle est positionné au centre de la cellule du jour butoir (ou du
- * prochain jour ouvré quand la date butoir tombe un week-end / férié), juste
+ * triangle est positionné au centre de la cellule du jour de démarrage au plus tôt (ou du
+ * prochain jour ouvré quand la date de démarrage au plus tôt tombe un week-end / férié), juste
  * sous la baseline de la barre. Aucune interaction : c'est un repère pur.
  *
  * @param task         Tâche à examiner (rien rendu si pas de SNET ou phase).

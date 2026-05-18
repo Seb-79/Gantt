@@ -174,21 +174,17 @@ export function createApp(db, { requestLog = true } = {}) {
     '/api/projects/:id',
     validate({ params: ProjectIdParams }),
     safeRoute((req, res) => {
-      try {
-        const result = deleteProject(db, req.params.id)
-        if (!result.changed) {
-          return res.status(404).json({
-            error: 'projet introuvable',
-            version: result.version,
-          })
-        }
-        res.json(result)
-      } catch (err) {
-        // Cas "dernier projet" : 400 explicite avec le message du DAL.
-        res
-          .status(400)
-          .json({ error: `Suppression impossible : ${err.message}` })
+      // v1.24 — RG-GANTT-1106 : la suppression du dernier projet est
+      // désormais autorisée. Le DAL ne lève plus aucune exception métier ;
+      // la base peut se retrouver vide, ce qui est un état valide.
+      const result = deleteProject(db, req.params.id)
+      if (!result.changed) {
+        return res.status(404).json({
+          error: 'projet introuvable',
+          version: result.version,
+        })
       }
+      res.json(result)
     }),
   )
 

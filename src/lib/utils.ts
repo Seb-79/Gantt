@@ -1300,8 +1300,8 @@ function detectPriorityViolations(tasks: Task[]): CoherenceIssue[] {
  */
 /**
  * v1.24 — Détecte les violations de la contrainte SNET « Ne doit pas démarrer
- * avant le ». Pour chaque activité ou jalon ayant une date butoir saisie, on
- * compare sa date de début à la date butoir snappée au jour ouvré suivant.
+ * avant le ». Pour chaque activité ou jalon ayant une date de démarrage au plus tôt saisie, on
+ * compare sa date de début à la date de démarrage au plus tôt snappée au jour ouvré suivant.
  * Si `start_date < not_before_date_snapped`, on lève une incohérence rouge
  * (erreur bloquante logique, à corriger via Replan ou édition manuelle).
  *
@@ -1321,7 +1321,7 @@ function detectNotBeforeViolations(tasks: Task[]): CoherenceIssue[] {
         kind: 'not_before',
         severity: 'error',
         taskIds: [t.id],
-        message: `« Ne doit pas démarrer avant le » : « ${t.name} » commence le ${t.start_date}, avant la date butoir (${snapped}).`,
+        message: `« Ne doit pas démarrer avant le » : « ${t.name} » commence le ${t.start_date}, avant la date de démarrage au plus tôt (${snapped}).`,
       })
     }
   }

@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   -- phases. Utilisée par « Replan » pour arbitrer entre deux activités d'un
   -- même collaborateur en surcharge.
   priority        INTEGER,
-  -- v1.24 — Contrainte SNET (« Start No Earlier Than ») : date butoir en
+  -- v1.24 — Contrainte SNET (« Start No Earlier Than ») : date de démarrage au plus tôt en
   -- dessous de laquelle la tâche ne peut pas commencer. NULL = pas de
   -- contrainte. Applicable aux activités et aux jalons uniquement (jamais
   -- aux phases dont les dates sont la synthèse des enfants).

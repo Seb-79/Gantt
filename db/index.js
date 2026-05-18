@@ -216,7 +216,7 @@ function ensureTaskColumns(db) {
     )
   }
 
-  // v1.24 — Règle SNET : une phase n'a jamais de date butoir « ne doit pas
+  // v1.24 — Règle SNET : une phase n'a jamais de date de démarrage au plus tôt « ne doit pas
   // démarrer avant le » (ses dates sont une synthèse de ses enfants). On
   // efface toute valeur résiduelle si la colonne existait déjà avec des
   // données invalides.
@@ -299,7 +299,7 @@ function ensureKindAcceptsPhase(db) {
       predecessor_lag INTEGER NOT NULL DEFAULT 0,
       -- v1.18 — priorité facultative, préservée lors de la migration.
       priority        INTEGER,
-      -- v1.24 — date butoir SNET, préservée lors de la migration.
+      -- v1.24 — date de démarrage au plus tôt SNET, préservée lors de la migration.
       not_before_date TEXT,
       position        INTEGER NOT NULL,
       CHECK (progress BETWEEN 0 AND 100)
@@ -497,8 +497,11 @@ export function updateProject(db, id, patch) {
 
 /**
  * Supprime un projet et toutes ses tâches (cascade FK).
- * Refuse de supprimer le DERNIER projet pour éviter de se retrouver
- * sans aucun projet à afficher.
+ *
+ * v1.24 — Règle RG-GANTT-1106 : la suppression du DERNIER projet est désormais
+ * AUTORISÉE. Si l'utilisateur supprime tous les projets, la base devient
+ * vide ; `getFullState` retournera alors `current_project_id = null` et
+ * `tasks = []`. L'utilisateur pourra créer un nouveau projet à tout moment.
  *
  * @param {import('better-sqlite3').Database} db
  * @param {string} id
@@ -506,10 +509,6 @@ export function updateProject(db, id, patch) {
  */
 export function deleteProject(db, id) {
   const tx = db.transaction(() => {
-    const count = db.prepare(`SELECT COUNT(*) AS n FROM projects`).get().n
-    if (count <= 1) {
-      throw new Error('Impossible de supprimer le dernier projet')
-    }
     const info = db.prepare(`DELETE FROM projects WHERE id = ?`).run(id)
     if (info.changes === 0) return { version: getVersion(db), changed: false }
     const version = bumpVersion(db)
@@ -1062,7 +1061,7 @@ function normalizePriority(raw, kind) {
 }
 
 /**
- * v1.24 — Normalise la date butoir SNET (« Ne doit pas démarrer avant le »).
+ * v1.24 — Normalise la date de démarrage au plus tôt SNET (« Ne doit pas démarrer avant le »).
  *
  * Règle métier SNET :
  *   • Activités et jalons : valeur facultative au format `YYYY-MM-DD`, ou
@@ -1085,13 +1084,13 @@ function normalizeNotBeforeDate(raw, kind) {
 
 /**
  * v1.24 — Applique la contrainte SNET en POUSSANT `start_date` au jour ouvré
- * de la date butoir si elle est en deçà. La règle « le plus tardif gagne »
+ * de la date de démarrage au plus tôt si elle est en deçà. La règle « le plus tardif gagne »
  * est garantie en appelant cette fonction APRÈS la cascade de prédécesseur :
  *   • si `pred.end + lag` > SNET → start déjà au bon endroit, SNET silencieux,
  *   • si SNET > `pred.end + lag` → ici on relève start au niveau de SNET,
  *   • sans prédécesseur → on relève juste start au niveau de SNET.
  *
- * La date butoir est snappée au prochain jour ouvré si elle tombe un week-end
+ * La date de démarrage au plus tôt est snappée au prochain jour ouvré si elle tombe un week-end
  * ou un jour férié (saisie libre côté UI, snap au runtime côté serveur).
  *
  * Mute `next` en place : start_date / end_date (charge en jours ouvrés
@@ -1324,7 +1323,7 @@ export function updateTask(db, id, patch) {
     //   • activité  → 1..5, défaut 3 si saisie invalide ;
     //   • jalon/phase → null (la priorité n'a pas de sens hors activité).
     next.priority = normalizePriority(next.priority, next.kind)
-    // v1.24 — Normalise la date butoir SNET (null pour les phases, format
+    // v1.24 — Normalise la date de démarrage au plus tôt SNET (null pour les phases, format
     // ISO 'YYYY-MM-DD' sinon, null si invalide).
     next.not_before_date = normalizeNotBeforeDate(
       next.not_before_date,

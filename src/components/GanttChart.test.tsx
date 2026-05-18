@@ -691,3 +691,91 @@ describe("GanttChart — click sur barre du planning ouvre l'éditeur", () => {
     expect(onTaskClick.mock.calls[0][0].id).toBe('p1')
   })
 })
+
+// =============================================================================
+// v1.24 — Tests dédiés aux règles métier RG-GANTT-XXXX (cf.
+// docs/regles-metier.md). Chaque test cite la règle qu'il garantit.
+// =============================================================================
+
+describe('v1.24 — RG-GANTT-0708 — triangle SNET dans le diagramme', () => {
+  it('rend un triangle (élément avec tooltip "Ne doit pas démarrer avant le ...")', () => {
+    // Garantit la présence d'un repère visuel pour la contrainte « Ne doit
+    // pas démarrer avant le » sur les activités et les jalons qui en portent.
+    const tasks = [
+      mkTask({
+        id: 't_snet',
+        name: 'Avec SNET',
+        start_date: '2026-05-20',
+        end_date: '2026-05-25',
+        not_before_date: '2026-05-15',
+      }),
+    ]
+    const { container } = render(
+      <GanttChart
+        windowStart="2026-05-01"
+        windowEnd="2026-05-31"
+        dayWidth={20}
+        tasks={tasks}
+        collaborators={COLLABS}
+      />,
+    )
+    const marker = container.querySelector(
+      '[title^="Ne doit pas démarrer avant le"]',
+    )
+    expect(marker).not.toBeNull()
+    expect(marker?.getAttribute('title')).toContain('2026-05-15')
+  })
+
+  it("n'affiche AUCUN triangle pour une activité sans contrainte SNET", () => {
+    // Cas négatif : sans not_before_date, aucun repère visuel ne doit
+    // apparaître.
+    const tasks = [
+      mkTask({
+        id: 't_no_snet',
+        name: 'Sans SNET',
+        start_date: '2026-05-20',
+        end_date: '2026-05-25',
+        not_before_date: null,
+      }),
+    ]
+    const { container } = render(
+      <GanttChart
+        windowStart="2026-05-01"
+        windowEnd="2026-05-31"
+        dayWidth={20}
+        tasks={tasks}
+        collaborators={COLLABS}
+      />,
+    )
+    expect(
+      container.querySelector('[title^="Ne doit pas démarrer avant le"]'),
+    ).toBeNull()
+  })
+
+  it("n'affiche AUCUN triangle pour une phase (règle RG-GANTT-0309)", () => {
+    // Une phase ne porte jamais de SNET — même avec une valeur résiduelle,
+    // le triangle est masqué côté UI.
+    const tasks = [
+      mkTask({
+        id: 'p_snet',
+        name: 'Phase pollution',
+        kind: 'phase',
+        start_date: '2026-05-05',
+        end_date: '2026-05-25',
+        not_before_date: '2026-05-15',
+      }),
+    ]
+    const { container } = render(
+      <GanttChart
+        windowStart="2026-05-01"
+        windowEnd="2026-05-31"
+        dayWidth={20}
+        tasks={tasks}
+        collaborators={COLLABS}
+      />,
+    )
+    expect(
+      container.querySelector('[title^="Ne doit pas démarrer avant le"]'),
+    ).toBeNull()
+  })
+})

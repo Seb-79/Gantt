@@ -1129,3 +1129,131 @@ describe('concernedTaskIds — fermeture transitive', () => {
     expect([...set].sort()).toEqual(['X', 'Y', 'Z'])
   })
 })
+
+// =============================================================================
+// v1.24 — Tests dédiés couvrant les règles métier RG-GANTT-XXXX (cf.
+// docs/regles-metier.md). Chaque test cite explicitement la règle
+// qu'il garantit pour faciliter la traçabilité « règle ↔ test ».
+// =============================================================================
+
+describe('v1.24 — RG-GANTT-0206 — effectiveTaskColor ignore le collab pour un jalon', () => {
+  it('un jalon avec un collaborator_id résiduel ne hérite PAS de la couleur du collab', () => {
+    // Garde-fou : même si la base contient encore un jalon « pollué » par un
+    // ancien collaborator_id (cf. migration J3 v1.24), la couleur affichée
+    // reste neutre — seule la couleur custom ou le défaut s'appliquent.
+    const collabs: Collaborator[] = [
+      { id: 'c1', name: 'Léa', color: '#ff0000', position: 0 },
+    ]
+    const milestone = mkTask('m1', {
+      kind: 'milestone',
+      collaborator_id: 'c1', // résiduel hypothétique
+    })
+    expect(effectiveTaskColor(milestone, collabs)).toBe(DEFAULT_TASK_COLOR)
+  })
+
+  it('une activité avec le même collab continue d`hériter de sa couleur', () => {
+    // Contre-test : la règle ne doit affecter QUE les jalons, pas les
+    // activités (qui restent peintes à la couleur du collab par défaut).
+    const collabs: Collaborator[] = [
+      { id: 'c1', name: 'Léa', color: '#ff0000', position: 0 },
+    ]
+    const task = mkTask('t1', { collaborator_id: 'c1' })
+    expect(effectiveTaskColor(task, collabs)).toBe('#ff0000')
+  })
+})
+
+describe('v1.24 — RG-GANTT-0703 / 0709 — replan respecte la borne basse SNET', () => {
+  it('SNET > pred.end + lag → la borne basse de replan est le SNET', () => {
+    // Scénario : prédécesseur X finit le mercredi 10/06/2026, lag = 0 (Y peut
+    // démarrer dès le 10/06). Mais Y porte une contrainte « Ne doit pas
+    // démarrer avant le » au 22/06. Le replan doit proposer Y au 22/06.
+    const X = mkTask('X', {
+      kind: 'task',
+      start_date: '2026-06-08',
+      end_date: '2026-06-10',
+      collaborator_id: 'c1',
+    })
+    const Y = mkTask('Y', {
+      kind: 'task',
+      start_date: '2026-06-10',
+      end_date: '2026-06-12',
+      collaborator_id: 'c1',
+      predecessor_id: 'X',
+      predecessor_lag: 0,
+      not_before_date: '2026-06-22', // borne SNET plus tardive
+    })
+    const moves = replanTasks([X, Y])
+    // Y doit être proposé à partir du 22/06 (lundi).
+    const moveY = moves.find((m) => m.id === 'Y')
+    expect(moveY).toBeDefined()
+    expect(moveY!.newStart).toBe('2026-06-22')
+  })
+
+  it('SNET < pred.end + lag → le prédécesseur gagne (SNET silencieusement satisfait)', () => {
+    // Scénario inverse : Y a un SNET au 01/06 mais X finit le 10/06. Le
+    // prédécesseur étant plus tardif, c'est lui qui dicte le démarrage.
+    const X = mkTask('X', {
+      kind: 'task',
+      start_date: '2026-06-08',
+      end_date: '2026-06-10',
+      collaborator_id: 'c1',
+    })
+    const Y = mkTask('Y', {
+      kind: 'task',
+      start_date: '2026-06-08',
+      end_date: '2026-06-10',
+      collaborator_id: 'c1',
+      predecessor_id: 'X',
+      predecessor_lag: 0,
+      not_before_date: '2026-06-01', // borne SNET plus ancienne, sans effet
+    })
+    const moves = replanTasks([X, Y])
+    const moveY = moves.find((m) => m.id === 'Y')
+    // Y commence APRÈS la fin de X, conformément à la règle prédécesseur.
+    expect(moveY?.newStart || Y.start_date >= X.end_date).toBeTruthy()
+    if (moveY) expect(moveY.newStart >= X.end_date).toBe(true)
+  })
+})
+
+describe('v1.24 — RG-GANTT-0805 — detectNotBeforeViolations lève une erreur', () => {
+  it('une activité qui démarre avant son SNET déclenche une issue not_before', () => {
+    // Scénario : Léa a placé sa tâche au 05/06 mais sa contrainte « Ne doit
+    // pas démarrer avant le » est au 15/06. Une incohérence rouge doit
+    // apparaître dans le bandeau d'alertes.
+    const t = mkTask('t1', {
+      start_date: '2026-06-05',
+      end_date: '2026-06-08',
+      not_before_date: '2026-06-15',
+    })
+    const issues = checkCoherence([t])
+    const issue = issues.find((i) => i.kind === 'not_before')
+    expect(issue).toBeDefined()
+    expect(issue!.severity).toBe('error')
+    expect(issue!.taskIds).toContain('t1')
+    expect(issue!.message).toContain('Ne doit pas démarrer avant le')
+  })
+
+  it('une activité qui démarre PILE à son SNET ne déclenche aucune issue', () => {
+    // Cas limite : start_date = SNET (snappé jour ouvré) → règle satisfaite.
+    const t = mkTask('t1', {
+      start_date: '2026-06-15',
+      end_date: '2026-06-15',
+      not_before_date: '2026-06-15',
+    })
+    const issues = checkCoherence([t])
+    expect(issues.some((i) => i.kind === 'not_before')).toBe(false)
+  })
+
+  it('une phase ne déclenche jamais d`issue SNET, même avec un not_before_date', () => {
+    // Bien que le système force not_before_date à null pour les phases, on
+    // garantit la robustesse de la détection si une valeur résiduelle traîne.
+    const phase = mkTask('p1', {
+      kind: 'phase',
+      start_date: '2026-06-01',
+      end_date: '2026-06-30',
+      not_before_date: '2026-12-31', // ne devrait jamais arriver, garde-fou
+    })
+    const issues = checkCoherence([phase])
+    expect(issues.some((i) => i.kind === 'not_before')).toBe(false)
+  })
+})

@@ -468,6 +468,49 @@ describe('TaskEditor — case "Replanifier après enregistrement" (v1.22)', () =
 // docs/regles-metier.md). Chaque test cite la règle qu'il garantit.
 // =============================================================================
 
+describe('v1.24 — RG-GANTT-0400 — anti-cycle sur le menu prédécesseur', () => {
+  it('un descendant de la tâche éditée n`apparaît PAS dans le menu Prédécesseur', () => {
+    // Garantit qu'une tâche ne peut pas avoir l'un de ses descendants comme
+    // prédécesseur (sinon cycle infini de dépendance). L'UI filtre le menu
+    // via descendantIds().
+    const parent = mkTask({
+      id: 'p',
+      name: 'Parent',
+      start_date: '2026-06-01',
+      end_date: '2026-06-10',
+    })
+    const child = mkTask({
+      id: 'c',
+      name: 'Enfant',
+      parent_id: 'p',
+      start_date: '2026-06-02',
+      end_date: '2026-06-05',
+    })
+    const grandChild = mkTask({
+      id: 'gc',
+      name: 'Petit-enfant',
+      parent_id: 'c',
+      start_date: '2026-06-03',
+      end_date: '2026-06-04',
+    })
+    render(
+      <TaskEditor
+        task={parent} // on édite le PARENT
+        collaborators={COLLABS}
+        tasks={[parent, child, grandChild]}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    const select = screen.getByLabelText(/Prédécesseur/) as HTMLSelectElement
+    const options = Array.from(select.options).map((o) => o.textContent || '')
+    // Le parent lui-même, ses enfants directs et indirects sont exclus.
+    expect(options.some((o) => o.includes('Parent'))).toBe(false)
+    expect(options.some((o) => o.includes('Enfant'))).toBe(false)
+    expect(options.some((o) => o.includes('Petit-enfant'))).toBe(false)
+  })
+})
+
 describe('v1.24 — RG-GANTT-0305 — le menu prédécesseur exclut les phases', () => {
   it('une phase existante n`apparaît PAS dans le menu déroulant Prédécesseur', () => {
     // Garantit la règle RG-GANTT-0305 : une phase ne peut pas servir de

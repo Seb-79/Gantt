@@ -391,6 +391,35 @@ describe('Projets', () => {
     expect(state.body.tasks[0].id).toBe('t_iso')
   })
 
+  // v1.24 — RG-GANTT-1107 : les collaborateurs sont partagés entre TOUS les
+  // projets. Créer un collab le rend disponible quel que soit le projet
+  // courant.
+  it('v1.24 / RG-GANTT-1107 — les collaborateurs sont partagés entre projets', async () => {
+    // Récupère l'id du projet par défaut existant.
+    const initial = await request(app).get('/api/state').expect(200)
+    const projetDefault = initial.body.current_project_id
+    // Crée un 2e projet pour exercer le partage.
+    await request(app)
+      .post('/api/projects')
+      .send({ id: 'p_partage', name: 'Projet partagé' })
+      .expect(200)
+    // Crée un nouveau collaborateur.
+    await request(app)
+      .post('/api/collaborators')
+      .send({ id: 'c_partagee', name: 'Inès' })
+      .expect(200)
+    // GET state du projet par défaut → voit Inès.
+    const s1 = await request(app)
+      .get(`/api/state?project_id=${projetDefault}`)
+      .expect(200)
+    expect(s1.body.collaborators.some((c) => c.id === 'c_partagee')).toBe(true)
+    // GET state du 2e projet → voit aussi Inès (collabs partagés).
+    const s2 = await request(app)
+      .get('/api/state?project_id=p_partage')
+      .expect(200)
+    expect(s2.body.collaborators.some((c) => c.id === 'c_partagee')).toBe(true)
+  })
+
   it('GET /api/projects renvoie la liste seule', async () => {
     const r = await request(app).get('/api/projects').expect(200)
     expect(Array.isArray(r.body.projects)).toBe(true)

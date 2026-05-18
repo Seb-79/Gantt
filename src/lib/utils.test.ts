@@ -1136,6 +1136,48 @@ describe('concernedTaskIds — fermeture transitive', () => {
 // qu'il garantit pour faciliter la traçabilité « règle ↔ test ».
 // =============================================================================
 
+describe('v1.24 — RG-GANTT-0503 — priorité sans effet visuel ni sur la charge', () => {
+  it('changer la priorité d`une activité ne modifie PAS sa charge journalière', () => {
+    // Garantit que la priorité (1..5) sert UNIQUEMENT à arbitrer le Replan
+    // et la détection d'incohérences ; elle n'a aucun effet sur le plan de
+    // charge (1 jour-personne par jour ouvré, quelle que soit la priorité).
+    const collabs: Collaborator[] = [
+      { id: 'c1', name: 'Léa', color: '#3b82f6', position: 0 },
+    ]
+    const taskP1 = mkTask('a', {
+      collaborator_id: 'c1',
+      priority: 1,
+      start_date: '2026-06-08', // lundi
+      end_date: '2026-06-12', // vendredi
+    })
+    const taskP5 = mkTask('b', {
+      collaborator_id: 'c1',
+      priority: 5,
+      start_date: '2026-06-08',
+      end_date: '2026-06-12',
+    })
+    const dates = buildDateRange('2026-06-08', '2026-06-12')
+    // Avec une seule des deux affectée : charge journalière = 1.
+    const chargeP1 = computeWorkload([taskP1], collabs, dates).get('c1')
+    const chargeP5 = computeWorkload([taskP5], collabs, dates).get('c1')
+    expect(chargeP1).toEqual(chargeP5)
+    expect(chargeP1).toEqual([1, 1, 1, 1, 1])
+  })
+
+  it('couleur effective d`une activité indépendante de sa priorité', () => {
+    // La couleur ne dépend que de (couleur custom > couleur du collab > défaut).
+    // La priorité n'a aucun impact, quel que soit son niveau.
+    const collabs: Collaborator[] = [
+      { id: 'c1', name: 'Léa', color: '#ff0000', position: 0 },
+    ]
+    const tP1 = mkTask('x', { collaborator_id: 'c1', priority: 1 })
+    const tP5 = mkTask('y', { collaborator_id: 'c1', priority: 5 })
+    expect(effectiveTaskColor(tP1, collabs)).toBe(
+      effectiveTaskColor(tP5, collabs),
+    )
+  })
+})
+
 describe('v1.24 — RG-GANTT-0206 — effectiveTaskColor ignore le collab pour un jalon', () => {
   it('un jalon avec un collaborator_id résiduel ne hérite PAS de la couleur du collab', () => {
     // Garde-fou : même si la base contient encore un jalon « pollué » par un
@@ -1159,6 +1201,42 @@ describe('v1.24 — RG-GANTT-0206 — effectiveTaskColor ignore le collab pour u
     ]
     const task = mkTask('t1', { collaborator_id: 'c1' })
     expect(effectiveTaskColor(task, collabs)).toBe('#ff0000')
+  })
+})
+
+describe('v1.24 — RG-GANTT-0903 — Replan ne déplace jamais une activité vers le passé', () => {
+  it('une activité isolée et libre n`est PAS ramenée en arrière par le replan', () => {
+    // Aucune surcharge, aucun prédécesseur : il n'y a rien à corriger. Le
+    // replan ne doit pas proposer de déplacer la tâche vers une date plus
+    // ancienne pour « optimiser » le planning.
+    const t = mkTask('seule', {
+      collaborator_id: 'c1',
+      start_date: '2026-07-15', // mercredi
+      end_date: '2026-07-17',
+    })
+    const moves = replanTasks([t])
+    expect(moves).toEqual([])
+  })
+
+  it('après replan, la borne basse de chaque activité est >= sa start_date d`origine', () => {
+    // Garantie générale : même quand le replan déplace une tâche (à cause
+    // d'une surcharge), il NE LA RAMÈNE JAMAIS en deçà de sa start_date
+    // initiale. Le mouvement est unidirectionnel (vers le futur).
+    const a = mkTask('a', {
+      collaborator_id: 'c1',
+      start_date: '2026-06-08',
+      end_date: '2026-06-12',
+    })
+    const b = mkTask('b', {
+      collaborator_id: 'c1',
+      start_date: '2026-06-10', // chevauche A → surcharge
+      end_date: '2026-06-15',
+    })
+    const moves = replanTasks([a, b])
+    for (const m of moves) {
+      const orig = [a, b].find((t) => t.id === m.id)!
+      expect(m.newStart >= orig.start_date).toBe(true)
+    }
   })
 })
 

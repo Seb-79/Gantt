@@ -176,6 +176,60 @@ describe('createTask', () => {
     expect(r.task.priority).toBeNull()
   })
 
+  // v1.24 — RG-GANTT-0201 : un jalon n'a pas de charge. Même si l'utilisateur
+  // tente de saisir une end_date différente de start_date, le serveur la
+  // ramène à start_date (la durée d'un jalon est toujours nulle).
+  it('v1.24 / RG-GANTT-0201 — jalon : impossible de lui donner une charge (end forcée = start)', () => {
+    const r = createTask(db, {
+      id: 'mc',
+      name: 'Démo',
+      kind: 'milestone',
+      start_date: '2026-06-08',
+      end_date: '2026-06-20', // tentative de charge → ignorée
+    })
+    expect(r.task.end_date).toBe('2026-06-08')
+    // Et un PATCH qui modifie end_date sans toucher au type est lui aussi
+    // ramené : un jalon reste ponctuel après n'importe quel update.
+    updateTask(db, 'mc', { end_date: '2026-07-01' })
+    const t = getFullState(db).tasks.find((t) => t.id === 'mc')
+    expect(t.end_date).toBe(t.start_date)
+  })
+
+  // v1.24 — RG-GANTT-0205 : un jalon peut être rattaché à une phase parente
+  // (et une seule). On vérifie l'invariant : sa start est intégrée dans le
+  // MIN/MAX de la phase.
+  it('v1.24 / RG-GANTT-0205 — jalon enfant d`une phase : la phase intègre sa date', () => {
+    createTask(db, {
+      id: 'P',
+      name: 'Phase A',
+      kind: 'phase',
+      start_date: '2026-06-01',
+      end_date: '2026-06-01',
+    })
+    createTask(db, {
+      id: 'mj',
+      name: 'Jalon dans phase',
+      kind: 'milestone',
+      start_date: '2026-06-25',
+      parent_id: 'P',
+    })
+    const ph = getFullState(db).tasks.find((t) => t.id === 'P')
+    // La phase synthétise les dates des enfants → end = date du jalon.
+    expect(ph.end_date).toBe('2026-06-25')
+  })
+
+  // v1.24 — RG-GANTT-0701 : la contrainte SNET est facultative. Une activité
+  // créée sans `not_before_date` doit l'avoir à null en base.
+  it('v1.24 / RG-GANTT-0701 — SNET facultatif : null par défaut à la création', () => {
+    const r = createTask(db, {
+      id: 't_sans_snet',
+      name: 'Sans SNET',
+      start_date: '2026-06-08',
+      end_date: '2026-06-08',
+    })
+    expect(r.task.not_before_date).toBeNull()
+  })
+
   // v1.24 — Règle J3 : un jalon créé avec un collaborateur ne le conserve pas.
   it('v1.24 / J3 — un jalon créé avec un collaborateur a collaborator_id = null', () => {
     // On crée d'abord un collaborateur de référence.
@@ -301,6 +355,31 @@ describe('updateTask', () => {
     })
     const ph = getFullState(db).tasks.find((t) => t.id === 'ph_snet')
     expect(ph.not_before_date).toBeNull()
+  })
+
+  // v1.24 — RG-GANTT-0405 : sans prédécesseur, le délai (lag) est forcé à 0.
+  // Si on retire le prédécesseur d'une tâche qui en avait un (avec un lag),
+  // le serveur efface le lag pour rester cohérent (un lag isolé n'a aucun sens).
+  it('v1.24 / RG-GANTT-0405 — retirer le prédécesseur remet predecessor_lag à 0', () => {
+    createTask(db, {
+      id: 'X',
+      name: 'X',
+      start_date: '2026-06-08',
+      end_date: '2026-06-08',
+    })
+    // Y a un prédécesseur ET un lag de 3 jours.
+    updateTask(db, 't1', {
+      predecessor_id: 'X',
+      predecessor_lag: 3,
+    })
+    let y = getFullState(db).tasks.find((t) => t.id === 't1')
+    expect(y.predecessor_id).toBe('X')
+    expect(y.predecessor_lag).toBe(3)
+    // On retire le prédécesseur.
+    updateTask(db, 't1', { predecessor_id: null })
+    y = getFullState(db).tasks.find((t) => t.id === 't1')
+    expect(y.predecessor_id).toBeNull()
+    expect(y.predecessor_lag).toBe(0)
   })
 
   // v1.24 — Règle J3 : passer une activité affectée en jalon efface le collab.
@@ -691,6 +770,26 @@ describe('phases (v1.6) — recompute auto des dates', () => {
     })
     expect(r.task.collaborator_id).toBeNull()
     expect(r.task.predecessor_id).toBeNull()
+  })
+
+  // v1.24 — RG-GANTT-0301 : une phase SANS ENFANT conserve ses dates
+  // inchangées (aucun écrasement). Le recompute auto ne s'exécute QUE quand
+  // il y a au moins un enfant à synthétiser.
+  it('v1.24 / RG-GANTT-0301 — phase sans enfant : ses dates ne sont pas écrasées', () => {
+    const r = createTask(db, {
+      id: 'Pseule',
+      name: 'Phase solo',
+      kind: 'phase',
+      start_date: '2026-07-01',
+      end_date: '2026-07-15',
+    })
+    expect(r.task.start_date).toBe('2026-07-01')
+    expect(r.task.end_date).toBe('2026-07-15')
+    // Un update neutre ne doit pas non plus écraser les dates.
+    updateTask(db, 'Pseule', { progress: 0 })
+    const ph = getFullState(db).tasks.find((t) => t.id === 'Pseule')
+    expect(ph.start_date).toBe('2026-07-01')
+    expect(ph.end_date).toBe('2026-07-15')
   })
 })
 

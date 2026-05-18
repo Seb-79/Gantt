@@ -657,3 +657,116 @@ describe('Erreurs et validation (couverture)', () => {
     }
   })
 })
+
+// =============================================================================
+// v2.0 / F1 — Routes Memberships
+// =============================================================================
+
+describe('v2.0 / F1 — /api/projects/:id/members', () => {
+  let app
+  beforeEach(() => {
+    app = makeApp()
+  })
+
+  // RG-GANTT-1203 — GET expose la liste des ids membres du projet.
+  it('GET liste les membres du projet', async () => {
+    // L'app de test charge DEMO_STATE qui a déjà des tâches affectées : la
+    // migration auto-pop a donc dû créer des memberships pour le projet
+    // courant. On vérifie juste que la route répond 200 + tableau.
+    const state = await request(app).get('/api/state').expect(200)
+    const projectId = state.body.current_project_id
+    const r = await request(app)
+      .get(`/api/projects/${encodeURIComponent(projectId)}/members`)
+      .expect(200)
+    expect(Array.isArray(r.body.members)).toBe(true)
+  })
+
+  it('GET sur projet inconnu → 404', async () => {
+    await request(app).get('/api/projects/unknown/members').expect(404)
+  })
+
+  // RG-GANTT-1201 — POST ajoute un membership (idempotent).
+  it('POST ajoute un collaborateur à un projet', async () => {
+    const state = await request(app).get('/api/state').expect(200)
+    const projectId = state.body.current_project_id
+    // On crée un nouveau collab dédié pour tester l'ajout proprement (les
+    // memberships auto-créées par le seed concernent les collabs déjà
+    // existants — on veut tester le cas added=true).
+    const newCollabId = 'cNew'
+    await request(app)
+      .post('/api/collaborators')
+      .send({ id: newCollabId, name: 'Nouveau', color: '#ff00ff' })
+      .expect(200)
+
+    const r1 = await request(app)
+      .post(`/api/projects/${encodeURIComponent(projectId)}/members`)
+      .send({ collaborator_id: newCollabId })
+      .expect(200)
+    expect(r1.body.added).toBe(true)
+
+    // 2e POST : idempotent (added=false, même version).
+    const r2 = await request(app)
+      .post(`/api/projects/${encodeURIComponent(projectId)}/members`)
+      .send({ collaborator_id: newCollabId })
+      .expect(200)
+    expect(r2.body.added).toBe(false)
+    expect(r2.body.version).toBe(r1.body.version)
+
+    // GET liste : doit contenir newCollabId.
+    const list = await request(app)
+      .get(`/api/projects/${encodeURIComponent(projectId)}/members`)
+      .expect(200)
+    expect(list.body.members).toContain(newCollabId)
+  })
+
+  it('POST sur projet inconnu → 400', async () => {
+    await request(app)
+      .post('/api/projects/unknown/members')
+      .send({ collaborator_id: collabIdFromSeed() })
+      .expect(400)
+  })
+
+  it('POST collab inconnu → 400', async () => {
+    const state = await request(app).get('/api/state').expect(200)
+    const projectId = state.body.current_project_id
+    await request(app)
+      .post(`/api/projects/${encodeURIComponent(projectId)}/members`)
+      .send({ collaborator_id: 'unknown' })
+      .expect(400)
+  })
+
+  it('POST sans body → 400 (validation)', async () => {
+    const state = await request(app).get('/api/state').expect(200)
+    const projectId = state.body.current_project_id
+    await request(app)
+      .post(`/api/projects/${encodeURIComponent(projectId)}/members`)
+      .send({})
+      .expect(400)
+  })
+
+  // Helper local : valeur arbitraire d'un collab dans le seed pour les
+  // assertions qui n'ont besoin que d'un id existant.
+  function collabIdFromSeed() {
+    return DEMO_STATE.collaborators[0]?.id ?? 'c1'
+  }
+})
+
+// =============================================================================
+// v2.0 / F1 — GET /api/state expose current_project_members
+// =============================================================================
+
+describe('v2.0 / F1 — GET /api/state.current_project_members', () => {
+  it('le tableau est exposé et cohérent avec la liste des membres', async () => {
+    const app = makeApp()
+    const r = await request(app).get('/api/state').expect(200)
+    expect(Array.isArray(r.body.current_project_members)).toBe(true)
+    // Doit correspondre à GET /members du projet courant.
+    const projectId = r.body.current_project_id
+    const list = await request(app)
+      .get(`/api/projects/${encodeURIComponent(projectId)}/members`)
+      .expect(200)
+    expect(r.body.current_project_members.sort()).toEqual(
+      list.body.members.sort(),
+    )
+  })
+})

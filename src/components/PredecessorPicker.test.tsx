@@ -25,6 +25,7 @@ function mkTask(overrides: Partial<Task>): Task {
     predecessor_lag: 0,
     priority: 3,
     not_before_date: null,
+    not_later_than_date: null,
     charge_jours: null,
     position: 0,
     project_id: 'p1',

@@ -1816,3 +1816,135 @@ describe('v2.0 / F3 — collaborator_absences', () => {
     expect(r.task.end_date).toBe('2026-06-10')
   })
 })
+
+// =============================================================================
+// v2.0 / F4 — FNLT « Fin au plus tard » (deadline non-bloquante)
+// =============================================================================
+
+describe('v2.0 / F4 — not_later_than_date', () => {
+  let db
+  beforeEach(() => {
+    db = initDb(':memory:')
+    db.prepare(`INSERT INTO projects(id, name, position) VALUES (?, ?, ?)`).run(
+      'pA',
+      'Projet A',
+      0,
+    )
+  })
+
+  // RG-GANTT-1500 — FNLT facultatif, null par défaut.
+  it('v2.0 / RG-GANTT-1500 — FNLT facultatif : null par défaut', () => {
+    const r = createTask(db, {
+      id: 't_no_fnlt',
+      name: 'Sans FNLT',
+      start_date: '2026-06-08',
+      charge_jours: 3,
+      project_id: 'pA',
+    })
+    expect(r.task.not_later_than_date).toBeNull()
+  })
+
+  // RG-GANTT-1500 — FNLT saisi est persisté tel quel (aucun snap).
+  it('v2.0 / RG-GANTT-1500 — FNLT saisi : persistance brute', () => {
+    const r = createTask(db, {
+      id: 't_fnlt',
+      name: 'Avec FNLT',
+      start_date: '2026-06-08',
+      charge_jours: 3,
+      not_later_than_date: '2026-06-30',
+      project_id: 'pA',
+    })
+    expect(r.task.not_later_than_date).toBe('2026-06-30')
+  })
+
+  // RG-GANTT-1501 — Modification via PATCH possible.
+  it('v2.0 / RG-GANTT-1501 — PATCH met à jour la FNLT', () => {
+    createTask(db, {
+      id: 't_patch',
+      name: 'PATCH FNLT',
+      start_date: '2026-06-08',
+      charge_jours: 3,
+      project_id: 'pA',
+    })
+    updateTask(db, 't_patch', { not_later_than_date: '2026-07-10' })
+    const t = getFullState(db, 'pA').tasks.find((x) => x.id === 't_patch')
+    expect(t.not_later_than_date).toBe('2026-07-10')
+    // Et on peut le retirer en envoyant null.
+    updateTask(db, 't_patch', { not_later_than_date: null })
+    const t2 = getFullState(db, 'pA').tasks.find((x) => x.id === 't_patch')
+    expect(t2.not_later_than_date).toBeNull()
+  })
+
+  // RG-GANTT-1502 — FNLT NON BLOQUANT : la sauvegarde est acceptée même si
+  // la fin calculée dépasse la deadline. C'est la coherence côté front qui
+  // signalera l'incohérence.
+  it('v2.0 / RG-GANTT-1502 — FNLT non bloquante : sauvegarde acceptée même si dépassée', () => {
+    // Charge 20 j depuis 08/06 → fin bien après le 12/06.
+    const r = createTask(db, {
+      id: 't_overrun',
+      name: 'Dépasse la deadline',
+      start_date: '2026-06-08',
+      charge_jours: 20,
+      not_later_than_date: '2026-06-12',
+      project_id: 'pA',
+    })
+    expect(r.task.not_later_than_date).toBe('2026-06-12')
+    // La fin calculée dépasse bien le FNLT.
+    expect(r.task.end_date > '2026-06-12').toBe(true)
+  })
+
+  // RG-GANTT-1503 — Phase : FNLT toujours NULL, même si saisi.
+  it('v2.0 / RG-GANTT-1503 — phase : FNLT forcée à NULL même si fournie', () => {
+    const r = createTask(db, {
+      id: 'p_fnlt',
+      name: 'Phase',
+      kind: 'phase',
+      start_date: '2026-06-08',
+      end_date: '2026-06-30',
+      not_later_than_date: '2026-06-30',
+      project_id: 'pA',
+    })
+    expect(r.task.not_later_than_date).toBeNull()
+  })
+
+  // RG-GANTT-1503 — Jalon : FNLT autorisé (sœur du SNET).
+  it('v2.0 / RG-GANTT-1503 — jalon : FNLT autorisé', () => {
+    const r = createTask(db, {
+      id: 'm_fnlt',
+      name: 'Jalon avec deadline',
+      kind: 'milestone',
+      start_date: '2026-06-30',
+      not_later_than_date: '2026-07-15',
+      project_id: 'pA',
+    })
+    expect(r.task.not_later_than_date).toBe('2026-07-15')
+  })
+
+  // RG-GANTT-1504 — Format invalide ignoré (cohérent avec SNET).
+  it('v2.0 / RG-GANTT-1504 — format invalide ignoré, ramené à NULL', () => {
+    const r = createTask(db, {
+      id: 't_bad',
+      name: 'Bad format',
+      start_date: '2026-06-08',
+      charge_jours: 1,
+      not_later_than_date: 'not-a-date',
+      project_id: 'pA',
+    })
+    expect(r.task.not_later_than_date).toBeNull()
+  })
+
+  // RG-GANTT-1505 — getFullState expose not_later_than_date.
+  it('v2.0 / RG-GANTT-1505 — getFullState expose not_later_than_date', () => {
+    createTask(db, {
+      id: 't_expose',
+      name: 'Test',
+      start_date: '2026-06-08',
+      charge_jours: 1,
+      not_later_than_date: '2026-06-30',
+      project_id: 'pA',
+    })
+    const state = getFullState(db, 'pA')
+    const t = state.tasks.find((x) => x.id === 't_expose')
+    expect(t.not_later_than_date).toBe('2026-06-30')
+  })
+})

@@ -850,6 +850,11 @@ export default function GanttChart({
                     interactif : c'est un repère visuel pur. */}
                 {renderNotBeforeMarker(t, windowStart, dayWidth)}
 
+                {/* v2.0 / F4 — Marker FNLT « Fin au plus tard ». Triangle
+                    gris si tenue, ROUGE si dépassée (signal d'alerte
+                    miroir du bandeau de cohérence). */}
+                {renderFnltMarker(t, windowStart, dayWidth)}
+
                 {/* v1.23 — Handle de drag-to-link à droite de la barre
                     (uniquement si onCreateLink défini ET kind = task/jalon).
                     Tirer ce handle vers une autre barre crée un lien
@@ -1319,6 +1324,55 @@ function renderNotBeforeMarker(
         // Triangle pointant vers le HAUT : la pointe « accroche » la base de
         // la barre pour signaler la borne basse temporelle.
         borderBottom: '6px solid #94a3b8', // slate-400
+        opacity: 0.85,
+        pointerEvents: 'none',
+        zIndex: 3,
+      }}
+    />
+  )
+}
+
+/**
+ * v2.0 / F4 — Rend un petit triangle gris discret pour matérialiser la
+ * contrainte FNLT « Fin au plus tard » d'une activité ou d'un jalon. Position-
+ * né au centre de la cellule de la deadline, sous la baseline de la barre.
+ * Sœur jumelle de `renderNotBeforeMarker` mais pour la borne haute.
+ *
+ * Si la date de fin calculée DÉPASSE la FNLT, on bascule la couleur du
+ * triangle en rouge pour matérialiser le signal d'alerte (cohérent avec le
+ * bandeau de cohérence). Aucune interaction : c'est un repère pur.
+ *
+ * @param task         Tâche à examiner (rien rendu si pas de FNLT ou phase).
+ * @param windowStart  Borne gauche du calendrier.
+ * @param dayWidth     Largeur d'un jour en pixels.
+ */
+function renderFnltMarker(task: Task, windowStart: string, dayWidth: number) {
+  if (task.kind === 'phase' || !task.not_later_than_date) return null
+  const left =
+    dateToX(task.not_later_than_date, windowStart, dayWidth) + dayWidth / 2 - 4
+  const isOverrun = task.end_date > task.not_later_than_date
+  return (
+    <div
+      aria-hidden
+      title={
+        isOverrun
+          ? `⚠ Deadline dépassée — fin au plus tard : ${task.not_later_than_date}, fin calculée : ${task.end_date}`
+          : `Fin au plus tard : ${task.not_later_than_date}`
+      }
+      style={{
+        position: 'absolute',
+        left,
+        bottom: 2,
+        width: 0,
+        height: 0,
+        borderLeft: '4px solid transparent',
+        borderRight: '4px solid transparent',
+        // Triangle pointant vers le HAUT : la pointe « accroche » la base de
+        // la barre pour signaler la borne HAUTE temporelle (deadline).
+        // Rouge en cas de dépassement, gris sinon (= deadline encore tenue).
+        borderBottom: isOverrun
+          ? '6px solid #dc2626' // red-600 : alerte
+          : '6px solid #94a3b8', // slate-400 : info neutre
         opacity: 0.85,
         pointerEvents: 'none',
         zIndex: 3,

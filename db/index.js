@@ -217,11 +217,39 @@ function ensureTaskColumns(db) {
   if (!cols.includes('not_before_date')) {
     db.exec(`ALTER TABLE tasks ADD COLUMN not_before_date TEXT`)
   }
-  // v1.24 — Règle métier Pr2 : la priorité est désormais OBLIGATOIRE sur
-  // toute activité (valeur par défaut = 3). Inversement, un jalon ou une
-  // phase n'a plus de priorité du tout. Migration idempotente au boot :
-  //   • activités sans priorité saisie → priorité 3,
-  //   • jalons et phases avec priorité résiduelle → effacés.
+  // v2.0 / F4 — Contrainte FNLT (« Fin au plus tard »). Sœur jumelle du SNET
+  // mais sur la borne haute. Ajout en ALTER TABLE pour les bases d'avant
+  // v2.0/F4 ; valeur NULL par défaut (= pas de deadline imposée). Aucune
+  // valeur résiduelle à nettoyer puisque la colonne est neuve.
+  if (!cols.includes('not_later_than_date')) {
+    db.exec(`ALTER TABLE tasks ADD COLUMN not_later_than_date TEXT`)
+  }
+  // v1.24/v2.0 — Nettoyages idempotents des contraintes par type (priorité,
+  // SNET, FNLT, collab de jalon). Extrait dans `cleanupTaskMetadata` pour
+  // alléger la complexité cognitive de cette fonction (sonarjs).
+  cleanupTaskMetadata(db)
+
+  // Création de l'index APRÈS s'être assuré que la colonne existe.
+  // `IF NOT EXISTS` rend l'opération idempotente (base neuve OU migrée).
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_tasks_predecessor ON tasks(predecessor_id)`,
+  )
+}
+
+/**
+ * v1.24/v2.0 — Nettoyages métier appliqués à chaque boot pour garantir les
+ * invariants de la base :
+ *   • Pr2 (v1.24) : activités sans priorité → 3 ; jalons/phases avec
+ *     priorité résiduelle → null.
+ *   • SNET (v1.24) : phase avec not_before_date → null.
+ *   • FNLT (v2.0/F4) : phase avec not_later_than_date → null.
+ *   • J3 (v1.24) : jalon avec collaborator_id → null.
+ *
+ * Idempotent et sans effet sur les bases déjà conformes.
+ *
+ * @param {import('better-sqlite3').Database} db
+ */
+function cleanupTaskMetadata(db) {
   const rPrioTask = db
     .prepare(
       `UPDATE tasks SET priority = 3 WHERE kind = 'task' AND priority IS NULL`,
@@ -244,11 +272,6 @@ function ensureTaskColumns(db) {
       `[INIT] Migration v1.24 (Pr2) : ${rPrioNonTask.changes} jalon(s)/phase(s) avaient une priorité résiduelle — effacée(s).`,
     )
   }
-
-  // v1.24 — Règle SNET : une phase n'a jamais de date de démarrage au plus tôt « ne doit pas
-  // démarrer avant le » (ses dates sont une synthèse de ses enfants). On
-  // efface toute valeur résiduelle si la colonne existait déjà avec des
-  // données invalides.
   const rSnetPhase = db
     .prepare(
       `UPDATE tasks
@@ -261,7 +284,18 @@ function ensureTaskColumns(db) {
       `[INIT] Migration v1.24 (SNET) : ${rSnetPhase.changes} phase(s) avaient une date "ne doit pas démarrer avant le" — effacée(s).`,
     )
   }
-
+  const rFnltPhase = db
+    .prepare(
+      `UPDATE tasks
+         SET not_later_than_date = NULL
+         WHERE kind = 'phase' AND not_later_than_date IS NOT NULL`,
+    )
+    .run()
+  if (rFnltPhase.changes > 0) {
+    console.log(
+      `[INIT] Migration v2.0/F4 (FNLT) : ${rFnltPhase.changes} phase(s) avaient une date "fin au plus tard" — effacée(s).`,
+    )
+  }
   // v1.24 — Règle métier J3 : un jalon n'a pas de collaborateur affecté
   // (comme une phase). Nettoyage idempotent au boot : on efface toute
   // affectation résiduelle posée par une version antérieure ou par un
@@ -278,11 +312,6 @@ function ensureTaskColumns(db) {
       `[INIT] Migration v1.24 (J3) : ${r.changes} jalon(s) avaient un collaborateur affecté — nettoyé(s).`,
     )
   }
-  // Création de l'index APRÈS s'être assuré que la colonne existe.
-  // `IF NOT EXISTS` rend l'opération idempotente (base neuve OU migrée).
-  db.exec(
-    `CREATE INDEX IF NOT EXISTS idx_tasks_predecessor ON tasks(predecessor_id)`,
-  )
 }
 
 /**
@@ -330,17 +359,19 @@ function ensureKindAcceptsPhase(db) {
       priority        INTEGER,
       -- v1.24 — date de démarrage au plus tôt SNET, préservée lors de la migration.
       not_before_date TEXT,
+      -- v2.0 / F4 — date de fin au plus tard FNLT (deadline non-bloquante).
+      not_later_than_date TEXT,
       position        INTEGER NOT NULL,
       CHECK (progress BETWEEN 0 AND 100)
     );
     INSERT INTO tasks_new
       (id, name, kind, start_date, end_date, progress,
        collaborator_id, color, parent_id, predecessor_id, predecessor_lag,
-       priority, not_before_date, position)
+       priority, not_before_date, not_later_than_date, position)
     SELECT
        id, name, kind, start_date, end_date, progress,
        collaborator_id, color, parent_id, predecessor_id, predecessor_lag,
-       priority, not_before_date, position
+       priority, not_before_date, not_later_than_date, position
     FROM tasks;
     DROP TABLE tasks;
     ALTER TABLE tasks_new RENAME TO tasks;
@@ -885,8 +916,8 @@ export function getFullState(db, projectId) {
         .prepare(
           `SELECT id, name, kind, start_date, end_date, progress,
                   collaborator_id, color, parent_id,
-                  priority, not_before_date, charge_jours,
-                  position, project_id
+                  priority, not_before_date, not_later_than_date,
+                  charge_jours, position, project_id
              FROM tasks
              WHERE project_id = ?
              ORDER BY position ASC, id ASC`,
@@ -2015,12 +2046,45 @@ function normalizePriority(raw, kind) {
  * @param {string}  kind  Type de la tâche.
  * @returns {string|null} Date ISO normalisée ou null.
  */
-function normalizeNotBeforeDate(raw, kind) {
+/**
+ * Helper commun pour SNET et FNLT (factorisé pour sonarjs/no-identical-functions).
+ * Normalise une date contrainte facultative :
+ *   • Phase → toujours null.
+ *   • Valeur absente / vide / type incorrect → null.
+ *   • Format hors ISO `YYYY-MM-DD` → null.
+ *   • Sinon → valeur conservée telle quelle (le snap éventuel se fait ailleurs).
+ */
+function normalizeOptionalIsoDate(raw, kind) {
   if (kind === 'phase') return null
   if (raw === undefined || raw === null || raw === '') return null
   if (typeof raw !== 'string') return null
   if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null
   return raw
+}
+
+function normalizeNotBeforeDate(raw, kind) {
+  return normalizeOptionalIsoDate(raw, kind)
+}
+
+/**
+ * v2.0 / F4 — Normalise la date FNLT (« Fin au plus tard »).
+ *
+ * Règle métier symétrique au SNET :
+ *   • Activités et jalons : valeur facultative au format `YYYY-MM-DD`, ou
+ *     `null` quand aucune deadline imposée.
+ *   • Phases : toujours `null` (dates dérivées des enfants).
+ *   • Toute valeur de format invalide est ignorée (ramenée à `null`).
+ *
+ * Note : aucun enforcement sur les dates ici. Le FNLT est **non bloquant** —
+ * il sert uniquement à la détection de dépassement côté UI (bandeau de
+ * cohérence + icône sur la barre).
+ *
+ * @param {unknown} raw   Valeur reçue dans le payload.
+ * @param {string}  kind  Type de la tâche.
+ * @returns {string|null} Date ISO normalisée ou null.
+ */
+function normalizeNotLaterThanDate(raw, kind) {
+  return normalizeOptionalIsoDate(raw, kind)
 }
 
 /**
@@ -2473,6 +2537,12 @@ export function createTask(db, input) {
       project_id: projectId,
       collaborator_id: kind === 'task' ? (input.collaborator_id ?? null) : null,
       not_before_date: normalizeNotBeforeDate(input.not_before_date, kind),
+      // v2.0 / F4 — FNLT : deadline non-bloquante. On la persiste telle quelle,
+      // aucun enforcement sur les dates (contrairement à SNET).
+      not_later_than_date: normalizeNotLaterThanDate(
+        input.not_later_than_date,
+        kind,
+      ),
     }
     enforceNotBeforeDate(draft, db)
 
@@ -2480,8 +2550,9 @@ export function createTask(db, input) {
       `INSERT INTO tasks
         (id, name, kind, start_date, end_date, progress,
          collaborator_id, color, parent_id, predecessor_id,
-         predecessor_lag, priority, not_before_date, charge_jours, position, project_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         predecessor_lag, priority, not_before_date, not_later_than_date,
+         charge_jours, position, project_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.id,
       input.name,
@@ -2504,6 +2575,8 @@ export function createTask(db, input) {
       normalizePriority(input.priority, kind),
       // v1.24 — SNET : valeur saisie ou null si phase / format invalide.
       draft.not_before_date,
+      // v2.0 / F4 — FNLT : valeur saisie ou null si phase / format invalide.
+      draft.not_later_than_date,
       // v2.0 — Charge stockée en source de vérité. Null pour jalons/phases.
       draft.charge_jours,
       position,
@@ -2586,6 +2659,11 @@ export function updateTask(db, id, patch) {
       next.not_before_date,
       next.kind,
     )
+    // v2.0 / F4 — Normalise la FNLT (null pour phase, ISO sinon, null si invalide).
+    next.not_later_than_date = normalizeNotLaterThanDate(
+      next.not_later_than_date,
+      next.kind,
+    )
     // v2.0 / F1 — Garde : interdit l'affectation d'un collab non membre du
     // projet de la tâche (RG-GANTT-1200). Ne s'applique qu'aux activités —
     // jalons et phases viennent d'être forcés à `collaborator_id = null`.
@@ -2612,7 +2690,8 @@ export function updateTask(db, id, patch) {
       `UPDATE tasks
          SET name = ?, kind = ?, start_date = ?, end_date = ?, progress = ?,
              collaborator_id = ?, color = ?, parent_id = ?,
-             priority = ?, not_before_date = ?, charge_jours = ?
+             priority = ?, not_before_date = ?, not_later_than_date = ?,
+             charge_jours = ?
          WHERE id = ?`,
     ).run(
       next.name,
@@ -2625,6 +2704,8 @@ export function updateTask(db, id, patch) {
       next.parent_id,
       next.priority,
       next.not_before_date,
+      // v2.0 / F4 — FNLT persistée (non bloquante).
+      next.not_later_than_date,
       next.charge_jours,
       id,
     )

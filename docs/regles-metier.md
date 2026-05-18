@@ -1,8 +1,8 @@
 # Règles de gestion — Application Gantt
 
-**Version applicative couverte : v2.0 (F0 — charge stockée + F1 — memberships + F2 — allocations % + F3 — absences)**
+**Version applicative couverte : v2.0 (F0 — charge stockée + F1 — memberships + F2 — allocations % + F3 — absences + F4 — FNLT)**
 **Date de dernière mise à jour : 2026-05-19**
-**Couverture de test : 121 / 121 (100 %)**
+**Couverture de test : 134 / 134 (100 %)**
 
 Ce document est le **référentiel vivant** des règles de gestion métier de
 l'application. Chaque règle porte un identifiant stable de la forme
@@ -1053,6 +1053,79 @@ calcul de fin, le plan de charge pondéré, le replan, et l'onglet
 
 ---
 
+## Famille 15 — FNLT « Fin au plus tard » (v2.0 / F4)
+
+Le FNLT est une **deadline non bloquante** posée par l'utilisateur sur
+une activité ou un jalon. Sœur jumelle du SNET (qui contraint la borne
+basse), mais sur la borne haute — avec une grande différence : aucun
+enforcement sur les dates. Si la fin calculée dépasse le FNLT, c'est
+seulement signalé visuellement (bandeau de cohérence + icône rouge en
+bout de barre).
+
+### RG-GANTT-1500
+
+Une activité ou un jalon peut avoir un FNLT (« Fin au plus tard »)
+facultatif au format ISO `YYYY-MM-DD`. La saisie est persistée telle
+quelle (aucun snap automatique). `null` par défaut = pas de deadline.
+
+**Tests :** `db/index.test.js` → « FNLT facultatif : null par défaut » ;
+« FNLT saisi : persistance brute ».
+
+### RG-GANTT-1501
+
+Le FNLT est modifiable via PATCH (cohérent avec SNET et les autres
+contraintes). Envoyer `null` retire la deadline.
+
+**Tests :** `db/index.test.js` → « PATCH met à jour la FNLT ».
+
+### RG-GANTT-1502
+
+Le FNLT est **non bloquant** : la sauvegarde est acceptée même si la
+date de fin calculée dépasse la deadline. C'est `checkCoherence` qui
+remonte l'incohérence avec `severity: 'warning'`.
+
+**Tests :** `db/index.test.js` → « FNLT non bloquante : sauvegarde acceptée
+même si dépassée » ; `utils.test.ts` → « activité dépassant sa FNLT → warning ».
+
+### RG-GANTT-1503
+
+Une phase n'a jamais de FNLT (ses dates dérivent des enfants ; imposer
+une deadline ne ferait qu'engendrer un faux signal). Toute valeur
+saisie est ramenée à `null` par le DAL, et la migration au boot nettoie
+les valeurs résiduelles éventuelles.
+
+**Tests :** `db/index.test.js` → « phase : FNLT forcée à NULL même si fournie ».
+
+### RG-GANTT-1504
+
+Un format non-ISO ou invalide est silencieusement ignoré (ramené à
+`null`) côté DAL, en plus de la validation Zod côté API. Filet de
+sécurité pour les appels API hors UI.
+
+**Tests :** `db/index.test.js` → « format invalide ignoré, ramené à NULL ».
+
+### RG-GANTT-1505
+
+`GET /api/state` expose `not_later_than_date` pour chaque tâche.
+Consommé côté client par `TaskEditor` (champ saisie), `checkCoherence`
+(détection `fnlt_overrun`), et `GanttChart` (marker triangle gris ou
+rouge selon le dépassement).
+
+**Tests :** `db/index.test.js` → « getFullState expose not_later_than_date ».
+
+### RG-GANTT-1510
+
+`checkCoherence` détecte les dépassements FNLT et remonte une issue de
+type `fnlt_overrun` avec `severity: 'warning'`. La règle s'applique aux
+activités et aux jalons (jamais aux phases). Fin **égale** à la FNLT =
+pas d'alerte (la deadline est tenue pile-poil).
+
+**Tests :** `utils.test.ts` → « activité dépassant sa FNLT → warning » ;
+« fin = FNLT exacte → pas d'alerte » ; « sans FNLT, aucune alerte » ;
+« jalon dépassant sa FNLT → warning » ; « phase : pas d'alerte FNLT ».
+
+---
+
 ## Synthèse de couverture
 
 | Famille                       |  Règles |            Couverture |
@@ -1072,5 +1145,6 @@ calcul de fin, le plan de charge pondéré, le replan, et l'onglet
 | 12bis — Memberships (v2.0/F1) |       6 |                 6 / 6 |
 | 13 — Allocations % (v2.0/F2)  |      10 |               10 / 10 |
 | 14 — Absences (v2.0/F3)       |       7 |                 7 / 7 |
-| 15 — Charge stockée (v2.0/F0) |       5 |                 5 / 5 |
-| **Total**                     | **121** | **121 / 121 (100 %)** |
+| 15 — FNLT (v2.0/F4)           |       7 |                 7 / 7 |
+| 16 — Charge stockée (v2.0/F0) |       5 |                 5 / 5 |
+| **Total**                     | **128** | **128 / 128 (100 %)** |

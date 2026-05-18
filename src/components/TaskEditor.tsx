@@ -125,6 +125,11 @@ export default function TaskEditor({
   /** v1.24 — Contrainte SNET « Ne doit pas démarrer avant le » : chaîne ISO
    *  YYYY-MM-DD ou vide (= pas de contrainte). Masquée pour les phases. */
   const [notBeforeDate, setNotBeforeDate] = useState<string>('')
+  /** v2.0 / F4 — Contrainte FNLT « Fin au plus tard » : chaîne ISO ou vide
+   *  (= pas de deadline). Masquée pour les phases. NON BLOQUANTE : si la
+   *  fin calculée dépasse, on signale via le bandeau de cohérence et la barre
+   *  Gantt — la sauvegarde n'est jamais rejetée. */
+  const [notLaterThanDate, setNotLaterThanDate] = useState<string>('')
   /** Message d'erreur de validation à afficher dans le modal (null = OK). */
   const [error, setError] = useState<string | null>(null)
   /**
@@ -199,6 +204,8 @@ export default function TaskEditor({
     }
     // v1.24 — Contrainte SNET initialisée depuis la base (vide si null).
     setNotBeforeDate(src.not_before_date || '')
+    // v2.0 / F4 — FNLT initialisée depuis la base (vide si null).
+    setNotLaterThanDate(src.not_later_than_date || '')
     setError(null)
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [task, defaults])
@@ -369,44 +376,40 @@ export default function TaskEditor({
   }
 
   /**
+   * v2.0 / F4 — Validations métier extraites pour limiter la complexité
+   * cognitive de `handleSave` (sonarjs). Renvoie un message d'erreur lisible
+   * (à afficher dans le bandeau) ou `null` si tout est OK.
+   *
+   * Ordre : du plus simple au plus complexe (nom → dates).
+   */
+  function validateForm(finalEnd: string): string | null {
+    if (!name.trim()) return 'Le nom est obligatoire.'
+    if (!startDate) return 'La date de début est obligatoire.'
+    // v1.22 — Le début ne peut pas être antérieur à la borne basse calculée
+    // depuis les prédécesseurs (MAX(pred.end + lag)).
+    if (kind !== 'phase' && minStart && startDate < minStart) {
+      return `La date de début doit être ≥ ${minStart} (max des fins de prédécesseurs + lag).`
+    }
+    // v1.24 — Contrainte SNET « Ne doit pas démarrer avant le » : blocage
+    // explicite à la saisie. À l'inverse, le FNLT (v2.0/F4) est non bloquant.
+    if (kind !== 'phase' && notBeforeDate && startDate < notBeforeDate) {
+      return `La date de début ne peut pas être antérieure au « Ne doit pas démarrer avant le » (${notBeforeDate}).`
+    }
+    if (kind !== 'milestone' && finalEnd < startDate) {
+      return 'La date de fin doit être supérieure ou égale à la date de début.'
+    }
+    return null
+  }
+
+  /**
    * Valide les champs puis appelle onSave. Affiche un message d'erreur
    * dans le modal (au lieu d'un alert technique) si la validation échoue.
    */
   function handleSave() {
-    // Validations métier ordonnées du plus simple au plus complexe.
-    if (!name.trim()) {
-      setError('Le nom est obligatoire.')
-      return
-    }
-    if (!startDate) {
-      setError('La date de début est obligatoire.')
-      return
-    }
-    // v1.22 — Le début ne peut pas être antérieur à la borne basse calculée
-    // depuis les prédécesseurs (MAX(pred.end + lag)). Décalage plus tardif
-    // autorisé (le lag est traité comme un MINIMUM).
-    if (kind !== 'phase' && minStart && startDate < minStart) {
-      setError(
-        `La date de début doit être ≥ ${minStart} (max des fins de prédécesseurs + lag).`,
-      )
-      return
-    }
-    // v1.24 — Contrainte SNET « Ne doit pas démarrer avant le » : blocage
-    // explicite à la saisie. Si la date de démarrage au plus tôt tombe un jour non ouvré, on
-    // compare contre le jour ouvré snappé pour rester cohérent avec ce que
-    // le serveur appliquera. Une activité de start un jour non-ouvré qui
-    // tombe sur la même semaine que le SNET reste donc acceptée.
-    if (kind !== 'phase' && notBeforeDate && startDate < notBeforeDate) {
-      setError(
-        `La date de début ne peut pas être antérieure au « Ne doit pas démarrer avant le » (${notBeforeDate}).`,
-      )
-      return
-    }
     const finalEnd = kind === 'milestone' ? startDate : endDate || startDate
-    if (kind !== 'milestone' && finalEnd < startDate) {
-      setError(
-        'La date de fin doit être supérieure ou égale à la date de début.',
-      )
+    const err = validateForm(finalEnd)
+    if (err) {
+      setError(err)
       return
     }
     setError(null)
@@ -429,6 +432,8 @@ export default function TaskEditor({
         priority: kind === 'task' ? (priority ?? 3) : null,
         // v1.24 — Contrainte SNET (vide → null). Forcée à null pour les phases.
         not_before_date: kind === 'phase' ? null : notBeforeDate || null,
+        // v2.0 / F4 — FNLT (vide → null). Forcée à null pour les phases.
+        not_later_than_date: kind === 'phase' ? null : notLaterThanDate || null,
         // v2.0 — Charge en jours ouvrés (source de vérité pour les activités).
         // Le DAL recalculera end_date depuis (start_date + charge_jours).
         // Jalon / phase : on n'envoie rien (le DAL forcera NULL).
@@ -704,6 +709,38 @@ export default function TaskEditor({
           </label>
         )}
 
+        {/* v2.0 / F4 — Contrainte FNLT « Fin au plus tard ». Sœur jumelle du
+            SNET mais NON BLOQUANTE : si la date de fin calculée dépasse cette
+            valeur, on n'empêche pas la sauvegarde — un signal visuel (bandeau
+            de cohérence + icône rouge en bout de barre) avertit l'utilisateur.
+            Masquée pour les phases. */}
+        {kind !== 'phase' && (
+          <label className="block text-sm">
+            <span className="text-slate-600">
+              Fin au plus tard
+              <span className="ml-1 text-xs text-slate-400">
+                (facultatif — deadline non bloquante)
+              </span>
+            </span>
+            <input
+              type="date"
+              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+              value={notLaterThanDate}
+              min={notBeforeDate || startDate || undefined}
+              onChange={(e) => setNotLaterThanDate(e.target.value)}
+              title="Date de fin AU PLUS TARD souhaitée. Si la fin calculée dépasse, c'est signalé visuellement mais la sauvegarde reste possible."
+            />
+            {/* Avertissement non-bloquant si la deadline est déjà dépassée
+                par la fin calculée. Le calcul reste exact côté serveur. */}
+            {notLaterThanDate && endDate && endDate > notLaterThanDate && (
+              <span className="block mt-1 text-xs text-red-700">
+                ⚠ La fin calculée ({endDate}) dépasse cette deadline. La tâche
+                sera signalée comme « en retard » dans le bandeau d'alertes.
+              </span>
+            )}
+          </label>
+        )}
+
         {/* v1.18 / v1.24 — Priorité OBLIGATOIRE sur les activités (1..5,
             défaut 3). Masquée pour les jalons et les phases (qui n'ont ni
             collaborateur, ni replan applicable). 1 = la plus prioritaire,
@@ -756,6 +793,7 @@ export default function TaskEditor({
                     predecessor_lag: 0,
                     priority: null,
                     not_before_date: null,
+                    not_later_than_date: null,
                     charge_jours: null,
                     position: 0,
                     project_id: '',

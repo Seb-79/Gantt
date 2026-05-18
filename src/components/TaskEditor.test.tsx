@@ -33,6 +33,7 @@ function mkTask(overrides: Partial<Task> = {}): Task {
     predecessor_lag: 0,
     priority: null,
     not_before_date: null,
+    not_later_than_date: null,
     charge_jours: null,
     position: 0,
     project_id: 'p_test',
@@ -129,8 +130,10 @@ describe('TaskEditor — édition', () => {
         onClose={vi.fn()}
       />,
     )
-    // On baisse la end_date en dessous de start_date.
-    fireEvent.change(screen.getByLabelText(/^Fin/), {
+    // v2.0 / F4 — Le label complet est « Fin (calculée) » pour kind='task'.
+    // Un regex large `/calculée/` discrimine vs. les labels « Fin » (jalon)
+    // et « Fin au plus tard » (FNLT), peu importe l'espacement DOM.
+    fireEvent.change(screen.getByLabelText(/calculée/), {
       target: { value: '2026-04-01' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Enregistrer/ }))
@@ -360,7 +363,10 @@ describe('TaskEditor — kinds spécifiques', () => {
     fireEvent.change(screen.getByLabelText(/Type/), {
       target: { value: 'milestone' },
     })
-    expect(screen.getByLabelText(/^Fin/)).toBeDisabled()
+    // v2.0 / F4 — Pour un jalon le label end_date est juste « Fin » (pas de
+    // suffixe « (calculée) », qui n'apparaît que pour kind='task'). Le champ
+    // « Fin au plus tard » coexiste donc on cible exactement « Fin ».
+    expect(screen.getByLabelText('Fin')).toBeDisabled()
     expect(screen.getByLabelText(/Avancement/)).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Créer' }))
     const patch = onSave.mock.calls[0][0]

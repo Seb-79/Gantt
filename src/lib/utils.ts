@@ -1406,6 +1406,10 @@ export type CoherenceIssueKind =
   | 'predecessor'
   | 'priority'
   | 'not_before'
+  /** v2.0 / F4 — La fin calculée d'une activité ou d'un jalon dépasse sa
+   *  contrainte FNLT (« Fin au plus tard »). Severity = `warning` :
+   *  signalement uniquement, jamais bloquant. */
+  | 'fnlt_overrun'
 
 /** v1.21 — Une incohérence remontée pour affichage dans le bandeau. */
 export interface CoherenceIssue {
@@ -1622,12 +1626,41 @@ function detectNotBeforeViolations(tasks: Task[]): CoherenceIssue[] {
   return issues
 }
 
+/**
+ * v2.0 / F4 — Détecte les tâches dont la date de fin calculée dépasse leur
+ * contrainte FNLT (« Fin au plus tard »). Severity = `warning` (non bloquant,
+ * cf. décision utilisateur Q5) — l'utilisateur garde la main, l'alerte sert
+ * juste à attirer l'attention pour replan ou négociation.
+ *
+ * Les phases sont ignorées (jamais de FNLT). Les jalons sont inclus :
+ * `end_date === start_date`, donc on compare la date du jalon à la FNLT.
+ *
+ * @param tasks  Toutes les tâches du projet.
+ * @returns      Une issue par tâche en dépassement.
+ */
+function detectFnltOverruns(tasks: Task[]): CoherenceIssue[] {
+  const issues: CoherenceIssue[] = []
+  for (const t of tasks) {
+    if (t.kind === 'phase' || !t.not_later_than_date) continue
+    if (t.end_date > t.not_later_than_date) {
+      issues.push({
+        kind: 'fnlt_overrun',
+        severity: 'warning',
+        taskIds: [t.id],
+        message: `« Fin au plus tard » dépassée : « ${t.name} » se termine le ${t.end_date} (deadline ${t.not_later_than_date}).`,
+      })
+    }
+  }
+  return issues
+}
+
 export function checkCoherence(tasks: Task[]): CoherenceIssue[] {
   return [
     ...detectOverloads(tasks),
     ...detectPredecessorViolations(tasks),
     ...detectPriorityViolations(tasks),
     ...detectNotBeforeViolations(tasks),
+    ...detectFnltOverruns(tasks),
   ]
 }
 

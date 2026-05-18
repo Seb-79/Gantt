@@ -77,6 +77,11 @@ export interface Task {
    *  ISO YYYY-MM-DD facultative en dessous de laquelle la tâche ne peut pas
    *  commencer. `null` = pas de contrainte. Toujours `null` pour les phases. */
   not_before_date: string | null
+  /** v2.0 / F4 — Contrainte FNLT « Fin au plus tard » : date de fin AU PLUS
+   *  TARD souhaitée (deadline). NON BLOQUANTE : si la date de fin calculée
+   *  dépasse cette valeur, c'est seulement signalé visuellement. `null` =
+   *  pas de deadline. Toujours `null` pour les phases. */
+  not_later_than_date: string | null
   /** v2.0 — Charge en jours ouvrés (≥ 1) d'une activité. Source de vérité :
    *  `end_date` est dérivée de `addWorkingDays(start_date, charge_jours)`.
    *  `null` pour les jalons et les phases (pas de notion de charge propre). */

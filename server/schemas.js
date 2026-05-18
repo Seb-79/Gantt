@@ -252,6 +252,11 @@ export const CreateTaskBody = z
     // v1.24 — SNET « Ne doit pas démarrer avant le ». Date facultative
     // (null = pas de contrainte). Forcée à null pour les phases côté DAL.
     not_before_date: IsoDate.nullable().optional(),
+    // v2.0 / F4 — FNLT « Fin au plus tard » : deadline souhaitée mais
+    // NON BLOQUANTE. Si la date de fin calculée dépasse la FNLT, c'est
+    // signalé visuellement (bandeau + barre rouge) — pas rejeté.
+    // Forcée à null pour les phases côté DAL.
+    not_later_than_date: IsoDate.nullable().optional(),
     // v2.0 — Charge en jours ouvrés (≥ 1). Source de vérité pour les activités.
     // Si fournie, prend le pas sur `end_date` (qui est dérivée). Forcée à null
     // pour les jalons et phases côté DAL.
@@ -281,6 +286,7 @@ export const UpdateTaskBody = z
     predecessor_lag: Lag.optional(), // v1.10 (alias legacy)
     priority: Priority.nullable().optional(), // v1.18
     not_before_date: IsoDate.nullable().optional(), // v1.24 — SNET
+    not_later_than_date: IsoDate.nullable().optional(), // v2.0 / F4 — FNLT (deadline non-bloquante)
     charge_jours: ChargeJours.optional(), // v2.0 — charge stockée (source de vérité)
   })
   .refine((v) => Object.keys(v).length > 0, {

@@ -63,6 +63,8 @@ function mkTask(id: string, overrides: Partial<Task> = {}): Task {
     predecessor_lag: 0,
     priority: null,
     not_before_date: null,
+    // v2.0 / F4 — FNLT facultatif, null par défaut (pas de deadline imposée).
+    not_later_than_date: null,
     // v2.0 — charge_jours par défaut à null pour les tests qui ne s'en
     // soucient pas (rétro-compatibilité : la replan utilise un fallback sur
     // workingDaysBetween(start, end) si charge_jours n'est pas positionnée).
@@ -1610,5 +1612,93 @@ describe('flattenTaskTree (v1.22)', () => {
 
   it('liste vide → liste vide', () => {
     expect(flattenTaskTree([])).toEqual([])
+  })
+})
+
+// =============================================================================
+// v2.0 / F4 — Détection FNLT dépassée
+// =============================================================================
+
+describe('checkCoherence — FNLT (v2.0 / F4)', () => {
+  // RG-GANTT-1510 — Une activité dont la fin calculée dépasse sa FNLT doit
+  // être remontée comme `fnlt_overrun` avec severity 'warning' (non bloquant).
+  it('v2.0 / RG-GANTT-1510 — activité dépassant sa FNLT → warning', () => {
+    const tasks: Task[] = [
+      mkTask('A', {
+        name: 'Retardée',
+        start_date: '2026-06-08',
+        end_date: '2026-06-25',
+        not_later_than_date: '2026-06-12',
+      }),
+    ]
+    const issues = checkCoherence(tasks)
+    const fnlt = issues.filter((i) => i.kind === 'fnlt_overrun')
+    expect(fnlt).toHaveLength(1)
+    expect(fnlt[0].severity).toBe('warning')
+    expect(fnlt[0].taskIds).toEqual(['A'])
+    expect(fnlt[0].message).toMatch(/Fin au plus tard/)
+  })
+
+  // RG-GANTT-1510 — Fin pile sur la FNLT → pas d'alerte (>= signifie OK).
+  it('v2.0 / RG-GANTT-1510 — fin = FNLT exacte → pas d`alerte', () => {
+    const tasks: Task[] = [
+      mkTask('A', {
+        name: 'Pile dans les temps',
+        start_date: '2026-06-08',
+        end_date: '2026-06-12',
+        not_later_than_date: '2026-06-12',
+      }),
+    ]
+    expect(
+      checkCoherence(tasks).filter((i) => i.kind === 'fnlt_overrun'),
+    ).toHaveLength(0)
+  })
+
+  // RG-GANTT-1510 — Sans FNLT, aucune alerte FNLT.
+  it('v2.0 / RG-GANTT-1510 — sans FNLT, aucune alerte', () => {
+    const tasks: Task[] = [
+      mkTask('A', {
+        name: 'Pas de deadline',
+        start_date: '2026-06-08',
+        end_date: '2026-06-25',
+        not_later_than_date: null,
+      }),
+    ]
+    expect(
+      checkCoherence(tasks).filter((i) => i.kind === 'fnlt_overrun'),
+    ).toHaveLength(0)
+  })
+
+  // RG-GANTT-1510 — Jalon : sa date dépasse sa FNLT → alerte aussi.
+  it('v2.0 / RG-GANTT-1510 — jalon dépassant sa FNLT → warning', () => {
+    const tasks: Task[] = [
+      mkTask('M', {
+        name: 'Jalon raté',
+        kind: 'milestone',
+        start_date: '2026-07-10',
+        end_date: '2026-07-10',
+        not_later_than_date: '2026-06-30',
+      }),
+    ]
+    const issues = checkCoherence(tasks).filter(
+      (i) => i.kind === 'fnlt_overrun',
+    )
+    expect(issues).toHaveLength(1)
+  })
+
+  // RG-GANTT-1510 — Phase : pas d'alerte FNLT même si end > FNLT.
+  it('v2.0 / RG-GANTT-1510 — phase : pas d`alerte FNLT (dates dérivées)', () => {
+    const tasks: Task[] = [
+      mkTask('P', {
+        name: 'Phase',
+        kind: 'phase',
+        start_date: '2026-06-08',
+        end_date: '2026-06-25',
+        not_later_than_date: '2026-06-12',
+      }),
+    ]
+    expect(
+      checkCoherence(tasks).filter((i) => i.kind === 'fnlt_overrun'),
+    ).toHaveLength(0)
   })
 })

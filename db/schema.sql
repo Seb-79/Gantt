@@ -76,6 +76,14 @@ CREATE TABLE IF NOT EXISTS tasks (
   -- contrainte. Applicable aux activités et aux jalons uniquement (jamais
   -- aux phases dont les dates sont la synthèse des enfants).
   not_before_date TEXT,
+  -- v2.0 / F4 — Contrainte FNLT (« Finish No Later Than ») : date de fin
+  -- AU PLUS TARD souhaitée. NULL = pas de contrainte. Sœur jumelle du SNET
+  -- mais sur la borne haute : applicable aux activités et aux jalons
+  -- (jamais aux phases). **NON BLOQUANTE** : le dépassement est seulement
+  -- signalé visuellement (bandeau de cohérence + icône rouge sur la barre).
+  -- La date de fin EFFECTIVE peut donc être > FNLT, c'est à l'utilisateur
+  -- de réagir (ajuster la charge, replanifier, négocier la deadline).
+  not_later_than_date TEXT,
   -- v2.0 — Charge en jours ouvrés (≥ 1). Source de vérité pour les activités :
   -- `end_date` est désormais une valeur DÉRIVÉE (= addWorkingDays(start, charge)).
   -- Stockée pour optimiser les requêtes/index et garder la rétro-compatibilité

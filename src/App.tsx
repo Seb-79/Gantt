@@ -19,6 +19,11 @@ import WorkloadChart from './components/WorkloadChart'
 import CoherenceAlert from './components/CoherenceAlert'
 import ProjectMembers from './components/ProjectMembers'
 import Absences from './components/Absences'
+import Dialogs from './components/Dialogs'
+// v2.0 — Remplace window.confirm / window.prompt (qui affichent l'en-tête
+// « localhost:5174 indique ») par des modales custom alignées sur le style
+// de l'app. Voir src/lib/dialogs.ts pour le détail.
+import { askConfirm, askPrompt } from './lib/dialogs'
 import {
   checkCoherence,
   clampDayWidth,
@@ -376,8 +381,8 @@ export default function App() {
   )
 
   /** Reset des données démo. */
-  const handleReset = () => {
-    if (!confirm('Restaurer les données de démonstration ?')) return
+  const handleReset = async () => {
+    if (!(await askConfirm('Restaurer les données de démonstration ?'))) return
     mutate('POST', '/api/reset')
   }
 
@@ -425,8 +430,8 @@ export default function App() {
    * (l'UI se rafraîchit de toute façon via fetchState).
    */
   const handleDeleteMemberAllocation = useCallback(
-    (allocationId: string) => {
-      if (!confirm('Supprimer cette période d’allocation ?')) return
+    async (allocationId: string) => {
+      if (!(await askConfirm('Supprimer cette période d’allocation ?'))) return
       mutate('DELETE', `/api/allocations/${encodeURIComponent(allocationId)}`)
     },
     [mutate],
@@ -453,8 +458,8 @@ export default function App() {
    * (l'UI se rafraîchit via fetchState).
    */
   const handleDeleteAbsence = useCallback(
-    (collaboratorId: string, date: string) => {
-      if (!confirm(`Supprimer le congé du ${date} ?`)) return
+    async (collaboratorId: string, date: string) => {
+      if (!(await askConfirm(`Supprimer le congé du ${date} ?`))) return
       mutate(
         'DELETE',
         `/api/collaborators/${encodeURIComponent(collaboratorId)}/absences/${encodeURIComponent(date)}`,
@@ -599,7 +604,8 @@ export default function App() {
 
   /** Crée un nouveau projet (prompt simple). */
   const handleCreateProject = async () => {
-    const name = prompt('Nom du nouveau projet :', 'Nouveau projet')?.trim()
+    const raw = await askPrompt('Nom du nouveau projet :', 'Nouveau projet')
+    const name = raw?.trim()
     if (!name) return
     const id = makeId('p')
     await mutate('POST', '/api/projects', { id, name })
@@ -609,7 +615,8 @@ export default function App() {
   /** Renomme le projet courant (prompt). */
   const handleRenameProject = async () => {
     if (!currentProject) return
-    const name = prompt('Nouveau nom :', currentProject.name)?.trim()
+    const raw = await askPrompt('Nouveau nom :', currentProject.name)
+    const name = raw?.trim()
     if (!name || name === currentProject.name) return
     await mutate('PATCH', `/api/projects/${currentProject.id}`, { name })
   }
@@ -623,7 +630,7 @@ export default function App() {
   const handleDeleteProject = async () => {
     if (!currentProject || !state) return
     const isLast = state.projects.length <= 1
-    const ok = confirm(
+    const ok = await askConfirm(
       isLast
         ? `Supprimer le projet « ${currentProject.name} » ?\n\nC'est le dernier projet : la base sera vide après suppression. Vous pourrez créer un nouveau projet à tout moment.`
         : `Supprimer le projet « ${currentProject.name} » et toutes ses tâches ?\n\nCette action est irréversible.`,
@@ -639,9 +646,9 @@ export default function App() {
   }
 
   /** Suppression de la tâche en cours d'édition. */
-  const handleDeleteTask = () => {
+  const handleDeleteTask = async () => {
     if (!editing) return
-    if (!confirm(`Supprimer « ${editing.name} » ?`)) return
+    if (!(await askConfirm(`Supprimer « ${editing.name} » ?`))) return
     mutate('DELETE', `/api/tasks/${editing.id}`)
     setEditing(null)
   }
@@ -1301,6 +1308,9 @@ export default function App() {
           onDelete={editing ? handleDeleteTask : undefined}
         />
       )}
+      {/* Mount unique des modales custom (confirm / prompt). Doit rester
+          en bas pour passer au-dessus du reste en z-index. */}
+      <Dialogs />
     </div>
   )
 }

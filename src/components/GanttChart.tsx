@@ -33,6 +33,8 @@ import {
 } from '../lib/utils'
 import { useHorizontalPan } from '../lib/useHorizontalPan'
 import { useLinkDrag } from '../lib/useLinkDrag'
+// v2.0 — Confirm custom (remplace window.confirm + en-tête « localhost… »).
+import { askConfirm } from '../lib/dialogs'
 import type { Collaborator, Task } from '../lib/types'
 // v2.0 / Refacto (c) — Markers extraits dans GanttMarkers.tsx (étiquettes
 // de dates, triangles SNET / FNLT). Fonctions de rendu pures sans state.
@@ -1182,13 +1184,13 @@ function PredecessorArrows({
                     fill="none"
                     style={{ cursor: 'pointer' }}
                     data-pred-link-hit={linkKey}
-                    onClick={() => {
+                    onClick={async () => {
                       const pname = pred.task.name
                       const tname = t.name
-                      // window.confirm est synchrone et sans UI custom : OK
-                      // pour cette première itération. À remplacer par un
-                      // menu contextuel si l'UX le justifie plus tard.
-                      const ok = window.confirm(
+                      // v2.0 — Modale custom (cf. src/lib/dialogs.ts) :
+                      // remplace l'ancien window.confirm qui affichait
+                      // l'en-tête « localhost:5174 indique ».
+                      const ok = await askConfirm(
                         `Supprimer le lien de prédécesseur :\n\n` +
                           `« ${pname} »  →  « ${tname} »  ?`,
                       )

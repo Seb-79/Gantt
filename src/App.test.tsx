@@ -222,12 +222,15 @@ describe('App — smoke', () => {
 })
 
 describe("App — barre d'outils", () => {
+  // v2.0 — Les anciens window.confirm sont remplacés par une modale custom
+  // (cf. src/components/Dialogs.tsx). Les tests cliquent désormais sur le
+  // bouton OK / Annuler de la modale au lieu de stubber window.confirm.
   it('Reset démo : confirm() OK → POST /api/reset', async () => {
     const { calls } = setupFetchMock()
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
     fireEvent.click(screen.getByTitle(/Restaurer les données/))
+    fireEvent.click(await screen.findByRole('button', { name: 'OK' }))
     await waitFor(() =>
       expect(
         calls.some((c) => c.method === 'POST' && c.url === '/api/reset'),
@@ -237,10 +240,10 @@ describe("App — barre d'outils", () => {
 
   it('Reset démo : confirm() annulé → aucun POST', async () => {
     const { calls } = setupFetchMock()
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
     fireEvent.click(screen.getByTitle(/Restaurer les données/))
+    fireEvent.click(await screen.findByRole('button', { name: 'Annuler' }))
     expect(calls.find((c) => c.url === '/api/reset')).toBeUndefined()
   })
 
@@ -272,12 +275,18 @@ describe("App — barre d'outils", () => {
 })
 
 describe('App — gestion des projets', () => {
+  // v2.0 — Les boîtes natives sont remplacées par la modale custom
+  // (<Dialogs />). Les tests :
+  //   • saisissent le nom dans le champ texte de la modale (pour prompt),
+  //   • cliquent sur OK / Annuler (pour les deux types).
   it('création : prompt() → POST /api/projects + bascule sur le nouveau', async () => {
     const { calls } = setupFetchMock()
-    vi.spyOn(window, 'prompt').mockReturnValue('Mon projet')
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
     fireEvent.click(screen.getByTitle('Nouveau projet'))
+    const input = await screen.findByRole('textbox')
+    fireEvent.change(input, { target: { value: 'Mon projet' } })
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
     await waitFor(() => {
       const post = calls.find(
         (c) => c.method === 'POST' && c.url === '/api/projects',
@@ -289,19 +298,23 @@ describe('App — gestion des projets', () => {
 
   it('création annulée (prompt vide) → aucun POST', async () => {
     const { calls } = setupFetchMock()
-    vi.spyOn(window, 'prompt').mockReturnValue('')
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
     fireEvent.click(screen.getByTitle('Nouveau projet'))
+    const input = await screen.findByRole('textbox')
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
     expect(calls.find((c) => c.url === '/api/projects')).toBeUndefined()
   })
 
   it('renommage : prompt() → PATCH /api/projects/:id', async () => {
     const { calls } = setupFetchMock()
-    vi.spyOn(window, 'prompt').mockReturnValue('Projet renommé')
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
     fireEvent.click(screen.getByTitle('Renommer le projet'))
+    const input = await screen.findByRole('textbox')
+    fireEvent.change(input, { target: { value: 'Projet renommé' } })
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
     await waitFor(() => {
       const patch = calls.find(
         (c) => c.method === 'PATCH' && c.url === '/api/projects/p1',
@@ -313,10 +326,11 @@ describe('App — gestion des projets', () => {
 
   it('renommage : prompt identique → pas de PATCH', async () => {
     const { calls } = setupFetchMock()
-    vi.spyOn(window, 'prompt').mockReturnValue('Projet 1')
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
     fireEvent.click(screen.getByTitle('Renommer le projet'))
+    // La modale s'ouvre avec le nom courant pré-rempli — on valide directement.
+    fireEvent.click(await screen.findByRole('button', { name: 'OK' }))
     expect(
       calls.find(
         (c) => c.method === 'PATCH' && c.url.startsWith('/api/projects'),
@@ -326,10 +340,10 @@ describe('App — gestion des projets', () => {
 
   it('suppression : confirm() OK → DELETE /api/projects/:id', async () => {
     const { calls } = setupFetchMock()
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
     fireEvent.click(screen.getByTitle('Supprimer le projet'))
+    fireEvent.click(await screen.findByRole('button', { name: 'OK' }))
     await waitFor(() => {
       const del = calls.find(
         (c) => c.method === 'DELETE' && c.url === '/api/projects/p1',

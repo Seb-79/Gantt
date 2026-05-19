@@ -398,7 +398,12 @@ describe('GanttChart — flèches prédécesseurs', () => {
       expect(container.querySelectorAll('[data-pred-link-hit]').length).toBe(0)
     })
 
-    it('clic sur le ghost + confirm OK → callback (sourceId, targetId)', () => {
+    // v2.0 — La confirmation passe par askConfirm() (cf. src/lib/dialogs.ts).
+    // Ici on rend GanttChart en isolation : aucune <Dialogs /> n'est montée,
+    // donc askConfirm retombe sur window.confirm — la spy fonctionne comme
+    // avant. Spécificité : le onClick devient async, on `await`-flush les
+    // microtâches avant l'assertion finale.
+    it('clic sur le ghost + confirm OK → callback (sourceId, targetId)', async () => {
       const onDeleteLink = vi.fn()
       const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
       const { container } = render(
@@ -412,12 +417,15 @@ describe('GanttChart — flèches prédécesseurs', () => {
         />,
       )
       fireEvent.click(container.querySelector('[data-pred-link-hit="a->b"]')!)
+      // Le handler étant async, on flush les microtâches avant d'asserter.
+      await Promise.resolve()
+      await Promise.resolve()
       expect(confirmSpy).toHaveBeenCalled()
       expect(onDeleteLink).toHaveBeenCalledWith('a', 'b')
       confirmSpy.mockRestore()
     })
 
-    it('clic + confirm Annuler → callback NON appelé', () => {
+    it('clic + confirm Annuler → callback NON appelé', async () => {
       const onDeleteLink = vi.fn()
       const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
       const { container } = render(
@@ -431,6 +439,8 @@ describe('GanttChart — flèches prédécesseurs', () => {
         />,
       )
       fireEvent.click(container.querySelector('[data-pred-link-hit="a->b"]')!)
+      await Promise.resolve()
+      await Promise.resolve()
       expect(confirmSpy).toHaveBeenCalled()
       expect(onDeleteLink).not.toHaveBeenCalled()
       confirmSpy.mockRestore()

@@ -610,12 +610,15 @@ export default function TaskEditor({
                   plus prioritaire, 5 = la moins. */}
               {kind === 'task' && (
                 <label className="block text-sm">
-                  <span className="text-slate-600">
+                  {/* v2.1 / F2 — Le texte d'aide (1=plus prioritaire, 5=moins)
+                      cassait sur 2 lignes en demi-largeur. Déplacé en tooltip
+                      sur le label ; les valeurs des options portent déjà
+                      l'explication. */}
+                  <span
+                    className="text-slate-600"
+                    title="1 = la plus prioritaire, 5 = la moins. Défaut : 3. Utilisée par la fonction Replan."
+                  >
                     Priorité
-                    <span className="ml-1 text-xs text-slate-400">
-                      (1 = plus prioritaire, 5 = moins ; utilisée par « Replan
-                      »)
-                    </span>
                   </span>
                   <select
                     className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
@@ -916,8 +919,12 @@ export default function TaskEditor({
               )}
             </section>
 
-            {/* SECTION 4 — DÉPENDANCES */}
-            <section className="space-y-3">
+            {/* SECTION 4 — DÉPENDANCES (pleine largeur).
+                v2.1 / F2 — Mise en col-span-2 pour donner de la place aux chips
+                de prédécesseurs (qui peuvent être nombreux) et au popover de
+                sélection. Évite le wrap qui rendait le 2e prédécesseur peu
+                lisible en demi-largeur. */}
+            <section className="space-y-3 md:col-span-2">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                 🔗 Dépendances
               </h3>

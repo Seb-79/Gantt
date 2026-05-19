@@ -16,7 +16,8 @@
 // (cf. `computeMaxStartFromPredecessors`).
 // =============================================================================
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { descendantIds, flattenTaskTree } from '../lib/utils'
 import type { Task } from '../lib/types'
 
@@ -57,6 +58,16 @@ export default function PredecessorPicker({
   const [query, setQuery] = useState('')
   /** Ref sur le conteneur principal pour gérer le clic à l'extérieur. */
   const rootRef = useRef<HTMLDivElement>(null)
+  /** v2.1 / F2 — Ref sur le bouton « + Ajouter » pour calculer la position
+   *  du popover (qui vit désormais dans un portail React document.body). */
+  const anchorRef = useRef<HTMLButtonElement>(null)
+  /** v2.1 / F2 — Ref sur le contenu du popover (rendu en portail). Sert au
+   *  listener mousedown extérieur pour ne pas fermer en cliquant dedans. */
+  const popoverRef = useRef<HTMLDivElement>(null)
+  /** v2.1 / F2 — Position absolue (viewport) du popover, mise à jour quand
+   *  open change ou que la fenêtre est redimensionnée. {0,0,0} = pas encore
+   *  calculée → invisible le 1er frame, normal. */
+  const [popoverPos, setPopoverPos] = useState({ top: 0, left: 0, width: 0 })
 
   /**
    * Ids interdits comme prédécesseur : la tâche elle-même et ses descendants
@@ -118,9 +129,13 @@ export default function PredecessorPicker({
   useEffect(() => {
     if (!open) return
     function onDocPointer(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false)
-      }
+      // v2.1 / F2 — Le popover est désormais dans un portail (document.body),
+      // donc PAS un descendant de rootRef. On vérifie en plus popoverRef pour
+      // ne pas fermer en cliquant à l'intérieur du popover.
+      const target = e.target as Node
+      const inRoot = rootRef.current?.contains(target) ?? false
+      const inPopover = popoverRef.current?.contains(target) ?? false
+      if (!inRoot && !inPopover) setOpen(false)
     }
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') setOpen(false)
@@ -130,6 +145,35 @@ export default function PredecessorPicker({
     return () => {
       document.removeEventListener('mousedown', onDocPointer)
       document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  // -- v2.1 / F2 — Position du popover (calculée depuis l'ancre) -------------
+  //
+  // Le popover vit dans un portail document.body : il échappe à l'`overflow`
+  // de la modale parente (TaskEditor) qui le coupait avant. On le positionne
+  // en `fixed` juste sous le bouton « + Ajouter », largeur = largeur de la
+  // rangée de chips parente pour rester aligné visuellement.
+  useLayoutEffect(() => {
+    if (!open) return
+    function updatePos() {
+      const anchor = anchorRef.current
+      const root = rootRef.current
+      if (!anchor || !root) return
+      const aRect = anchor.getBoundingClientRect()
+      const rRect = root.getBoundingClientRect()
+      setPopoverPos({
+        top: aRect.bottom + 4, // 4 px sous le bouton
+        left: rRect.left, // aligné sur la rangée de chips
+        width: rRect.width,
+      })
+    }
+    updatePos()
+    window.addEventListener('resize', updatePos)
+    window.addEventListener('scroll', updatePos, true) // capture pour scrolls internes
+    return () => {
+      window.removeEventListener('resize', updatePos)
+      window.removeEventListener('scroll', updatePos, true)
     }
   }, [open])
 
@@ -200,6 +244,7 @@ export default function PredecessorPicker({
           )
         })}
         <button
+          ref={anchorRef}
           type="button"
           onClick={() => setOpen((v) => !v)}
           className="ml-auto text-xs text-blue-700 hover:underline px-1.5 py-0.5"
@@ -210,77 +255,85 @@ export default function PredecessorPicker({
       </div>
 
       {/* -- Popover de l'arbre ------------------------------------------- */}
-      {open && (
-        <div
-          className="absolute z-50 mt-1 left-0 right-0 max-h-72 overflow-auto bg-white border border-slate-300 rounded shadow-lg"
-          // Pas de portail React : pour rester dans le flow de TaskEditor
-          // (modal) et hériter de son contexte z-index, on s'appuie sur un
-          // z-50 explicite + parent positionné en `relative`.
-        >
-          <div className="sticky top-0 bg-white border-b border-slate-200 p-1.5">
-            <input
-              type="text"
-              autoFocus
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Rechercher une tâche…"
-              className="w-full text-xs border border-slate-300 rounded px-2 py-1"
-            />
-          </div>
-          <ul className="py-1">
-            {filtered.length === 0 && (
-              <li className="px-3 py-2 text-xs text-slate-400 italic">
-                Aucun résultat.
-              </li>
-            )}
-            {filtered.map((row) => {
-              const t = byId.get(row.id)
-              if (!t) return null
-              const reason = disabledReason(row.id)
-              const disabled = reason !== null
-              return (
-                <li
-                  key={row.id}
-                  className={
-                    disabled
-                      ? 'px-2 py-1 text-xs text-slate-300 cursor-not-allowed select-none'
-                      : 'px-2 py-1 text-xs cursor-pointer hover:bg-blue-50'
-                  }
-                  style={{ paddingLeft: 8 + row.depth * 14 }}
-                  onClick={
-                    disabled
-                      ? undefined
-                      : () => {
-                          addPredecessor(row.id)
-                          // Popover laissé ouvert : permet d'ajouter
-                          // plusieurs prédécesseurs sans rouvrir à chaque fois.
-                        }
-                  }
-                  title={reason ?? `Ajouter « ${t.name} »`}
-                  aria-disabled={disabled}
-                  data-task-id={row.id}
-                >
-                  {t.kind === 'phase' && '🗂️ '}
-                  {t.kind === 'milestone' && '◆ '}
-                  {t.name}
-                  {selectedIds.has(row.id) && (
-                    <span className="ml-1 text-green-600">✓</span>
-                  )}
+      {/* v2.1 / F2 — Rendu via createPortal sur document.body avec position
+          fixed. Évite que le popover ne soit coupé par l'overflow-y-auto de
+          la modale TaskEditor. Position calculée dans useLayoutEffect. */}
+      {open &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            className="fixed z-[60] max-h-72 overflow-auto bg-white border border-slate-300 rounded shadow-lg"
+            style={{
+              top: popoverPos.top,
+              left: popoverPos.left,
+              width: popoverPos.width,
+            }}
+          >
+            <div className="sticky top-0 bg-white border-b border-slate-200 p-1.5">
+              <input
+                type="text"
+                autoFocus
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Rechercher une tâche…"
+                className="w-full text-xs border border-slate-300 rounded px-2 py-1"
+              />
+            </div>
+            <ul className="py-1">
+              {filtered.length === 0 && (
+                <li className="px-3 py-2 text-xs text-slate-400 italic">
+                  Aucun résultat.
                 </li>
-              )
-            })}
-          </ul>
-          <div className="sticky bottom-0 bg-white border-t border-slate-200 p-1.5 text-right">
-            <button
-              type="button"
-              onClick={() => setOpen(false)}
-              className="text-xs text-slate-600 hover:underline px-2 py-0.5"
-            >
-              Fermer
-            </button>
-          </div>
-        </div>
-      )}
+              )}
+              {filtered.map((row) => {
+                const t = byId.get(row.id)
+                if (!t) return null
+                const reason = disabledReason(row.id)
+                const disabled = reason !== null
+                return (
+                  <li
+                    key={row.id}
+                    className={
+                      disabled
+                        ? 'px-2 py-1 text-xs text-slate-300 cursor-not-allowed select-none'
+                        : 'px-2 py-1 text-xs cursor-pointer hover:bg-blue-50'
+                    }
+                    style={{ paddingLeft: 8 + row.depth * 14 }}
+                    onClick={
+                      disabled
+                        ? undefined
+                        : () => {
+                            addPredecessor(row.id)
+                            // Popover laissé ouvert : permet d'ajouter
+                            // plusieurs prédécesseurs sans rouvrir à chaque fois.
+                          }
+                    }
+                    title={reason ?? `Ajouter « ${t.name} »`}
+                    aria-disabled={disabled}
+                    data-task-id={row.id}
+                  >
+                    {t.kind === 'phase' && '🗂️ '}
+                    {t.kind === 'milestone' && '◆ '}
+                    {t.name}
+                    {selectedIds.has(row.id) && (
+                      <span className="ml-1 text-green-600">✓</span>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+            <div className="sticky bottom-0 bg-white border-t border-slate-200 p-1.5 text-right">
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="text-xs text-slate-600 hover:underline px-2 py-0.5"
+              >
+                Fermer
+              </button>
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   )
 }

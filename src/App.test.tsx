@@ -429,6 +429,20 @@ function mkOverloadedState(): GanttState {
         project_id: 'p1',
       },
     ],
+    // v2.1 / F2.9 — Allocation 100 % couvrant largement la période des tâches,
+    // pour que le check d'absorption ne bloque pas la sauvegarde dans les
+    // tests de replan (qui doivent valider la cascade, pas le shortfall).
+    current_project_members: ['alice'],
+    member_allocations: [
+      {
+        id: 'alloc-alice-p1',
+        project_id: 'p1',
+        collaborator_id: 'alice',
+        start_date: '2020-01-01',
+        end_date: '2099-12-31',
+        allocation_pct: 100,
+      },
+    ],
   })
 }
 

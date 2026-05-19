@@ -7,6 +7,8 @@ import {
   addDaysIso,
   addWorkingDays,
   buildDateRange,
+  computeAllocationShortfall,
+  computeExtensionPlan,
   computeEndFromCharge,
   checkCoherence,
   clampDayWidth,
@@ -1826,5 +1828,338 @@ describe('workloadCellStyleNormalized (v2.0 / F5)', () => {
   // RG-GANTT-1611 — capacité 0 + workload > 0 : anomalie, surcharge brute.
   it('v2.0 / RG-GANTT-1611 — capacité 0 mais workload > 0 → rouge (anomalie)', () => {
     expect(workloadCellStyleNormalized(0.5, 0)).toMatch(/bg-red-500/)
+  })
+})
+
+// =============================================================================
+// v2.1 / F2.9 — computeAllocationShortfall
+// =============================================================================
+// Vérifie que le helper détecte correctement les cas où la charge d'une
+// activité ne peut PAS être absorbée par les allocations existantes des
+// collaborateurs affectés. Sert de fondation au blocage de sauvegarde
+// (TaskEditor) et au blocage de replan (App).
+// =============================================================================
+
+describe('computeAllocationShortfall (v2.1 / F2.9)', () => {
+  // Fixture commune : projet "p", collab "alice".
+  const PROJ = 'p'
+  const ALICE = 'alice'
+  const BOB = 'bob'
+
+  it('sans collaborateur affecté → toute la charge manque', () => {
+    const r = computeAllocationShortfall({
+      startDate: '2026-06-01', // lundi
+      charge: 5,
+      collaboratorIds: [],
+      projectId: PROJ,
+      allocations: [],
+    })
+    expect(r.absorbed).toBe(0)
+    expect(r.missing).toBe(5)
+    expect(r.lastCoveredDay).toBeNull()
+    expect(r.horizon).toBeNull()
+  })
+
+  it('aucune allocation pertinente → toute la charge manque', () => {
+    const r = computeAllocationShortfall({
+      startDate: '2026-06-01',
+      charge: 3,
+      collaboratorIds: [ALICE],
+      projectId: PROJ,
+      // Allocation existe mais pour un AUTRE projet.
+      allocations: [
+        {
+          id: 'a1',
+          project_id: 'autre',
+          collaborator_id: ALICE,
+          start_date: '2026-06-01',
+          end_date: '2026-06-30',
+          allocation_pct: 100,
+        },
+      ],
+    })
+    expect(r.absorbed).toBe(0)
+    expect(r.missing).toBe(3)
+    expect(r.horizon).toBeNull()
+  })
+
+  it('allocation 100% suffisante → missing = 0', () => {
+    const r = computeAllocationShortfall({
+      startDate: '2026-06-01', // lundi
+      charge: 5,
+      collaboratorIds: [ALICE],
+      projectId: PROJ,
+      allocations: [
+        {
+          id: 'a1',
+          project_id: PROJ,
+          collaborator_id: ALICE,
+          start_date: '2026-06-01',
+          end_date: '2026-06-30',
+          allocation_pct: 100,
+        },
+      ],
+    })
+    expect(r.absorbed).toBe(5)
+    expect(r.missing).toBe(0)
+    // lundi 1er + mardi 2 + mercredi 3 + jeudi 4 + vendredi 5 = 5 jours ouvrés.
+    expect(r.lastCoveredDay).toBe('2026-06-05')
+  })
+
+  it('Q1 — 2 collabs Alice 1j (alloc finit tôt) + Bob 9j → missing = 0', () => {
+    // Tâche de 10j à partir du 20/07 lundi.
+    // Alice : 100% jusqu'au 20/07 inclus → contribue 1 jour.
+    // Bob   : 100% du 20/07 au 30/12 → contribue tout le reste.
+    const r = computeAllocationShortfall({
+      startDate: '2026-07-20',
+      charge: 10,
+      collaboratorIds: [ALICE, BOB],
+      projectId: PROJ,
+      allocations: [
+        {
+          id: 'a1',
+          project_id: PROJ,
+          collaborator_id: ALICE,
+          start_date: '2026-07-20',
+          end_date: '2026-07-20',
+          allocation_pct: 100,
+        },
+        {
+          id: 'a2',
+          project_id: PROJ,
+          collaborator_id: BOB,
+          start_date: '2026-07-20',
+          end_date: '2026-12-30',
+          allocation_pct: 100,
+        },
+      ],
+    })
+    expect(r.missing).toBe(0)
+    // Jour 1 : Alice=1 + Bob=1 = 2. Total après jour 1 : 2 jours absorbés.
+    // Jour 2 → 9 : Bob=1 par jour → +8. Charge atteinte au jour 9 (28/07).
+    // En 9 jours calendaires, lundi 20 → mardi 28 (les week-ends comptent 0).
+  })
+
+  it("Q2 — trou d'allocation au milieu : charge absorbée sur les jours dispos", () => {
+    // Camille : 100% du 20/07 au 23/07 (Lun-Jeu, 4j) puis 100% à partir du 01/09.
+    // Tâche : 5j à partir du 20/07.
+    // → Absorbé : 4j en juillet + 1j le 01/09 = 5j. missing = 0.
+    const r = computeAllocationShortfall({
+      startDate: '2026-07-20',
+      charge: 5,
+      collaboratorIds: [ALICE],
+      projectId: PROJ,
+      allocations: [
+        {
+          id: 'a1',
+          project_id: PROJ,
+          collaborator_id: ALICE,
+          start_date: '2026-07-20',
+          end_date: '2026-07-23',
+          allocation_pct: 100,
+        },
+        {
+          id: 'a2',
+          project_id: PROJ,
+          collaborator_id: ALICE,
+          start_date: '2026-09-01',
+          end_date: '2026-09-30',
+          allocation_pct: 100,
+        },
+      ],
+    })
+    expect(r.missing).toBe(0)
+    // 01/09 est un mardi en 2026 → jour ouvré.
+    expect(r.lastCoveredDay).toBe('2026-09-01')
+  })
+
+  it('tâche démarre APRÈS la fin de toute allocation → toute la charge manque', () => {
+    // Bug d'origine : "Tournage extérieur" 8j affecté à Camille dont
+    // l'allocation se termine le 23/07. Tâche commence le 24/07 → 0 capacité.
+    const r = computeAllocationShortfall({
+      startDate: '2026-07-24', // après la fin de l'allocation
+      charge: 8,
+      collaboratorIds: [ALICE],
+      projectId: PROJ,
+      allocations: [
+        {
+          id: 'a1',
+          project_id: PROJ,
+          collaborator_id: ALICE,
+          start_date: '2026-06-01',
+          end_date: '2026-07-23',
+          allocation_pct: 100,
+        },
+      ],
+    })
+    expect(r.absorbed).toBe(0)
+    expect(r.missing).toBe(8)
+    expect(r.lastCoveredDay).toBeNull()
+    // Horizon = dernière fin d'allocation pertinente, même si la tâche
+    // démarre après — utile au dialog pour proposer une extension.
+    expect(r.horizon).toBe('2026-07-23')
+  })
+
+  it('allocation 50% insuffisante → missing = charge / 2 (positifs)', () => {
+    // Alice 50% sur juin (~20 jours ouvrés × 0.5 = ~10j capacité).
+    // Charge 12j → manque ~2j.
+    const r = computeAllocationShortfall({
+      startDate: '2026-06-01',
+      charge: 12,
+      collaboratorIds: [ALICE],
+      projectId: PROJ,
+      allocations: [
+        {
+          id: 'a1',
+          project_id: PROJ,
+          collaborator_id: ALICE,
+          start_date: '2026-06-01',
+          end_date: '2026-06-30',
+          allocation_pct: 50,
+        },
+      ],
+    })
+    expect(r.missing).toBeGreaterThan(0)
+    expect(r.missing).toBeLessThan(12)
+    expect(r.horizon).toBe('2026-06-30')
+    // 11 jours ouvrés en juin si on compte de 01 à 30 (22 ouvrés × 0.5 = 11).
+    // Le scan s'arrête au 30/06.
+  })
+})
+
+// =============================================================================
+// v2.1 / F2.9.B — computeExtensionPlan
+// =============================================================================
+// Vérifie que le helper de planification d'extension calcule correctement la
+// date cible et les opérations (patch vs create selon Q5=C).
+// =============================================================================
+
+describe('computeExtensionPlan (v2.1 / F2.9.B)', () => {
+  const PROJ = 'p'
+  const ALICE = 'alice'
+  const BOB = 'bob'
+
+  it('1 collab, allocation 100% existante, manque 3j à 100% → PATCH end_date', () => {
+    const plan = computeExtensionPlan({
+      startDate: '2026-07-20', // lundi
+      missing: 3,
+      collaboratorIds: [ALICE],
+      projectId: PROJ,
+      allocations: [
+        {
+          id: 'a1',
+          project_id: PROJ,
+          collaborator_id: ALICE,
+          start_date: '2026-06-01',
+          end_date: '2026-07-23', // jeudi
+          allocation_pct: 100,
+        },
+      ],
+      pct: 100,
+    })
+    // Une seule opération : PATCH de a1, end_date repoussée.
+    expect(plan.operations).toHaveLength(1)
+    expect(plan.operations[0].kind).toBe('patch')
+    expect(plan.operations[0].allocationId).toBe('a1')
+    expect(plan.operations[0].collaboratorId).toBe(ALICE)
+    expect(plan.operations[0].pct).toBe(100)
+    // Scan démarre le 24/07 (vendredi), 3 jours ouvrés : 24, 27, 28.
+    expect(plan.targetEndDate).toBe('2026-07-28')
+    expect(plan.feasible).toBe(true)
+  })
+
+  it('Q5=C — changement de % → CREATE nouvelle allocation', () => {
+    // Allocation existante à 100%, on demande une extension à 50%.
+    // Q5=C : pct différent → CREATE (pas PATCH).
+    const plan = computeExtensionPlan({
+      startDate: '2026-07-20',
+      missing: 2,
+      collaboratorIds: [ALICE],
+      projectId: PROJ,
+      allocations: [
+        {
+          id: 'a1',
+          project_id: PROJ,
+          collaborator_id: ALICE,
+          start_date: '2026-06-01',
+          end_date: '2026-07-23',
+          allocation_pct: 100,
+        },
+      ],
+      pct: 50,
+    })
+    expect(plan.operations).toHaveLength(1)
+    expect(plan.operations[0].kind).toBe('create')
+    expect(plan.operations[0].pct).toBe(50)
+    // Nouvelle alloc démarre le lendemain de l'existante (24/07 = vendredi).
+    expect(plan.operations[0].startDate).toBe('2026-07-24')
+    expect(plan.feasible).toBe(true)
+  })
+
+  it('aucune allocation existante → CREATE depuis startDate', () => {
+    const plan = computeExtensionPlan({
+      startDate: '2026-07-20',
+      missing: 5,
+      collaboratorIds: [ALICE],
+      projectId: PROJ,
+      allocations: [],
+      pct: 100,
+    })
+    expect(plan.operations).toHaveLength(1)
+    expect(plan.operations[0].kind).toBe('create')
+    expect(plan.operations[0].startDate).toBe('2026-07-20')
+  })
+
+  it('2 collabs affectés → 2 opérations (1 par collab)', () => {
+    const plan = computeExtensionPlan({
+      startDate: '2026-07-20',
+      missing: 4,
+      collaboratorIds: [ALICE, BOB],
+      projectId: PROJ,
+      allocations: [
+        {
+          id: 'a1',
+          project_id: PROJ,
+          collaborator_id: ALICE,
+          start_date: '2026-06-01',
+          end_date: '2026-07-23',
+          allocation_pct: 100,
+        },
+        // Bob n'a aucune allocation antérieure.
+      ],
+      pct: 100,
+    })
+    expect(plan.operations).toHaveLength(2)
+    const aliceOp = plan.operations.find((o) => o.collaboratorId === ALICE)
+    const bobOp = plan.operations.find((o) => o.collaboratorId === BOB)
+    expect(aliceOp?.kind).toBe('patch')
+    expect(bobOp?.kind).toBe('create')
+    // Tous deux contribuent → on absorbe 2j/jour ouvré, donc 4j en 2 jours ouvrés.
+    // Scan démarre le 24/07 (vendredi : 2/jour) puis 27/07 (lundi : 2/jour) = 4j atteint.
+    expect(plan.targetEndDate).toBe('2026-07-27')
+  })
+
+  it('pct = 0 → infeasible (garde-fou)', () => {
+    const plan = computeExtensionPlan({
+      startDate: '2026-07-20',
+      missing: 3,
+      collaboratorIds: [ALICE],
+      projectId: PROJ,
+      allocations: [],
+      pct: 0,
+    })
+    expect(plan.feasible).toBe(false)
+  })
+
+  it('missing = 0 → rien à étendre, feasible=true', () => {
+    const plan = computeExtensionPlan({
+      startDate: '2026-07-20',
+      missing: 0,
+      collaboratorIds: [ALICE],
+      projectId: PROJ,
+      allocations: [],
+      pct: 100,
+    })
+    expect(plan.feasible).toBe(true)
   })
 })

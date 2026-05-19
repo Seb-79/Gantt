@@ -793,3 +793,73 @@ describe('v2.0 / F5 — /api/workload/global', () => {
     expect(Array.isArray(r.body.all_member_allocations)).toBe(true)
   })
 })
+
+// =============================================================================
+// v2.1 / F2.9 — PATCH /api/allocations/:id
+// =============================================================================
+// Vérifie la nouvelle route d'extension/modification d'une période
+// d'allocation, utilisée par le AllocationFixDialog au save d'une activité
+// non absorbable.
+// =============================================================================
+
+describe('v2.1 / F2.9 — PATCH /api/allocations/:id', () => {
+  let app
+  /** Id d'une allocation pré-créée pour les tests. */
+  let allocId
+
+  beforeEach(async () => {
+    app = makeApp()
+    // Ajouter une membership crée AUTOMATIQUEMENT une allocation par défaut
+    // 100 % couvrant [2020-01-01, 2099-12-31] (cf. `addProjectMember`).
+    // On la récupère via /api/state pour la patcher dans les tests.
+    const state = await request(app).get('/api/state').expect(200)
+    const projectId = state.body.current_project_id
+    const collabId = state.body.collaborators[0].id
+    await request(app)
+      .post(`/api/projects/${encodeURIComponent(projectId)}/members`)
+      .send({ collaborator_id: collabId })
+      .expect(200)
+    const after = await request(app).get('/api/state').expect(200)
+    const alloc = after.body.member_allocations.find(
+      (a) => a.collaborator_id === collabId,
+    )
+    expect(alloc).toBeTruthy()
+    allocId = alloc.id
+  })
+
+  it('raccourcit end_date avec succès', async () => {
+    // L'allocation par défaut couvre 2020-2099. On la raccourcit pour
+    // vérifier que le PATCH agit bien (changed=true + valeur persistée).
+    // Le test miroir (extension) est couvert par les tests DAL — ici on
+    // valide juste le pipeline route → DAL.
+    const r = await request(app)
+      .patch(`/api/allocations/${allocId}`)
+      .send({ end_date: '2030-12-31' })
+      .expect(200)
+    expect(r.body.changed).toBe(true)
+    expect(r.body.allocation.end_date).toBe('2030-12-31')
+    expect(r.body.allocation.allocation_pct).toBe(100)
+  })
+
+  it('id inconnu → 404', async () => {
+    await request(app)
+      .patch('/api/allocations/alloc_inexistant')
+      .send({ end_date: '2030-12-31' })
+      .expect(404)
+  })
+
+  it('pct invalide → 400', async () => {
+    const r = await request(app)
+      .patch(`/api/allocations/${allocId}`)
+      .send({ allocation_pct: 33 })
+      .expect(400)
+    expect(r.body.error).toBeTruthy()
+  })
+
+  it('end_date < start_date → 400 (validation Zod)', async () => {
+    await request(app)
+      .patch(`/api/allocations/${allocId}`)
+      .send({ start_date: '2030-08-01', end_date: '2030-07-01' })
+      .expect(400)
+  })
+})

@@ -176,6 +176,29 @@ export const ProjectCollabParams = z.object({
 /** v2.0 / F2 — Params pour DELETE /api/allocations/:id. */
 export const AllocationIdParams = z.object({ id: NonEmptyId })
 
+/**
+ * v2.1 / F2.9 — Body de PATCH /api/allocations/:id. Tous les champs sont
+ * optionnels (mise à jour partielle) ; la cohérence (start ≤ end) est
+ * validée si les DEUX dates sont fournies (sinon on laisse le DAL faire le
+ * check final avec la valeur courante).
+ */
+export const UpdateMemberAllocationBody = z
+  .object({
+    start_date: IsoDate.optional(),
+    end_date: IsoDate.optional(),
+    allocation_pct: AllocationPct.optional(),
+  })
+  .refine(
+    (v) =>
+      v.start_date === undefined ||
+      v.end_date === undefined ||
+      v.end_date >= v.start_date,
+    {
+      message: 'end_date doit être ≥ start_date',
+      path: ['end_date'],
+    },
+  )
+
 // -----------------------------------------------------------------------------
 // ABSENCES (v2.0 / F3) — congés cross-projet
 // -----------------------------------------------------------------------------

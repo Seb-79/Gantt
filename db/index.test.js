@@ -12,6 +12,7 @@ import {
   deleteAbsence,
   deleteCollaborator,
   deleteMemberAllocation,
+  updateMemberAllocation,
   deleteTask,
   DEMO_STATE,
   getFullState,
@@ -1531,6 +1532,73 @@ describe('v2.0 / F2 — member_allocations', () => {
     const del = deleteMemberAllocation(db, id)
     expect(del.changed).toBe(true)
     expect(listMemberAllocations(db, 'pA', 'c1')).toHaveLength(0)
+  })
+
+  // v2.1 / F2.9 — updateMemberAllocation : prolonge end_date sans erreur.
+  it('v2.1 / F2.9 — updateMemberAllocation : prolonge end_date', () => {
+    clearAllocations()
+    const r = addMemberAllocation(db, {
+      project_id: 'pA',
+      collaborator_id: 'c1',
+      start_date: '2026-06-01',
+      end_date: '2026-06-30',
+      allocation_pct: 100,
+    })
+    const id = r.allocation.id
+    const upd = updateMemberAllocation(db, id, { end_date: '2026-07-15' })
+    expect(upd.changed).toBe(true)
+    expect(upd.allocation.end_date).toBe('2026-07-15')
+    expect(upd.allocation.allocation_pct).toBe(100)
+    // start_date inchangée.
+    expect(upd.allocation.start_date).toBe('2026-06-01')
+  })
+
+  // v2.1 / F2.9 — id inconnu → changed=false (no-op cohérent avec delete).
+  it('v2.1 / F2.9 — updateMemberAllocation : id inconnu → changed=false', () => {
+    const upd = updateMemberAllocation(db, 'alloc_inexistant', {
+      end_date: '2026-12-31',
+    })
+    expect(upd.changed).toBe(false)
+  })
+
+  // v2.1 / F2.9 — Rejette si l'extension chevauche une autre période existante.
+  it('v2.1 / F2.9 — updateMemberAllocation : chevauchement → INVALID/OVERLAP', () => {
+    clearAllocations()
+    const r1 = addMemberAllocation(db, {
+      project_id: 'pA',
+      collaborator_id: 'c1',
+      start_date: '2026-06-01',
+      end_date: '2026-06-15',
+      allocation_pct: 100,
+    })
+    addMemberAllocation(db, {
+      project_id: 'pA',
+      collaborator_id: 'c1',
+      start_date: '2026-07-01',
+      end_date: '2026-07-31',
+      allocation_pct: 100,
+    })
+    // Tenter de pousser la 1ère allocation jusqu'au 15/07 → chevauche la 2e.
+    expect(() =>
+      updateMemberAllocation(db, r1.allocation.id, {
+        end_date: '2026-07-15',
+      }),
+    ).toThrow(/overlaps/)
+  })
+
+  // v2.1 / F2.9 — Modification du pct vers une valeur interdite.
+  it('v2.1 / F2.9 — updateMemberAllocation : pct invalide → rejette', () => {
+    clearAllocations()
+    const r = addMemberAllocation(db, {
+      project_id: 'pA',
+      collaborator_id: 'c1',
+      start_date: '2026-06-01',
+      end_date: '2026-06-30',
+      allocation_pct: 100,
+    })
+    expect(() =>
+      updateMemberAllocation(db, r.allocation.id, { allocation_pct: 33 }),
+    ).toThrow(/allocation_pct must be one of/)
   })
 
   // RG-GANTT-1304 — Cascade suppression membership → ses allocations.

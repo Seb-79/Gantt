@@ -467,6 +467,379 @@ export function computeEndFromCharge(
 }
 
 /**
+ * v2.1 / F2.9 — Résultat du check d'absorption de charge par les allocations.
+ *
+ *   • `absorbed`        : nombre de jours-ouvrés-équivalents que les allocations
+ *                          existantes peuvent absorber pour cette tâche
+ *                          (somme additive des contributions de tous les
+ *                          collaborateurs affectés, jour par jour, week-ends/
+ *                          fériés sautés). Dans [0, charge].
+ *   • `missing`         : charge − absorbed. > 0 ⇒ blocage à la sauvegarde.
+ *   • `lastCoveredDay`  : dernier jour (entre startDate et horizon) ayant une
+ *                          capacité > 0. `null` si jamais aucune capacité.
+ *   • `horizon`         : max(allocation.end_date) pour les allocations
+ *                          (projet, collab) pertinentes. `null` si aucune
+ *                          allocation pertinente.
+ */
+export interface AllocationShortfall {
+  absorbed: number
+  missing: number
+  lastCoveredDay: string | null
+  horizon: string | null
+}
+
+/**
+ * v2.1 / F2.9 — Vérifie si la charge d'une activité peut être absorbée par
+ * les allocations courantes de ses collaborateurs sur le projet courant.
+ *
+ * Pure (testable). Pas d'IO. Mêmes hypothèses que `computeEndFromCharge` :
+ * la capacité d'un jour est `Σ_collab (pct_collab × (1 − absence_collab))`,
+ * sauf week-ends/fériés où elle vaut 0.
+ *
+ * Algorithme :
+ *   1. Filtre les allocations (project_id, collaborator_id) pertinentes.
+ *   2. Si rien → la charge entière manque, horizon = null.
+ *   3. Sinon scanne jour par jour de `startDate` à `horizon = max(end_date)`,
+ *      accumule la capacité jusqu'à atteindre la charge cible.
+ *   4. Si scrap atteint avant horizon → `missing = 0`. Sinon, ce qui reste.
+ *
+ * Note : si `startDate > horizon`, on ne scanne rien et `absorbed = 0`. C'est
+ * exactement le cas « Tournage extérieur commence après la fin de l'allocation
+ * Camille » qui retournait 1 jour à tort avant ce check.
+ *
+ * @param args.startDate         Date de début de la tâche (YYYY-MM-DD).
+ * @param args.charge            Charge en jours ouvrés (≥ 1).
+ * @param args.collaboratorIds   Ids des collabs affectés.
+ * @param args.projectId         Projet de la tâche.
+ * @param args.allocations       Allocations connues (toutes paires confondues).
+ * @param args.absences          Absences cross-projet (optionnel, défaut []).
+ * @returns                      Bilan d'absorption (cf. `AllocationShortfall`).
+ */
+export function computeAllocationShortfall(args: {
+  startDate: string
+  charge: number
+  collaboratorIds: string[]
+  projectId: string
+  allocations: MemberAllocation[]
+  absences?: CollaboratorAbsence[]
+}): AllocationShortfall {
+  const { startDate, charge, collaboratorIds, projectId, allocations } = args
+  const absences = args.absences || []
+  // Charge ≤ 0 (cas dégénéré) → rien à absorber, OK.
+  if (charge <= 0) {
+    return { absorbed: 0, missing: 0, lastCoveredDay: null, horizon: null }
+  }
+  // Aucun collab affecté → aucune capacité possible.
+  if (collaboratorIds.length === 0) {
+    return {
+      absorbed: 0,
+      missing: charge,
+      lastCoveredDay: null,
+      horizon: null,
+    }
+  }
+  // Filtre des allocations (projet courant, collabs affectés).
+  const relevant = allocations.filter(
+    (a) =>
+      a.project_id === projectId && collaboratorIds.includes(a.collaborator_id),
+  )
+  if (relevant.length === 0) {
+    return {
+      absorbed: 0,
+      missing: charge,
+      lastCoveredDay: null,
+      horizon: null,
+    }
+  }
+  // Horizon = dernier jour couvert par AU MOINS une allocation pertinente.
+  let horizon = relevant[0].end_date
+  for (const a of relevant) if (a.end_date > horizon) horizon = a.end_date
+  // Scan jour calendaire par jour calendaire jusqu'à horizon (inclus).
+  let cur = startDate
+  let absorbed = 0
+  let lastCoveredDay: string | null = null
+  while (cur <= horizon) {
+    let cap = 0
+    for (const cId of collaboratorIds) {
+      cap += getDailyAllocation(cur, allocations, projectId, cId, absences)
+    }
+    if (cap > 0) {
+      absorbed += cap
+      lastCoveredDay = cur
+      // Tolérance numérique (cumul de fractions 0.25/0.5/0.75/1).
+      if (absorbed >= charge - 1e-9) {
+        return {
+          absorbed: charge,
+          missing: 0,
+          lastCoveredDay,
+          horizon,
+        }
+      }
+    }
+    cur = addDaysIso(cur, 1)
+  }
+  return {
+    absorbed,
+    missing: Math.max(0, charge - absorbed),
+    lastCoveredDay,
+    horizon,
+  }
+}
+
+/**
+ * v2.1 / F2.9 — Opération atomique à exécuter pour étendre la couverture
+ * d'allocation d'un collaborateur sur un projet :
+ *
+ *   • `kind = 'patch'` : prolonger une allocation existante en mettant à jour
+ *                        sa `end_date`. Garde l'allocation_pct et le start_date.
+ *                        Q5=C : utilisé quand le pct cible == pct actuel.
+ *   • `kind = 'create'` : créer une nouvelle allocation `[start..end]` au pct
+ *                        cible. Q5=C : utilisé quand on change de pct OU quand
+ *                        le collab n'a aucune allocation antérieure pertinente.
+ */
+export interface ExtensionOperation {
+  collaboratorId: string
+  kind: 'patch' | 'create'
+  /** Allocation à patcher (kind='patch') ; ignoré pour 'create'. */
+  allocationId?: string
+  /** Date de début pour 'create' (lendemain de la dernière allocation, ou
+   *  start de la tâche si aucune). Ignoré pour 'patch' (on garde l'existant). */
+  startDate?: string
+  /** Date de fin cible (cible commune calculée par `computeExtensionPlan`). */
+  endDate: string
+  /** Taux d'allocation appliqué (25/50/75/100). */
+  pct: number
+}
+
+/**
+ * v2.1 / F2.9 — Plan d'extension complet calculé pour résoudre un shortfall :
+ *
+ *   • `operations`     : les ops à exécuter en série (1 par collab à étendre).
+ *   • `targetEndDate`  : la date jusqu'à laquelle on étend (commune à tous).
+ *   • `feasible`       : true si la simulation a réussi à absorber `missing`
+ *                        dans un horizon raisonnable. False = la date proposée
+ *                        existe mais le user devra peut-être ajuster (cas
+ *                        absences denses, etc.).
+ */
+export interface ExtensionPlan {
+  operations: ExtensionOperation[]
+  targetEndDate: string
+  pct: number
+  feasible: boolean
+}
+
+/**
+ * v2.1 / F2.9 — Calcule un plan d'extension pour résoudre `missing` jours de
+ * charge non absorbés, en étendant l'allocation des `collaboratorIds` au taux
+ * `pct`. La date cible est la 1ʳᵉ date où, en simulant les allocations
+ * étendues, la charge manquante est absorbée.
+ *
+ * Stratégie de simulation :
+ *   1. Pour chaque collab, on identifie sa dernière allocation existante sur
+ *      le projet (= celle au `end_date` max).
+ *   2. On scanne jour ouvré par jour ouvré depuis `startScan`, en simulant
+ *      qu'au-delà du `end_date` de la dernière alloc, le collab contribue
+ *      `pct/100 × (1 − absence)` (= comme s'il était étendu).
+ *   3. Tant que la charge manquante n'est pas absorbée, on continue. Quand
+ *      atteinte → la date du dernier jour scanné devient `targetEndDate`.
+ *
+ * Stratégie d'opérations (Q5=C) :
+ *   • Pour chaque collab à étendre, si sa dernière allocation a déjà le
+ *     `pct` cible → on PATCH son `end_date` à `targetEndDate` (fusion).
+ *   • Sinon → on CREATE une nouvelle allocation `[lendemain_de_l_existante,
+ *     targetEndDate]` au `pct` cible.
+ *   • Si aucune allocation existante → CREATE depuis `startDate` (ou la 1ʳᵉ
+ *     date utile) jusqu'à `targetEndDate`.
+ *
+ * Pour la v1 : on étend TOUS les collabs affectés (pas seulement le « limitant »).
+ * Le user peut ajuster manuellement après si nécessaire (onglet Affectation).
+ *
+ * Garde-fou : scan limité à 5 ans (1825 jours) pour éviter une boucle infinie
+ * si pct = 0 par erreur (`feasible = false` retournée dans ce cas).
+ *
+ * @param args.startDate         Date de début de la tâche.
+ * @param args.missing           Jours de charge non absorbés à combler.
+ * @param args.collaboratorIds   Collabs affectés à la tâche.
+ * @param args.projectId         Projet courant.
+ * @param args.allocations       Allocations existantes (toutes paires).
+ * @param args.absences          Absences cross-projet.
+ * @param args.pct               Taux d'extension cible (25/50/75/100).
+ * @returns                      Plan d'extension exécutable.
+ */
+export function computeExtensionPlan(args: {
+  startDate: string
+  missing: number
+  collaboratorIds: string[]
+  projectId: string
+  allocations: MemberAllocation[]
+  absences?: CollaboratorAbsence[]
+  pct: number
+}): ExtensionPlan {
+  const { startDate, missing, collaboratorIds, projectId, allocations, pct } =
+    args
+  const absences = args.absences || []
+  const lastByCollab = lastAllocationByCollab(
+    collaboratorIds,
+    allocations,
+    projectId,
+  )
+  const startScan = pickStartScan(startDate, lastByCollab)
+  const { targetEndDate, feasible } = simulateExtensionDate({
+    startScan,
+    missing,
+    collaboratorIds,
+    absences,
+    pct,
+  })
+  const operations = buildExtensionOperations({
+    collaboratorIds,
+    lastByCollab,
+    pct,
+    targetEndDate,
+    startDate,
+  })
+  return { operations, targetEndDate, pct, feasible }
+}
+
+/**
+ * v2.1 / F2.9 — Pour chaque collab, retourne sa dernière allocation existante
+ * sur le projet (celle au `end_date` max), ou null si aucune.
+ */
+function lastAllocationByCollab(
+  collaboratorIds: string[],
+  allocations: MemberAllocation[],
+  projectId: string,
+): Map<string, MemberAllocation | null> {
+  const m = new Map<string, MemberAllocation | null>()
+  for (const cId of collaboratorIds) {
+    let last: MemberAllocation | null = null
+    for (const a of allocations) {
+      if (a.project_id !== projectId) continue
+      if (a.collaborator_id !== cId) continue
+      if (!last || a.end_date > last.end_date) last = a
+    }
+    m.set(cId, last)
+  }
+  return m
+}
+
+/**
+ * v2.1 / F2.9 — Date à partir de laquelle scanner la simulation d'extension :
+ * la plus tardive entre `startDate` (début de tâche) et le lendemain de la
+ * dernière allocation existante (pour ne pas double-compter la capacité déjà
+ * comptée par `computeAllocationShortfall`).
+ */
+function pickStartScan(
+  startDate: string,
+  lastByCollab: Map<string, MemberAllocation | null>,
+): string {
+  let startScan = startDate
+  for (const last of lastByCollab.values()) {
+    if (last && addDaysIso(last.end_date, 1) > startScan) {
+      startScan = addDaysIso(last.end_date, 1)
+    }
+  }
+  return startScan
+}
+
+/**
+ * v2.1 / F2.9 — Trouve la fraction d'absence d'un collab pour une date donnée.
+ * Retourne 0 si aucune absence connue (vue cross-projet — `absences` peut
+ * contenir des entrées de plusieurs projets, filtrage par collab+date suffit).
+ */
+function absenceFractionFor(
+  collabId: string,
+  dateIso: string,
+  absences: CollaboratorAbsence[],
+): number {
+  for (const a of absences) {
+    if (a.collaborator_id === collabId && a.date === dateIso) return a.fraction
+  }
+  return 0
+}
+
+/**
+ * v2.1 / F2.9 — Simule l'absorption jour par jour de `missing` jours de charge
+ * en supposant que TOUS les `collaboratorIds` contribuent `pct/100 × (1 − absence)`
+ * à partir de `startScan`. Retourne la date du dernier jour scanné et un
+ * booléen `feasible` (false si la simulation n'a pas convergé ou pct=0).
+ *
+ * Garde-fou : 1825 jours = 5 ans.
+ */
+function simulateExtensionDate(args: {
+  startScan: string
+  missing: number
+  collaboratorIds: string[]
+  absences: CollaboratorAbsence[]
+  pct: number
+}): { targetEndDate: string; feasible: boolean } {
+  const { startScan, missing, collaboratorIds, absences, pct } = args
+  const fraction = Math.max(0, pct) / 100
+  // Cas dégénérés : pas d'extension nécessaire OU taux nul.
+  if (missing <= 0) return { targetEndDate: startScan, feasible: true }
+  if (fraction === 0) return { targetEndDate: startScan, feasible: false }
+  let cur = startScan
+  let absorbed = 0
+  let targetEndDate = startScan
+  const MAX_SCAN = 1825
+  for (let i = 0; i < MAX_SCAN; i++) {
+    if (!isNonWorkingDay(isoToDate(cur))) {
+      let cap = 0
+      for (const cId of collaboratorIds) {
+        cap += fraction * (1 - absenceFractionFor(cId, cur, absences))
+      }
+      absorbed += cap
+      targetEndDate = cur
+      if (absorbed >= missing - 1e-9) {
+        return { targetEndDate, feasible: true }
+      }
+    }
+    cur = addDaysIso(cur, 1)
+  }
+  return { targetEndDate, feasible: false }
+}
+
+/**
+ * v2.1 / F2.9 — Construit la liste d'opérations à exécuter. Q5=C :
+ *   • PATCH si une allocation existe ET son pct == cible (fusion par
+ *     prolongation de `end_date`) ;
+ *   • CREATE sinon (nouvelle allocation au lendemain de l'existante OU dès
+ *     `startDate` si aucune allocation antérieure).
+ */
+function buildExtensionOperations(args: {
+  collaboratorIds: string[]
+  lastByCollab: Map<string, MemberAllocation | null>
+  pct: number
+  targetEndDate: string
+  startDate: string
+}): ExtensionOperation[] {
+  const { collaboratorIds, lastByCollab, pct, targetEndDate, startDate } = args
+  const operations: ExtensionOperation[] = []
+  for (const cId of collaboratorIds) {
+    const last = lastByCollab.get(cId) ?? null
+    if (last && last.allocation_pct === pct) {
+      operations.push({
+        collaboratorId: cId,
+        kind: 'patch',
+        allocationId: last.id,
+        endDate: targetEndDate,
+        pct,
+      })
+    } else {
+      const start = last ? addDaysIso(last.end_date, 1) : startDate
+      operations.push({
+        collaboratorId: cId,
+        kind: 'create',
+        startDate: start,
+        endDate: targetEndDate,
+        pct,
+      })
+    }
+  }
+  return operations
+}
+
+/**
  * v1.9 — Ajoute N jours calendaires (peu importe le type) à une date ISO.
  * Helper pour le drag des barres dans le Gantt (où on raisonne en pixels
  * → jours calendaires, puis on snape en jours ouvrés via les helpers ci-dessus).

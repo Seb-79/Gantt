@@ -35,6 +35,7 @@ import {
   deleteAbsence,
   deleteCollaborator,
   deleteMemberAllocation,
+  updateMemberAllocation,
   deleteProject,
   deleteTask,
   getFullState,
@@ -65,6 +66,7 @@ import {
   StateQuery,
   TaskIdParams,
   UpdateCollaboratorBody,
+  UpdateMemberAllocationBody,
   UpdateProjectBody,
   UpdateTaskBody,
   validate,
@@ -357,6 +359,45 @@ export function createApp(db, { requestLog = true } = {}) {
           .json({ error: 'allocation introuvable', version: result.version })
       }
       res.json(result)
+    }),
+  )
+
+  /**
+   * v2.1 / F2.9 — Met à jour une période d'allocation (extension de end_date
+   * notamment). Body partiel : tout champ omis reste inchangé. Validations
+   * dupliquées côté DAL (pct ∈ {25,50,75,100}, dates cohérentes, pas de
+   * chevauchement avec une AUTRE période). 404 si l'id n'existe pas, 400 si
+   * l'invariant chevauchement / pct / dates est violé.
+   */
+  app.patch(
+    '/api/allocations/:id',
+    validate({
+      params: AllocationIdParams,
+      body: UpdateMemberAllocationBody,
+    }),
+    safeRoute((req, res) => {
+      try {
+        const result = updateMemberAllocation(db, req.params.id, req.body)
+        if (!result.changed) {
+          return res
+            .status(404)
+            .json({ error: 'allocation introuvable', version: result.version })
+        }
+        res.json(result)
+      } catch (e) {
+        // Codes d'erreur DAL → 400 lisibles (cf. addMemberAllocation pour le
+        // pattern miroir). On expose le code applicatif via le payload pour
+        // permettre au client de réagir (afficher un message ciblé).
+        const knownCodes = new Set([
+          'INVALID_ALLOCATION_PCT',
+          'INVALID_DATE_RANGE',
+          'ALLOCATION_OVERLAP',
+        ])
+        if (e && knownCodes.has(e.code)) {
+          return res.status(400).json({ error: e.message, code: e.code })
+        }
+        throw e
+      }
     }),
   )
 

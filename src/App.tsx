@@ -39,7 +39,7 @@ import {
   todayIso,
   windowFromTasks,
 } from './lib/utils'
-import type { ReplanMove } from './lib/utils'
+import type { ExtensionPlan, ReplanMove } from './lib/utils'
 import type { Collaborator, GanttState, Task } from './lib/types'
 
 /** Intervalle (ms) du polling de synchronisation. */
@@ -466,6 +466,69 @@ export default function App() {
       )
     },
     [mutate],
+  )
+
+  /**
+   * v2.1 / F2.9 — Exécute un plan d'extension d'allocation (Q5=C : un mix de
+   * PATCH d'allocations existantes et de POST de nouvelles allocations). Les
+   * opérations sont SÉQUENTIELLES (l'invariant « pas de chevauchement » est
+   * vérifié à chaque write côté DAL ; un ordre parallèle pourrait faire échouer
+   * un POST qui chevauche un PATCH non encore appliqué).
+   *
+   * Au terme du plan, un seul `fetchState` rapatrie l'état frais. Les erreurs
+   * 4xx sont propagées via `askAlert` (cohérent avec `mutate`).
+   *
+   * @param plan  Plan d'extension produit par `computeExtensionPlan`.
+   */
+  const handleExtendAllocations = useCallback(
+    async (plan: ExtensionPlan) => {
+      if (!currentProjectId) return
+      setStatus('loading')
+      try {
+        for (const op of plan.operations) {
+          let res: Response
+          if (op.kind === 'patch') {
+            if (!op.allocationId) continue
+            res = await fetch(
+              `/api/allocations/${encodeURIComponent(op.allocationId)}`,
+              {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  end_date: op.endDate,
+                  allocation_pct: op.pct,
+                }),
+              },
+            )
+          } else {
+            res = await fetch(
+              `/api/projects/${encodeURIComponent(currentProjectId)}/members/${encodeURIComponent(op.collaboratorId)}/allocations`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  start_date: op.startDate,
+                  end_date: op.endDate,
+                  allocation_pct: op.pct,
+                }),
+              },
+            )
+          }
+          if (!res.ok) {
+            throw new Error(await formatApiError(res))
+          }
+        }
+        await fetchState()
+      } catch (err) {
+        console.error('[extendAllocations]', err)
+        setStatus('error')
+        await askAlert(
+          `Extension d'allocation impossible : ${(err as Error).message}`,
+        )
+        throw err
+      }
+    },
+    [currentProjectId, fetchState],
   )
 
   /** Capture le bloc Gantt en PNG et déclenche le téléchargement. */
@@ -1308,6 +1371,7 @@ export default function App() {
             setCreating(false)
           }}
           onDelete={editing ? handleDeleteTask : undefined}
+          onExtendAllocations={handleExtendAllocations}
         />
       )}
       {/* Mount unique des modales custom (confirm / prompt). Doit rester

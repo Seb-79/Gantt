@@ -979,6 +979,83 @@ export function deleteMemberAllocation(db, id) {
   return tx()
 }
 
+/**
+ * v2.1 / F2.9 — Met à jour une période d'allocation existante. Permet de :
+ *   • prolonger `end_date` (cas d'usage F2.9 — extension d'allocation pour
+ *     absorber une charge non absorbable) ;
+ *   • optionnellement modifier `start_date` ou `allocation_pct`.
+ *
+ * Validations identiques à `addMemberAllocation` :
+ *   • si `allocation_pct` fourni → ∈ {25, 50, 75, 100} ;
+ *   • `start_date` ≤ `end_date` après application des patches ;
+ *   • pas de chevauchement avec une AUTRE allocation du même (project, collab)
+ *     (RG-GANTT-1301) — `hasAllocationOverlap` exclut l'id courant.
+ *
+ * No-op (changed=false) si l'id n'existe pas. Lève si la validation échoue.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} id
+ * @param {{start_date?:string, end_date?:string, allocation_pct?:number}} patch
+ * @returns {{version:number, changed:boolean, allocation?:object}}
+ */
+export function updateMemberAllocation(db, id, patch) {
+  const tx = db.transaction(() => {
+    const cur = db
+      .prepare(`SELECT * FROM member_allocations WHERE id = ?`)
+      .get(id)
+    if (!cur) return { version: getVersion(db), changed: false }
+    // Construction de l'état cible (champs absents = inchangés).
+    const next = {
+      start_date: patch.start_date ?? cur.start_date,
+      end_date: patch.end_date ?? cur.end_date,
+      allocation_pct:
+        patch.allocation_pct !== undefined
+          ? Number(patch.allocation_pct)
+          : cur.allocation_pct,
+    }
+    // Validations.
+    if (!ALLOWED_ALLOCATION_PCTS.has(next.allocation_pct)) {
+      const err = new Error(
+        `allocation_pct must be one of 25,50,75,100 (got ${next.allocation_pct})`,
+      )
+      err.code = 'INVALID_ALLOCATION_PCT'
+      throw err
+    }
+    if (next.end_date < next.start_date) {
+      const err = new Error('end_date must be >= start_date')
+      err.code = 'INVALID_DATE_RANGE'
+      throw err
+    }
+    if (
+      hasAllocationOverlap(
+        db,
+        cur.project_id,
+        cur.collaborator_id,
+        next.start_date,
+        next.end_date,
+        id, // exclut l'allocation en cours de mise à jour
+      )
+    ) {
+      const err = new Error(
+        'Allocation period overlaps an existing one for this member',
+      )
+      err.code = 'ALLOCATION_OVERLAP'
+      throw err
+    }
+    db.prepare(
+      `UPDATE member_allocations
+         SET start_date = ?, end_date = ?, allocation_pct = ?
+         WHERE id = ?`,
+    ).run(next.start_date, next.end_date, next.allocation_pct, id)
+    const version = bumpVersion(db)
+    const allocation = db
+      .prepare(`SELECT * FROM member_allocations WHERE id = ?`)
+      .get(id)
+    return { version, changed: true, allocation }
+  })
+  return tx()
+}
+
 // -----------------------------------------------------------------------------
 // v2.0 / F3 — ABSENCES (congés cross-projet)
 // -----------------------------------------------------------------------------

@@ -348,6 +348,30 @@ export interface CollaboratorAbsence {
 }
 
 /**
+ * v2.0 / F6 — Helper unifié : extrait la liste des ids de collaborateurs
+ * affectés à une tâche, en priorisant le tableau `collaborators[]` (source
+ * de vérité F6) et en retombant sur l'alias legacy `collaborator_id` quand
+ * il n'est pas présent (tâches d'avant F6 ou tests).
+ *
+ * Factorisé pour éviter la duplication du ternaire imbriqué dans `replanTasks`,
+ * `computeWorkload`, `prefillLockedIntervals`, etc. (sonarjs/no-nested-conditional).
+ *
+ * @param t  Tâche à inspecter (Task ou objet partiel avec `collaborators?` /
+ *           `collaborator_id?`).
+ * @returns  Ids des collabs affectés (tableau jamais null, peut être vide).
+ */
+export function taskCollabIds(t: {
+  collaborators?: { id: string }[]
+  collaborator_id?: string | null
+}): string[] {
+  if (t.collaborators && t.collaborators.length > 0) {
+    return t.collaborators.map((c) => c.id)
+  }
+  if (t.collaborator_id) return [t.collaborator_id]
+  return []
+}
+
+/**
  * v2.0 / F2 — Capacité quotidienne d'un collaborateur sur un projet à une
  * date donnée, sous forme de fraction (0..1).
  *
@@ -429,27 +453,40 @@ export function computeEndFromCharge(
   charge: number,
   ctx?: {
     projectId: string | null
+    /** v2.0 / F6 — Soit un id unique (mono-collab, rétro-compat), soit un
+     *  tableau d'ids (multi-collab). Sémantique multi-collab : ADDITIVE
+     *  uniforme — chaque jour, chaque collab affecté contribue son pct ×
+     *  (1−absence). Capacité du jour = Σ contributions. */
     collaboratorId: string | null
+    collaboratorIds?: string[]
     allocations: MemberAllocation[]
     /** v2.0 / F3 — Absences cross-projet du collab (toutes celles connues
      *  côté state suffisent : `getDailyAllocation` filtre par collab+date). */
     absences?: CollaboratorAbsence[]
   },
 ): string {
-  // F0 path : sans allocations explicites, on reste sur la sémantique
-  // « charge = N jours ouvrés contigus » (rétrocompat tests v1.x).
+  // v2.0 / F6 — Construit la liste finale des collabs à consommer : priorité
+  // au tableau, fallback sur l'id unique (rétro-compat F2-F5).
+  let collabList: string[] = []
+  if (ctx?.collaboratorIds?.length) {
+    collabList = ctx.collaboratorIds
+  } else if (ctx?.collaboratorId) {
+    collabList = [ctx.collaboratorId]
+  }
+  // F0 path : sans allocations explicites OU sans collab, on reste sur la
+  // sémantique « charge = N jours ouvrés contigus » (rétrocompat tests v1.x).
   if (
     !ctx ||
     !ctx.projectId ||
-    !ctx.collaboratorId ||
+    collabList.length === 0 ||
     !ctx.allocations ||
     ctx.allocations.length === 0
   ) {
     return addWorkingDays(startIso, charge)
   }
-  // F2/F3 path : itération jour calendaire par jour calendaire, consommation
-  // pondérée par l'allocation × (1 − absence). On démarre à `startIso`
-  // (inclus) et on accumule jusqu'à atteindre `charge` jours-personne.
+  // F2/F3/F6 path : itération jour calendaire par jour calendaire,
+  // consommation pondérée par allocation × (1 − absence), SOMMÉE sur tous
+  // les collabs affectés (additif uniforme, Q12a validé).
   const absences = ctx.absences || []
   const needed = Math.max(1, charge)
   let consumed = 0
@@ -458,13 +495,17 @@ export function computeEndFromCharge(
   // Garde-fou : 10 000 jours = ~27 ans, largement suffisant.
   const maxScan = Math.max(needed * 30, 10000)
   for (let i = 0; i < maxScan; i++) {
-    const a = getDailyAllocation(
-      cur,
-      ctx.allocations,
-      ctx.projectId,
-      ctx.collaboratorId,
-      absences,
-    )
+    // Σ contributions de tous les collabs affectés pour le jour `cur`.
+    let a = 0
+    for (const cId of collabList) {
+      a += getDailyAllocation(
+        cur,
+        ctx.allocations,
+        ctx.projectId,
+        cId,
+        absences,
+      )
+    }
     if (a > 0) {
       consumed += a
       lastWorked = cur
@@ -809,6 +850,7 @@ export function groupByWeek(
 function accumulateTaskWorkload(
   t: Task,
   arr: number[],
+  collabId: string,
   dates: Date[],
   allocations: MemberAllocation[],
   absences: CollaboratorAbsence[],
@@ -826,7 +868,7 @@ function accumulateTaskWorkload(
         dateToIso(d),
         allocations,
         t.project_id,
-        t.collaborator_id as string,
+        collabId,
         absences,
       )
     } else {
@@ -851,11 +893,19 @@ export function computeWorkload(
   // v2.0 / F3 — Multiplicativement réduite par l'éventuelle absence du collab
   // ce jour-là (cross-projet). Sans allocations → fallback F0/F1 : contribution
   // = 1 par jour ouvré (les absences ne s'appliquent pas dans ce mode).
+  // v2.0 / F6 — Multi-collab : la tâche contribue à la timeline de CHAQUE
+  // collab affecté (pas seulement le 1er). Chacun voit donc sa propre part
+  // de la charge dans son plan de charge personnel.
   for (const t of tasks) {
-    if (t.kind !== 'task' || !t.collaborator_id) continue
-    const arr = result.get(t.collaborator_id)
-    if (!arr) continue
-    accumulateTaskWorkload(t, arr, dates, allocations, absences)
+    if (t.kind !== 'task') continue
+    // Source de vérité : `collaborators[]` (F6) ; fallback `collaborator_id` (legacy).
+    const collabIds = taskCollabIds(t)
+    if (collabIds.length === 0) continue
+    for (const cId of collabIds) {
+      const arr = result.get(cId)
+      if (!arr) continue
+      accumulateTaskWorkload(t, arr, cId, dates, allocations, absences)
+    }
   }
   return result
 }
@@ -1336,26 +1386,37 @@ function placeTaskInTimeline(
       ? t.charge_jours
       : Math.max(1, workingDaysBetween(t.start_date, t.end_date))
   const earliest = computeReplanEarliestStart(t, tasksById, proposed)
-  const intervals = t.collaborator_id
-    ? timeline.get(t.collaborator_id) || []
-    : []
-  const newStart = t.collaborator_id
-    ? findFreeSlot(intervals, earliest, charge)
-    : earliest
+  // v2.0 / F6 — Liste multi-collab : on lit `collaborators[]` (source de
+  // vérité depuis F6) avec fallback sur l'alias `collaborator_id`. La timeline
+  // de chaque collab impacté est consultée et mise à jour pour bloquer
+  // tous les créneaux simultanément.
+  const collabIds = taskCollabIds(t)
+  // v2.0 / F6 — Recherche d'un créneau libre simultanément pour TOUS les
+  // collabs affectés : on prend le MAX des findFreeSlot individuels (chaque
+  // collab impose sa propre contrainte).
+  let newStart = earliest
+  for (const cId of collabIds) {
+    const intervals = timeline.get(cId) || []
+    const candidate = findFreeSlot(intervals, earliest, charge)
+    if (candidate > newStart) newStart = candidate
+  }
   // v2.0 / F2 — La fin est calculée en consommant la capacité quotidienne
   // (allocation %) du collab sur le projet.
   // v2.0 / F3 — Les absences personnelles diminuent cette capacité jour par
-  // jour (lecture multiplicative). Sans allocations, on retombe sur l'ancien
-  // comportement F0 via `computeEndFromCharge`.
+  // jour (lecture multiplicative).
+  // v2.0 / F6 — En multi-collab, la capacité du jour est la SOMME des
+  // contributions de tous les affectés (Q12a additif uniforme).
   const newEnd = computeEndFromCharge(newStart, charge, {
     projectId: t.project_id,
     collaboratorId: t.collaborator_id,
+    collaboratorIds: collabIds.length > 0 ? collabIds : undefined,
     allocations,
     absences,
   })
   proposed.set(t.id, { start: newStart, end: newEnd })
-  if (t.collaborator_id) {
-    pushTimelineInterval(timeline, t.collaborator_id, newStart, newEnd)
+  // v2.0 / F6 — Bloque le créneau dans la timeline de CHAQUE collab affecté.
+  for (const cId of collabIds) {
+    pushTimelineInterval(timeline, cId, newStart, newEnd)
   }
 }
 
@@ -1371,9 +1432,13 @@ function prefillLockedIntervals(
   timeline: Map<string, Array<[string, string]>>,
 ): void {
   for (const t of tasks) {
-    if (t.kind !== 'task' || !t.collaborator_id) continue
+    if (t.kind !== 'task') continue
     if (concernedIds.has(t.id)) continue
-    pushTimelineInterval(timeline, t.collaborator_id, t.start_date, t.end_date)
+    // v2.0 / F6 — Lit la liste multi-collab (avec fallback legacy).
+    const collabIds = taskCollabIds(t)
+    for (const cId of collabIds) {
+      pushTimelineInterval(timeline, cId, t.start_date, t.end_date)
+    }
   }
 }
 

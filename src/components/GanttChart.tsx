@@ -29,6 +29,7 @@ import {
   rangeToWidth,
   snapBackwardToWorkingDay,
   snapForwardToWorkingDay,
+  taskCollabIds,
   workingDaysBetween,
 } from '../lib/utils'
 import { useHorizontalPan } from '../lib/useHorizontalPan'
@@ -560,9 +561,13 @@ export default function GanttChart({
           Tâches
         </div>
         {tasks.map((t) => {
-          const collab = t.collaborator_id
-            ? collabById.get(t.collaborator_id)
-            : null
+          // v2.0 / F6 — Liste multi-collab via helper unifié. Le 1er du tableau
+          // sert pour la couleur du chip ; les noms sont concaténés "; ".
+          const taskCollabs = taskCollabIds(t)
+            .map((id) => collabById.get(id))
+            .filter((c): c is NonNullable<typeof c> => !!c)
+          const collab = taskCollabs[0] ?? null
+          const collabLabel = taskCollabs.map((c) => c.name).join(' ; ')
           const indent = (depthById.get(t.id) ?? 0) * 16
           const isDragged = draggedId === t.id
           const hover = hoverDrop?.taskId === t.id ? hoverDrop.zone : null
@@ -683,12 +688,19 @@ export default function GanttChart({
               >
                 {t.name}
               </span>
+              {/* v2.0 / F6 — Chip multi-collab : couleur du 1er, noms séparés
+                  par " ; " (Q12c). En mono-collab le rendu est identique à F5. */}
               {collab && (
                 <span
                   className="ml-1.5 text-[10px] px-1 py-0.5 rounded text-white shrink-0"
                   style={{ backgroundColor: collab.color }}
+                  title={
+                    taskCollabs.length > 1
+                      ? `${taskCollabs.length} collaborateurs affectés (capacité additive)`
+                      : undefined
+                  }
                 >
-                  {collab.name}
+                  {collabLabel}
                 </span>
               )}
             </div>

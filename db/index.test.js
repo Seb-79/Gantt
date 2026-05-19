@@ -21,6 +21,7 @@ import {
   listAbsences,
   listMemberAllocations,
   listProjectMembers,
+  listTaskAssignments,
   moveTask,
   replaceFullState,
   resetToDemo,
@@ -1946,5 +1947,187 @@ describe('v2.0 / F4 — not_later_than_date', () => {
     const state = getFullState(db, 'pA')
     const t = state.tasks.find((x) => x.id === 't_expose')
     expect(t.not_later_than_date).toBe('2026-06-30')
+  })
+})
+
+// =============================================================================
+// v2.0 / F6 — Multi-collaborateurs par activité
+// =============================================================================
+
+describe('v2.0 / F6 — task_assignments (multi-collab)', () => {
+  let db
+  beforeEach(() => {
+    db = initDb(':memory:')
+    db.prepare(`INSERT INTO projects(id, name, position) VALUES (?, ?, ?)`).run(
+      'pA',
+      'Projet A',
+      0,
+    )
+    createCollaborator(db, { id: 'c1', name: 'Léa', color: '#3b82f6' })
+    createCollaborator(db, { id: 'c2', name: 'Karim', color: '#10b981' })
+    addProjectMember(db, 'pA', 'c1')
+    addProjectMember(db, 'pA', 'c2')
+  })
+
+  // RG-GANTT-1700 — Création multi-collab via collaborator_ids[].
+  it('v2.0 / RG-GANTT-1700 — createTask avec collaborator_ids[] : N collabs persistés', () => {
+    const r = createTask(db, {
+      id: 't_multi',
+      name: 'Multi-collab',
+      start_date: '2026-06-08',
+      charge_jours: 5,
+      collaborator_ids: ['c1', 'c2'],
+      project_id: 'pA',
+    })
+    // La liste est exposée et triée par id ASC.
+    expect(r.task.collaborators).toEqual([{ id: 'c1' }, { id: 'c2' }])
+    // Le champ legacy `collaborator_id` est aligné sur le 1er (ordre alpha).
+    expect(r.task.collaborator_id).toBe('c1')
+    expect(listTaskAssignments(db, 't_multi').sort()).toEqual(['c1', 'c2'])
+  })
+
+  // RG-GANTT-1701 — Rétro-compat : collaborator_id (legacy) crée 1 affectation.
+  it('v2.0 / RG-GANTT-1701 — createTask avec collaborator_id legacy : 1 affectation', () => {
+    const r = createTask(db, {
+      id: 't_legacy',
+      name: 'Mono legacy',
+      start_date: '2026-06-08',
+      charge_jours: 1,
+      collaborator_id: 'c1',
+      project_id: 'pA',
+    })
+    expect(r.task.collaborators).toEqual([{ id: 'c1' }])
+    expect(listTaskAssignments(db, 't_legacy')).toEqual(['c1'])
+  })
+
+  // RG-GANTT-1702 — Multi-collab additif uniforme : 2 collabs 100 % → fin 2× plus vite.
+  // Charge 4 j, 2 collabs 100 % chacun (capacité jour = 2).
+  // J1 lun 08/06 → 2 (cumul 2) ; J2 mar 09/06 → 2 (cumul 4) → fin = 09/06.
+  it('v2.0 / RG-GANTT-1702 — additif : 2 collabs 100 % font une charge 4 j en 2 j', () => {
+    const r = createTask(db, {
+      id: 't_2x',
+      name: 'Multi 100%',
+      start_date: '2026-06-08',
+      charge_jours: 4,
+      collaborator_ids: ['c1', 'c2'],
+      project_id: 'pA',
+    })
+    expect(r.task.end_date).toBe('2026-06-09')
+  })
+
+  // RG-GANTT-1702 — Multi-collab avec allocations différentes : Paul 100 %
+  // + Marie 50 % → capacité 1,5/jour. Charge 3 j → 2 jours (1,5 + 1,5 = 3).
+  it('v2.0 / RG-GANTT-1702 — additif : 100 % + 50 % → capacité 1,5/jour', () => {
+    // Vide les allocations auto-pop et pose 100 % et 50 %.
+    for (const a of listMemberAllocations(db, 'pA', 'c1')) {
+      deleteMemberAllocation(db, a.id)
+    }
+    for (const a of listMemberAllocations(db, 'pA', 'c2')) {
+      deleteMemberAllocation(db, a.id)
+    }
+    addMemberAllocation(db, {
+      project_id: 'pA',
+      collaborator_id: 'c1',
+      start_date: '2026-01-01',
+      end_date: '2026-12-31',
+      allocation_pct: 100,
+    })
+    addMemberAllocation(db, {
+      project_id: 'pA',
+      collaborator_id: 'c2',
+      start_date: '2026-01-01',
+      end_date: '2026-12-31',
+      allocation_pct: 50,
+    })
+    const r = createTask(db, {
+      id: 't_mix',
+      name: 'Mix 100/50',
+      start_date: '2026-06-08',
+      charge_jours: 3,
+      collaborator_ids: ['c1', 'c2'],
+      project_id: 'pA',
+    })
+    expect(r.task.end_date).toBe('2026-06-09')
+  })
+
+  // RG-GANTT-1703 — Update : on peut remplacer la liste de collabs.
+  it('v2.0 / RG-GANTT-1703 — updateTask : remplace atomiquement la liste', () => {
+    createTask(db, {
+      id: 't_swap',
+      name: 'Swap',
+      start_date: '2026-06-08',
+      charge_jours: 1,
+      collaborator_ids: ['c1'],
+      project_id: 'pA',
+    })
+    updateTask(db, 't_swap', { collaborator_ids: ['c1', 'c2'] })
+    expect(listTaskAssignments(db, 't_swap').sort()).toEqual(['c1', 'c2'])
+    updateTask(db, 't_swap', { collaborator_ids: [] })
+    expect(listTaskAssignments(db, 't_swap')).toEqual([])
+  })
+
+  // RG-GANTT-1704 — Cascade : suppression d'une tâche retire les affectations.
+  it('v2.0 / RG-GANTT-1704 — cascade suppression tâche : assignments effacés', () => {
+    createTask(db, {
+      id: 't_del',
+      name: 'À supprimer',
+      start_date: '2026-06-08',
+      charge_jours: 1,
+      collaborator_ids: ['c1', 'c2'],
+      project_id: 'pA',
+    })
+    deleteTask(db, 't_del')
+    expect(listTaskAssignments(db, 't_del')).toEqual([])
+  })
+
+  // RG-GANTT-1705 — Cascade : suppression d'un collab le retire de toutes ses tâches.
+  it('v2.0 / RG-GANTT-1705 — cascade suppression collab : retiré des tâches', () => {
+    createTask(db, {
+      id: 't_ca',
+      name: 'Avec c1+c2',
+      start_date: '2026-06-08',
+      charge_jours: 1,
+      collaborator_ids: ['c1', 'c2'],
+      project_id: 'pA',
+    })
+    deleteCollaborator(db, 'c2')
+    expect(listTaskAssignments(db, 't_ca')).toEqual(['c1'])
+  })
+
+  // RG-GANTT-1706 — Migration auto-pop : tasks.collaborator_id pré-F6 →
+  // ligne dans task_assignments au premier boot.
+  it('v2.0 / RG-GANTT-1706 — migration auto-pop depuis tasks.collaborator_id', async () => {
+    const Database = (await import('better-sqlite3')).default
+    const tmpFile = `/tmp/gantt-f6-migration-${Date.now()}.db`
+    const old = new Database(tmpFile)
+    old.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE collaborators (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        color TEXT NOT NULL DEFAULT '#3b82f6', position INTEGER NOT NULL
+      );
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, position INTEGER NOT NULL
+      );
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'task',
+        start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+        progress INTEGER NOT NULL DEFAULT 0,
+        collaborator_id TEXT, color TEXT, parent_id TEXT, predecessor_id TEXT,
+        predecessor_lag INTEGER NOT NULL DEFAULT 0,
+        priority INTEGER, not_before_date TEXT,
+        position INTEGER NOT NULL, project_id TEXT
+      );
+      INSERT INTO collaborators(id, name, color, position) VALUES ('c1','L','#3b82f6',0);
+      INSERT INTO projects(id, name, position) VALUES ('pA','A',0);
+      INSERT INTO tasks(id, name, kind, start_date, end_date, progress,
+                        collaborator_id, position, project_id, priority)
+        VALUES ('tOld', 'Old', 'task', '2026-06-08', '2026-06-08', 0, 'c1', 0, 'pA', 3);
+      INSERT INTO meta(key, value) VALUES ('version', '20');
+    `)
+    old.close()
+    const fresh = initDb(tmpFile)
+    expect(listTaskAssignments(fresh, 'tOld')).toEqual(['c1'])
+    fresh.close()
   })
 })

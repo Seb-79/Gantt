@@ -257,6 +257,11 @@ export const CreateTaskBody = z
     // signalé visuellement (bandeau + barre rouge) — pas rejeté.
     // Forcée à null pour les phases côté DAL.
     not_later_than_date: IsoDate.nullable().optional(),
+    // v2.0 / F6 — Multi-collab : liste d'ids de collaborateurs affectés.
+    // Si fourni, prend le pas sur `collaborator_id` (legacy mono-collab).
+    // Tableau vide = aucune affectation. Forcé à [] pour jalons et phases
+    // côté DAL.
+    collaborator_ids: z.array(NonEmptyId).optional(),
     // v2.0 — Charge en jours ouvrés (≥ 1). Source de vérité pour les activités.
     // Si fournie, prend le pas sur `end_date` (qui est dérivée). Forcée à null
     // pour les jalons et phases côté DAL.
@@ -288,6 +293,7 @@ export const UpdateTaskBody = z
     not_before_date: IsoDate.nullable().optional(), // v1.24 — SNET
     not_later_than_date: IsoDate.nullable().optional(), // v2.0 / F4 — FNLT (deadline non-bloquante)
     charge_jours: ChargeJours.optional(), // v2.0 — charge stockée (source de vérité)
+    collaborator_ids: z.array(NonEmptyId).optional(), // v2.0 / F6 — multi-collab
   })
   .refine((v) => Object.keys(v).length > 0, {
     message: 'au moins un champ doit être fourni',

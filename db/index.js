@@ -82,6 +82,12 @@ export function initDb(dbPath) {
   // d'auto-pop : c'est une donnée entièrement nouvelle saisie par l'utilisateur.
   ensureCollaboratorAbsencesTable(db)
 
+  // v2.0 / F6 — Crée la table `task_assignments` (multi-collab par tâche) et
+  // auto-peuple depuis tasks.collaborator_id existants. Le champ legacy
+  // reste alimenté en miroir (= 1er affecté par ordre alpha) pour ne pas
+  // casser les lecteurs externes.
+  ensureTaskAssignmentsTable(db)
+
   // Initialise la version à 0 si la ligne meta n'existe pas encore.
   db.prepare(
     `INSERT OR IGNORE INTO meta(key, value) VALUES ('version', '0')`,
@@ -662,6 +668,55 @@ function ensureCollaboratorAbsencesTable(db) {
 }
 
 /**
+ * v2.0 / F6 — Migration idempotente : crée la table `task_assignments`
+ * (multi-collab par activité) si elle n'existe pas, puis auto-peuple depuis
+ * `tasks.collaborator_id` pour ne pas casser les affectations existantes.
+ *
+ * Stratégie : pour chaque activité avec `collaborator_id != NULL` ET sans
+ * ligne correspondante dans `task_assignments`, on insère `(task_id, collab_id)`.
+ * `INSERT OR IGNORE` rend l'opération sûre à rejouer.
+ *
+ * Le champ legacy `tasks.collaborator_id` est conservé en lecture (alias =
+ * 1er affecté par ordre alpha) pour ne pas casser les clients qui le lisent
+ * encore (ex. exports anciens).
+ *
+ * @param {import('better-sqlite3').Database} db
+ */
+function ensureTaskAssignmentsTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_assignments (
+      task_id         TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      collaborator_id TEXT NOT NULL REFERENCES collaborators(id) ON DELETE CASCADE,
+      PRIMARY KEY (task_id, collaborator_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_assignments_collab
+      ON task_assignments(collaborator_id);
+  `)
+  // Auto-pop : on lit toutes les activités avec un collab non-null qui n'ont
+  // pas encore de ligne dans `task_assignments`.
+  const rows = db
+    .prepare(
+      `SELECT t.id, t.collaborator_id
+         FROM tasks t
+         WHERE t.kind = 'task'
+           AND t.collaborator_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM task_assignments a
+              WHERE a.task_id = t.id AND a.collaborator_id = t.collaborator_id
+           )`,
+    )
+    .all()
+  if (rows.length === 0) return
+  const ins = db.prepare(
+    `INSERT OR IGNORE INTO task_assignments(task_id, collaborator_id) VALUES (?, ?)`,
+  )
+  for (const r of rows) ins.run(r.id, r.collaborator_id)
+  console.log(
+    `[INIT] Migration v2.0 / F6 : ${rows.length} affectation(s) tâche↔collab migrée(s) vers task_assignments.`,
+  )
+}
+
+/**
  * v1.21 — Lit tous les prédécesseurs d'une tâche, triés par id pour un ordre
  * déterministe (utile pour les tests et l'affichage des flèches).
  *
@@ -891,6 +946,72 @@ function bumpVersion(db) {
  *   }>
  * }}
  */
+
+/**
+ * v1.21 — Joint les prédécesseurs depuis la table N:M et enrichit chaque
+ * tâche `tasks[i]` en place avec `predecessors[]` + alias rétro-compat
+ * `predecessor_id` / `predecessor_lag` (= 1er pred par id ASC).
+ * Extrait pour limiter la complexité cognitive de `getFullState`.
+ */
+function enrichTasksWithPredecessors(db, tasks, currentId) {
+  const predecessorsByTask = new Map()
+  if (currentId) {
+    const rows = db
+      .prepare(
+        `SELECT tp.task_id, tp.predecessor_id, tp.lag
+           FROM task_predecessors tp
+           JOIN tasks t ON t.id = tp.task_id
+           WHERE t.project_id = ?
+           ORDER BY tp.predecessor_id ASC`,
+      )
+      .all(currentId)
+    for (const r of rows) {
+      if (!predecessorsByTask.has(r.task_id)) {
+        predecessorsByTask.set(r.task_id, [])
+      }
+      predecessorsByTask
+        .get(r.task_id)
+        .push({ id: r.predecessor_id, lag: r.lag })
+    }
+  }
+  for (const t of tasks) {
+    const list = predecessorsByTask.get(t.id) || []
+    t.predecessors = list
+    t.predecessor_id = list[0]?.id ?? null
+    t.predecessor_lag = list[0]?.lag ?? 0
+  }
+}
+
+/**
+ * v2.0 / F6 — Joint les affectations multi-collab depuis `task_assignments`
+ * et enrichit chaque tâche en place avec `collaborators[]`. Tableau toujours
+ * présent (vide pour jalons/phases). Extrait pour limiter la complexité
+ * cognitive de `getFullState`.
+ */
+function enrichTasksWithAssignments(db, tasks, currentId) {
+  const assignmentsByTask = new Map()
+  if (currentId) {
+    const rows = db
+      .prepare(
+        `SELECT a.task_id, a.collaborator_id
+           FROM task_assignments a
+           JOIN tasks t ON t.id = a.task_id
+           WHERE t.project_id = ?
+           ORDER BY a.collaborator_id ASC`,
+      )
+      .all(currentId)
+    for (const r of rows) {
+      if (!assignmentsByTask.has(r.task_id)) {
+        assignmentsByTask.set(r.task_id, [])
+      }
+      assignmentsByTask.get(r.task_id).push({ id: r.collaborator_id })
+    }
+  }
+  for (const t of tasks) {
+    t.collaborators = assignmentsByTask.get(t.id) || []
+  }
+}
+
 export function getFullState(db, projectId) {
   const projects = db
     .prepare(
@@ -924,38 +1045,11 @@ export function getFullState(db, projectId) {
         )
         .all(currentId)
     : []
-  // v1.21 — Joint les prédécesseurs depuis la table N:M. On fait une seule
-  // requête sur le projet courant et on regroupe en mémoire pour éviter N+1.
-  const predecessorsByTask = new Map()
-  if (currentId) {
-    const rows = db
-      .prepare(
-        `SELECT tp.task_id, tp.predecessor_id, tp.lag
-           FROM task_predecessors tp
-           JOIN tasks t ON t.id = tp.task_id
-           WHERE t.project_id = ?
-           ORDER BY tp.predecessor_id ASC`,
-      )
-      .all(currentId)
-    for (const r of rows) {
-      if (!predecessorsByTask.has(r.task_id)) {
-        predecessorsByTask.set(r.task_id, [])
-      }
-      predecessorsByTask
-        .get(r.task_id)
-        .push({ id: r.predecessor_id, lag: r.lag })
-    }
-  }
-  // Attache `predecessors` à chaque tâche (tableau, jamais null/undefined).
-  // v1.21 — Pour la rétro-compatibilité des clients/tests v1.20-, on dérive
-  // également `predecessor_id` et `predecessor_lag` du 1er prédécesseur
-  // (ordre par id ASC, déterministe). Ces alias seront retirés à la v1.22.
-  for (const t of tasks) {
-    const list = predecessorsByTask.get(t.id) || []
-    t.predecessors = list
-    t.predecessor_id = list[0]?.id ?? null
-    t.predecessor_lag = list[0]?.lag ?? 0
-  }
+  // v2.0 / F6 — Enrichit les tâches avec leurs prédécesseurs et leurs
+  // affectations multi-collab. Extrait dans des helpers privés pour limiter
+  // la complexité cognitive de `getFullState` (sonarjs).
+  enrichTasksWithPredecessors(db, tasks, currentId)
+  enrichTasksWithAssignments(db, tasks, currentId)
   // v2.0 / F1 — Liste des collaborateurs membres du projet courant (utilisée
   // côté client pour filtrer la dropdown du TaskEditor et alimenter l'onglet
   // « Affectation projet »). Vide si aucun projet courant.
@@ -1570,6 +1664,168 @@ export function deleteAbsence(db, collaboratorId, date) {
     return { version, changed: true }
   })
   return tx()
+}
+
+// -----------------------------------------------------------------------------
+// v2.0 / F6 — TASK_ASSIGNMENTS (multi-collab par activité)
+// -----------------------------------------------------------------------------
+
+/**
+ * v2.0 / F6 — Liste les ids des collaborateurs affectés à une tâche, triés
+ * par id ASC pour un ordre déterministe (utilisé pour l'alias legacy
+ * `collaborator_id` = 1er affecté).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} taskId
+ * @returns {string[]}  Ids des collabs affectés.
+ */
+export function listTaskAssignments(db, taskId) {
+  return db
+    .prepare(
+      `SELECT collaborator_id AS id
+         FROM task_assignments
+         WHERE task_id = ?
+         ORDER BY collaborator_id ASC`,
+    )
+    .all(taskId)
+    .map((r) => r.id)
+}
+
+/**
+ * v2.0 / F6 — Remplace ATOMIQUEMENT la liste des affectations d'une tâche.
+ * Sécurise les invariants : ignore les collabs inexistants, déduplique, et
+ * appelle `ensureCollabIsMember` pour chaque collab (auto-heal de la
+ * membership + allocation 100 % par défaut si nécessaire).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} taskId
+ * @param {string[]} collabIds
+ * @param {string|null} projectId  Projet de la tâche (pour l'auto-heal).
+ */
+function setTaskAssignments(db, taskId, collabIds, projectId) {
+  db.prepare(`DELETE FROM task_assignments WHERE task_id = ?`).run(taskId)
+  if (!Array.isArray(collabIds) || collabIds.length === 0) return
+  const ins = db.prepare(
+    `INSERT OR IGNORE INTO task_assignments(task_id, collaborator_id) VALUES (?, ?)`,
+  )
+  const seen = new Set()
+  for (const cId of collabIds) {
+    if (!cId || typeof cId !== 'string') continue
+    if (seen.has(cId)) continue
+    seen.add(cId)
+    const exists = db
+      .prepare(`SELECT 1 AS x FROM collaborators WHERE id = ?`)
+      .get(cId)
+    if (!exists) continue // collab inconnu : on l'ignore silencieusement
+    // Auto-heal : assure la membership + une alloc 100 % par défaut.
+    ensureCollabIsMember(db, cId, projectId)
+    ins.run(taskId, cId)
+  }
+}
+
+/**
+ * v2.0 / F6 — Résout le tableau d'ids de collaborateurs depuis un payload
+ * Create/Update, en supportant les deux formats :
+ *   • Nouveau : `collaborator_ids: string[]` → utilisé tel quel.
+ *   • Legacy  : `collaborator_id: string|null` → converti en tableau (0 ou 1
+ *     élément). `null` → tableau vide (= retire toutes les affectations).
+ *
+ * Retourne `null` si AUCUN des deux champs n'est présent (= le caller ne
+ * veut pas toucher aux affectations — patch sans clé d'affectation).
+ *
+ * @param {object} input
+ * @returns {string[]|null}
+ */
+function resolveAssignmentsInput(input) {
+  if (Array.isArray(input.collaborator_ids)) {
+    return input.collaborator_ids.filter((x) => typeof x === 'string' && x)
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'collaborator_id')) {
+    return input.collaborator_id ? [input.collaborator_id] : []
+  }
+  return null
+}
+
+/**
+ * v2.0 / F6 — Persiste les affectations multi-collab d'une activité fraîchement
+ * créée, et réaligne le champ legacy `tasks.collaborator_id` sur le 1er
+ * affecté (ordre alpha). Factorisé pour limiter la complexité de `createTask`.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {object} input    Payload de création (cf. createTask).
+ * @param {string} projectId Projet de la tâche (pour l'auto-heal membership).
+ */
+/**
+ * v1.8 — Résout l'id de projet à utiliser pour une tâche fraîchement créée :
+ *   • Si fourni dans le payload → utilisé tel quel.
+ *   • Sinon → 1er projet par position.
+ *   • Sinon → crée le projet par défaut à la volée et retourne son id.
+ *
+ * Extrait dans son propre helper pour limiter la complexité cognitive de
+ * `createTask` (sonarjs).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string|undefined} explicit Id explicite (input.project_id), peut être undefined.
+ * @returns {string}
+ */
+function resolveTaskProjectId(db, explicit) {
+  if (explicit) return explicit
+  const first = db
+    .prepare(`SELECT id FROM projects ORDER BY position ASC, id ASC LIMIT 1`)
+    .get()
+  if (first) return first.id
+  db.prepare(`INSERT INTO projects(id, name, position) VALUES (?, ?, 0)`).run(
+    DEFAULT_PROJECT_ID,
+    DEFAULT_PROJECT_NAME,
+  )
+  return DEFAULT_PROJECT_ID
+}
+
+function persistAssignmentsForCreate(db, input, projectId) {
+  const assignList = resolveAssignmentsInput(input)
+  if (assignList !== null) {
+    setTaskAssignments(db, input.id, assignList, projectId)
+    // Réaligne le legacy collaborator_id sur le 1er affecté (ordre alpha).
+    const sorted = [...assignList].sort()
+    const firstCollab = sorted[0] ?? null
+    db.prepare(`UPDATE tasks SET collaborator_id = ? WHERE id = ?`).run(
+      firstCollab,
+      input.id,
+    )
+  } else if (input.collaborator_id) {
+    // Compat : aucun nouveau champ mais collaborator_id fourni → 1 entrée.
+    setTaskAssignments(db, input.id, [input.collaborator_id], projectId)
+  }
+}
+
+/**
+ * v2.0 / F6 — Synchronise les affectations d'une tâche updatée depuis le
+ * patch reçu. Politique :
+ *   • Jalon / phase → vide toujours (cohérent avec collaborator_id=null).
+ *   • Activité avec collaborator_ids[] OU collaborator_id dans le patch →
+ *     remplacement atomique + réalignement du legacy collaborator_id.
+ *   • Sinon (patch sans clé d'affectation) → no-op (liste actuelle préservée).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} id     Id de la tâche.
+ * @param {object} next   Tâche après application du patch (kind, project_id).
+ * @param {object} patch  Le patch brut (pour détecter quelles clés ont été fournies).
+ */
+function persistAssignmentsForUpdate(db, id, next, patch) {
+  if (next.kind !== 'task') {
+    setTaskAssignments(db, id, [], next.project_id)
+    return
+  }
+  const assignList = resolveAssignmentsInput(patch)
+  if (assignList === null) return // patch sans clé d'affectation → no-op
+  setTaskAssignments(db, id, assignList, next.project_id)
+  // Réaligne `collaborator_id` legacy sur le 1er affecté (ordre alpha).
+  const sorted = [...assignList].sort()
+  const firstCollab = sorted[0] ?? null
+  db.prepare(`UPDATE tasks SET collaborator_id = ? WHERE id = ?`).run(
+    firstCollab,
+    id,
+  )
 }
 
 // -----------------------------------------------------------------------------
@@ -2237,22 +2493,41 @@ function addWorkingDaysWithAllocationServer(
   startIso,
   charge,
   projectId,
-  collabId,
+  collabIdOrIds,
 ) {
-  if (!collabId || !projectId) return addWorkingDaysServer(startIso, charge)
-  const allocs = listAllocationsServer(db, projectId, collabId)
-  if (allocs.length === 0) return addWorkingDaysServer(startIso, charge)
-  // v2.0 / F3 — Map absences cross-projet pour pondération multiplicative.
-  const absences = loadAbsencesMap(db, collabId)
+  // v2.0 / F6 — Normalise l'entrée en tableau (rétro-compat : un string seul
+  // est accepté). Tableau vide ou projet absent → fallback F0.
+  let collabIds = []
+  if (Array.isArray(collabIdOrIds)) collabIds = collabIdOrIds.filter(Boolean)
+  else if (collabIdOrIds) collabIds = [collabIdOrIds]
+  if (collabIds.length === 0 || !projectId)
+    return addWorkingDaysServer(startIso, charge)
+  // Charge tous les contextes : allocations par collab + absences par collab.
+  // (Évite N+1 dans la boucle principale.)
+  const collabContexts = []
+  for (const cId of collabIds) {
+    const allocs = listAllocationsServer(db, projectId, cId)
+    if (allocs.length === 0) continue // collab sans allocation : ignoré
+    collabContexts.push({
+      cId,
+      allocs,
+      absences: loadAbsencesMap(db, cId),
+    })
+  }
+  if (collabContexts.length === 0) return addWorkingDaysServer(startIso, charge)
   const needed = Math.max(1, charge)
   let consumed = 0
   let cur = startIso
   let lastWorked = startIso
   const maxScan = Math.max(needed * 30, 10000)
   for (let i = 0; i < maxScan; i++) {
-    const effective = effectiveCapacityServer(cur, allocs, absences)
-    if (effective > 0) {
-      consumed += effective
+    // Σ contributions de tous les collabs affectés pour le jour `cur`.
+    let dayCapacity = 0
+    for (const ctx of collabContexts) {
+      dayCapacity += effectiveCapacityServer(cur, ctx.allocs, ctx.absences)
+    }
+    if (dayCapacity > 0) {
+      consumed += dayCapacity
       lastWorked = cur
       if (consumed >= needed - 1e-9) return lastWorked
     }
@@ -2294,10 +2569,19 @@ function resolveChargeAndEnd(next, patch, db) {
     // écrasée juste après par la synthèse).
     return { charge_jours: null, end_date: next.end_date || next.start_date }
   }
-  // v2.0 / F2 — Helper local : calcule la fin d'une activité depuis sa charge
-  // en consommant la capacité quotidienne du collab (allocation %). Si `db`
-  // n'est pas fourni (cas exceptionnel) ou si la tâche n'a pas de collab,
-  // on retombe sur l'ancien comportement F0.
+  // v2.0 / F2/F6 — Helper local : calcule la fin d'une activité depuis sa
+  // charge en consommant la capacité quotidienne SOMMÉE de tous les collabs
+  // affectés (multi-collab additif). Si `db` n'est pas fourni (cas
+  // exceptionnel) ou si la tâche n'a aucun collab, on retombe sur F0.
+  //
+  // Source de vérité : `next.collaborator_ids` si fourni (multi-collab), sinon
+  // fallback sur `next.collaborator_id` (legacy mono-collab).
+  let collabIdsForCalc = []
+  if (Array.isArray(next.collaborator_ids)) {
+    collabIdsForCalc = next.collaborator_ids
+  } else if (next.collaborator_id) {
+    collabIdsForCalc = [next.collaborator_id]
+  }
   const endFromCharge = (start, c) =>
     db
       ? addWorkingDaysWithAllocationServer(
@@ -2305,7 +2589,7 @@ function resolveChargeAndEnd(next, patch, db) {
           start,
           c,
           next.project_id,
-          next.collaborator_id,
+          collabIdsForCalc,
         )
       : addWorkingDaysServer(start, c)
   const hasExplicitCharge =
@@ -2493,31 +2777,27 @@ export function createTask(db, input) {
     const endDate =
       kind === 'milestone' ? startDate : input.end_date || startDate
     const position = nextTaskPosition(db)
-    // v1.8 — Résout le projet de rattachement : id fourni > premier projet.
-    // Si la base ne contient encore aucun projet (cas d'un boot très tôt
-    // ou de tests qui créent une tâche sans seed), on crée à la volée le
-    // projet par défaut. Comportement cohérent avec la migration v1.8.
-    let projectId = input.project_id
-    if (!projectId) {
-      const first = db
-        .prepare(
-          `SELECT id FROM projects ORDER BY position ASC, id ASC LIMIT 1`,
-        )
-        .get()
-      if (first) {
-        projectId = first.id
-      } else {
-        db.prepare(
-          `INSERT INTO projects(id, name, position) VALUES (?, ?, 0)`,
-        ).run(DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME)
-        projectId = DEFAULT_PROJECT_ID
+    // v1.8 — Résolution du projet de rattachement extraite dans un helper
+    // pour limiter la complexité cognitive de `createTask` (sonarjs).
+    const projectId = resolveTaskProjectId(db, input.project_id)
+    // v2.0 / F6 — Résout la liste multi-collab depuis le payload. Priorité au
+    // tableau `collaborator_ids` (nouveau format), fallback sur l'unique
+    // `collaborator_id` (legacy). Ne s'applique qu'aux activités.
+    let draftCollabIds = []
+    if (kind === 'task') {
+      const fromPatch = resolveAssignmentsInput(input)
+      if (fromPatch !== null) {
+        draftCollabIds = fromPatch
+      } else if (input.collaborator_id) {
+        draftCollabIds = [input.collaborator_id]
       }
     }
-    // v2.0 / F1 — Garde : interdit l'affectation d'un collab non membre du
-    // projet de la tâche (RG-GANTT-1200). Ne s'applique qu'aux activités —
-    // jalons et phases n'ont jamais de collab.
+    // v2.0 / F1 — Garde : interdit l'affectation de chaque collab non membre
+    // du projet (RG-GANTT-1200). Auto-heal côté DAL — l'UI filtre en amont.
     if (kind === 'task') {
-      ensureCollabIsMember(db, input.collaborator_id ?? null, projectId)
+      for (const cId of draftCollabIds) {
+        ensureCollabIsMember(db, cId, projectId)
+      }
     }
     // v1.24 — SNET : on applique la contrainte « ne doit pas démarrer avant le »
     // en dernière étape, après que la cascade prédécesseur a déjà fixé
@@ -2525,9 +2805,9 @@ export function createTask(db, input) {
     // v2.0 — La charge devient la source de vérité : on résout d'abord
     // {charge_jours, end_date} via resolveChargeAndEnd, PUIS on applique SNET
     // qui pourra repousser start (et l'end suivra en préservant la charge).
-    // v2.0 / F2 — On passe `project_id` et `collaborator_id` dans le `next`
-    // virtuel pour que resolveChargeAndEnd consomme la capacité allouée
-    // (allocations %) plutôt que les seuls jours ouvrés bruts.
+    // v2.0 / F2/F6 — On passe `project_id` ET la liste multi-collab dans le
+    // `next` virtuel pour que resolveChargeAndEnd consomme la capacité
+    // sommée plutôt que les seuls jours ouvrés bruts.
     const resolved = resolveChargeAndEnd(
       {
         kind,
@@ -2537,6 +2817,7 @@ export function createTask(db, input) {
         project_id: projectId,
         collaborator_id:
           kind === 'task' ? (input.collaborator_id ?? null) : null,
+        collaborator_ids: draftCollabIds,
       },
       input,
       db,
@@ -2599,6 +2880,12 @@ export function createTask(db, input) {
     if (predecessors && predecessors.length > 0) {
       setPredecessorsForTask(db, input.id, predecessors)
     }
+    // v2.0 / F6 — Persiste les affectations multi-collab + réaligne le
+    // champ legacy. Logique factorisée dans persistAssignmentsForCreate
+    // pour limiter la complexité cognitive de `createTask` (sonarjs).
+    if (kind === 'task') {
+      persistAssignmentsForCreate(db, input, projectId)
+    }
     // v1.6 — Si on vient d'ajouter une feuille (task / milestone) à une
     // phase, il faut recalculer les dates de cette phase et de ses ancêtres.
     recomputeAncestorPhases(db, input.id)
@@ -2610,6 +2897,9 @@ export function createTask(db, input) {
     task.predecessors = preds
     task.predecessor_id = preds[0]?.id ?? null
     task.predecessor_lag = preds[0]?.lag ?? 0
+    // v2.0 / F6 — Enrichit avec la liste multi-collab (alias legacy déjà
+    // posé en base juste avant via l'UPDATE).
+    task.collaborators = listTaskAssignments(db, input.id).map((id) => ({ id }))
     return { version, task }
   })
   return tx()
@@ -2676,11 +2966,24 @@ export function updateTask(db, id, patch) {
       next.not_later_than_date,
       next.kind,
     )
-    // v2.0 / F1 — Garde : interdit l'affectation d'un collab non membre du
-    // projet de la tâche (RG-GANTT-1200). Ne s'applique qu'aux activités —
-    // jalons et phases viennent d'être forcés à `collaborator_id = null`.
+    // v2.0 / F6 — Résout la liste multi-collab pour ce patch :
+    //   • Si le patch porte un nouveau jeu (collaborator_ids[] ou collaborator_id)
+    //     → on utilise cette nouvelle liste,
+    //   • Sinon → on lit les assignments actuels (qui ne bougent pas).
+    let collabIdsForCalc
+    const patchAssigns = resolveAssignmentsInput(patch)
+    if (patchAssigns !== null) {
+      collabIdsForCalc = patchAssigns
+    } else {
+      collabIdsForCalc = listTaskAssignments(db, id)
+    }
+    next.collaborator_ids = next.kind === 'task' ? collabIdsForCalc : []
+    // v2.0 / F1 — Garde : interdit l'affectation de chaque collab non membre
+    // du projet (RG-GANTT-1200). Auto-heal côté DAL.
     if (next.kind === 'task') {
-      ensureCollabIsMember(db, next.collaborator_id, next.project_id)
+      for (const cId of next.collaborator_ids) {
+        ensureCollabIsMember(db, cId, next.project_id)
+      }
     }
     // v2.0 — Résolution charge_jours / end_date AVANT l'enforcement SNET pour
     // que ce dernier puisse repousser start tout en préservant la nouvelle
@@ -2688,8 +2991,8 @@ export function updateTask(db, id, patch) {
     //   • charge_jours explicite → end = start + charge,
     //   • end_date explicite (drag bord droit) → charge back-dérivée,
     //   • sinon → charge existante conservée, end recalculée depuis start.
-    // v2.0 / F2 — `db` est transmis pour que le recalcul consomme la
-    // capacité allouée du collab (allocations %) jour par jour.
+    // v2.0 / F2/F6 — `db` + `next.collaborator_ids` permettent au recalcul
+    // de consommer la capacité SOMMÉE des collabs jour par jour.
     const resolved = resolveChargeAndEnd(next, patch, db)
     next.charge_jours = resolved.charge_jours
     next.end_date = resolved.end_date
@@ -2721,6 +3024,10 @@ export function updateTask(db, id, patch) {
       next.charge_jours,
       id,
     )
+    // v2.0 / F6 — Synchronise les affectations multi-collab depuis le patch.
+    // Politique factorisée dans `persistAssignmentsForUpdate` pour limiter la
+    // complexité cognitive de `updateTask` (sonarjs).
+    persistAssignmentsForUpdate(db, id, next, patch)
     // v1.6 — Si la tâche modifiée est elle-même une phase, on recalcule ses
     // propres dates (au cas où des enfants ont été déplacés). Et dans tous
     // les cas, on remonte aux ancêtres pour propager.

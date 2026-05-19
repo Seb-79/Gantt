@@ -32,6 +32,7 @@ import {
   effectiveTaskColor,
   isNonWorkingDay,
   maxIso,
+  taskCollabIds,
   workingDaysBetween,
 } from '../lib/utils'
 import PredecessorPicker, { type PredecessorEntry } from './PredecessorPicker'
@@ -104,7 +105,14 @@ export default function TaskEditor({
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [progress, setProgress] = useState(0)
-  const [collabId, setCollabId] = useState<string>('')
+  /** v2.0 / F6 — Liste d'ids de collaborateurs affectés (multi-collab).
+   *  Source de vérité = `collaborators[]` côté Task ; fallback sur l'alias
+   *  legacy `collaborator_id` pour les tâches d'avant F6. */
+  const [collabIds, setCollabIds] = useState<string[]>([])
+  /** v2.0 / F6 — Id en cours de sélection dans la dropdown d'ajout (vide tant
+   *  qu'aucun nouveau collab n'est choisi). Distinct de `collabIds` qui est
+   *  la liste actuellement affectée. */
+  const [picked, setPicked] = useState<string>('')
   const [parentId, setParentId] = useState<string>('')
   /** v1.22 — Liste multi-prédécesseurs (1 entrée = 1 lien avec son lag).
    *  Remplace l'ancien couple `predecessorId` / `lag` (mono-pred). La date de
@@ -154,7 +162,10 @@ export default function TaskEditor({
     setStartDate(initStart)
     setEndDate(initEnd)
     setProgress(src.progress ?? 0)
-    setCollabId(src.collaborator_id || '')
+    // v2.0 / F6 — Init de la liste multi-collab via helper unifié
+    // (priorité `collaborators[]`, fallback `collaborator_id` legacy).
+    setCollabIds(taskCollabIds(src))
+    setPicked('')
     setParentId(src.parent_id || '')
     // v1.22 — Liste de prédécesseurs : privilégie le nouveau format
     // `predecessors[]` ; retombe sur l'alias mono-pred `predecessor_id` /
@@ -221,10 +232,15 @@ export default function TaskEditor({
    * @returns      Date de fin YYYY-MM-DD.
    */
   function endFromCharge(start: string, c: number): string {
-    if (collabId && projectId && memberAllocations) {
+    if (collabIds.length > 0 && projectId && memberAllocations) {
+      // v2.0 / F6 — Capacité quotidienne = Σ contributions des collabs
+      // affectés (additif uniforme). Le 1er collab du tableau est utilisé
+      // comme `collaboratorId` pour rétro-compat ; la liste complète passe
+      // par `collaboratorIds` (consommée par computeEndFromCharge).
       return computeEndFromCharge(start, c, {
         projectId,
-        collaboratorId: collabId,
+        collaboratorId: collabIds[0],
+        collaboratorIds: collabIds,
         allocations: memberAllocations,
         absences,
       })
@@ -325,22 +341,42 @@ export default function TaskEditor({
   const eligibleCollaborators = useMemo(() => {
     if (!memberIds) return collaborators
     const allowed = new Set(memberIds)
-    if (collabId) allowed.add(collabId)
+    // v2.0 / F6 — On conserve aussi tous les collabs DÉJÀ affectés à la tâche
+    // s'ils ne sont plus membres (ex. retirés du projet), pour qu'ils restent
+    // visibles + retirables dans l'UI.
+    for (const cId of collabIds) allowed.add(cId)
     return collaborators.filter((c) => allowed.has(c.id))
-  }, [collaborators, memberIds, collabId])
+  }, [collaborators, memberIds, collabIds])
+
+  /**
+   * v2.0 / F6 — Retire un collab de la liste actuelle. Extrait pour éviter
+   * de nester une arrow function dans le `.map()` du rendu (sonarjs).
+   */
+  function removeCollab(cId: string) {
+    setCollabIds((ids) => ids.filter((x) => x !== cId))
+  }
+
+  /**
+   * v2.0 / F6 — Sous-liste des collaborateurs proposés dans la dropdown
+   * d'AJOUT : membres éligibles non encore affectés à la tâche.
+   */
+  const addableCollaborators = useMemo(() => {
+    const already = new Set(collabIds)
+    return eligibleCollaborators.filter((c) => !already.has(c.id))
+  }, [eligibleCollaborators, collabIds])
 
   /**
    * Couleur "proposée par défaut" pour le picker quand l'utilisateur n'a
-   * pas défini de couleur custom. = couleur du collab si présent, sinon
-   * couleur grise par défaut.
+   * pas défini de couleur custom. = couleur du 1er collab affecté (ordre
+   * du tableau = ordre d'ajout) si présent, sinon couleur grise par défaut.
    */
   const defaultColor = useMemo(() => {
-    if (collabId) {
-      const c = collaborators.find((x) => x.id === collabId)
+    if (collabIds.length > 0) {
+      const c = collaborators.find((x) => x.id === collabIds[0])
       if (c) return c.color
     }
     return DEFAULT_TASK_COLOR
-  }, [collabId, collaborators])
+  }, [collabIds, collaborators])
 
   /**
    * v1.22 — Date minimale autorisée pour `start_date` = `MAX(pred.end + lag)`
@@ -423,7 +459,16 @@ export default function TaskEditor({
         // v1.6 — Une phase n'a ni collaborateur ni prédécesseur (forcés à null
         // côté DAL aussi, mais on doublonne ici pour ne pas envoyer de bruit).
         // v1.24 — Règle J3 : un jalon n'a pas non plus de collaborateur.
-        collaborator_id: kind === 'task' ? collabId || null : null,
+        // v2.0 / F6 — Champ legacy alimenté avec le 1er collab affecté
+        // (ordre alpha) pour rétro-compat. Le serveur fait pareil de son côté.
+        collaborator_id:
+          kind === 'task' && collabIds.length > 0
+            ? [...collabIds].sort()[0]
+            : null,
+        // v2.0 / F6 — Nouveau format multi-collab. Tableau toujours envoyé
+        // pour qu'un patch puisse vider l'affectation (sinon le DAL ne saurait
+        // pas distinguer « patch sans clé » vs « patch qui vide »).
+        collaborator_ids: kind === 'task' ? collabIds : [],
         parent_id: parentId || null,
         // v1.22 — Liste multi-prédécesseurs (nouveau format). Phase → vide.
         predecessors: kind === 'phase' ? [] : predecessorsList,
@@ -596,34 +641,70 @@ export default function TaskEditor({
           </label>
         </div>
 
-        {/* Collaborateur — masqué pour les phases ET les jalons (règle J3 v1.24 :
+        {/* Collaborateurs — masqué pour les phases ET les jalons (règle J3 v1.24 :
             seules les activités sont affectées à un collaborateur ; un jalon est
-            un point de repère ponctuel, une phase est une synthèse). */}
+            un point de repère ponctuel, une phase est une synthèse).
+            v2.0 / F6 — Multi-affectation : on affiche les collabs déjà cochés
+            sous forme de chips, et une dropdown permet d'en ajouter un de
+            plus. La capacité du jour est sommée additivement (Q12a). */}
         {kind === 'task' && (
-          <label className="block text-sm">
+          <div className="block text-sm">
             <span className="text-slate-600">
-              Collaborateur
+              Collaborateurs
               {memberIds && (
                 <span
                   className="ml-1 text-xs text-slate-400"
-                  title="Seuls les membres du projet sont proposés. Pour ajouter quelqu’un, passez par l’onglet « Affectation »."
+                  title="Seuls les membres du projet sont proposés. Plusieurs collaborateurs sont autorisés ; la durée prend en compte la somme de leurs capacités."
                 >
-                  (membres du projet)
+                  (multi — membres du projet)
                 </span>
               )}
             </span>
-            <select
-              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
-              value={collabId}
-              onChange={(e) => setCollabId(e.target.value)}
-            >
-              <option value="">— aucun —</option>
-              {eligibleCollaborators.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
+            {/* Chips des collabs actuellement affectés (clic ✕ = retire). */}
+            {collabIds.length > 0 && (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {collabIds.map((cId) => (
+                  <CollabChip
+                    key={cId}
+                    cId={cId}
+                    collaborators={collaborators}
+                    onRemove={removeCollab}
+                  />
+                ))}
+              </div>
+            )}
+            {/* Dropdown d'ajout (filtre les déjà affectés). Bouton "+" valide. */}
+            {addableCollaborators.length > 0 && (
+              <div className="mt-1 flex gap-1">
+                <select
+                  className="flex-1 block border border-slate-300 rounded px-2 py-1.5"
+                  value={picked}
+                  onChange={(e) => setPicked(e.target.value)}
+                >
+                  <option value="">— ajouter —</option>
+                  {addableCollaborators.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!picked) return
+                    setCollabIds((ids) =>
+                      ids.includes(picked) ? ids : [...ids, picked],
+                    )
+                    setPicked('')
+                  }}
+                  disabled={!picked}
+                  className="px-2 rounded bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed"
+                  title="Ajouter ce collaborateur à la tâche"
+                >
+                  +
+                </button>
+              </div>
+            )}
             {/* v2.0 / F1 — Info-bulle quand la liste est vide : oriente
                 l'utilisateur vers l'onglet d'affectation pour débloquer. */}
             {memberIds && eligibleCollaborators.length === 0 && (
@@ -632,7 +713,7 @@ export default function TaskEditor({
                 l’onglet « Affectation » pour en ajouter.
               </p>
             )}
-          </label>
+          </div>
         )}
 
         <label className="block text-sm">
@@ -786,7 +867,9 @@ export default function TaskEditor({
                     start_date: '',
                     end_date: '',
                     progress: 0,
-                    collaborator_id: collabId || null,
+                    // v2.0 / F6 — 1er collab affecté (ordre d'ajout) pour
+                    // résoudre la couleur effective. Cohérent avec le legacy.
+                    collaborator_id: collabIds[0] || null,
                     color: null,
                     parent_id: null,
                     predecessor_id: null,
@@ -882,5 +965,47 @@ export default function TaskEditor({
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * v2.0 / F6 — Chip d'un collaborateur affecté à une tâche, avec un bouton ✕
+ * pour le retirer. Extrait dans son propre composant pour limiter
+ * l'imbrication d'arrow functions dans le rendu (sonarjs/no-nested-functions).
+ *
+ * @param cId           Id du collaborateur.
+ * @param collaborators Liste complète pour résoudre le nom + la couleur.
+ * @param onRemove      Callback de retrait (le parent met à jour la liste).
+ */
+function CollabChip({
+  cId,
+  collaborators,
+  onRemove,
+}: {
+  cId: string
+  collaborators: Collaborator[]
+  onRemove: (cId: string) => void
+}) {
+  const c = collaborators.find((x) => x.id === cId)
+  const label = c ? c.name : cId
+  const color = c?.color || '#94a3b8'
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 border border-slate-300 pl-1 pr-1 py-0.5 text-xs">
+      <span
+        className="inline-block w-2.5 h-2.5 rounded-full"
+        style={{ backgroundColor: color }}
+        aria-hidden
+      />
+      <span className="font-medium">{label}</span>
+      <button
+        type="button"
+        className="ml-0.5 text-slate-500 hover:text-red-600"
+        onClick={() => onRemove(cId)}
+        title="Retirer ce collaborateur"
+        aria-label={`Retirer ${label}`}
+      >
+        ✕
+      </button>
+    </span>
   )
 }

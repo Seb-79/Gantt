@@ -1,8 +1,8 @@
 # Règles de gestion — Application Gantt
 
-**Version applicative couverte : v2.0 (F0 — charge stockée + F1 — memberships + F2 — allocations % + F3 — absences + F4 — FNLT + F5 — plan de charge global)**
+**Version applicative couverte : v2.0 (F0 + F1 + F2 + F3 + F4 + F5 + F6 — multi-collaborateurs)**
 **Date de dernière mise à jour : 2026-05-19**
-**Couverture de test : 148 / 148 (100 %)**
+**Couverture de test : 156 / 156 (100 %)**
 
 Ce document est le **référentiel vivant** des règles de gestion métier de
 l'application. Chaque règle porte un identifiant stable de la forme
@@ -1215,6 +1215,78 @@ Route fetchée à la demande au passage en mode global.
 
 ---
 
+## Famille 17 — Multi-collaborateurs (v2.0 / F6)
+
+L'étape 2 du plan v2.0 : une activité peut être affectée à N
+collaborateurs simultanément. La **capacité quotidienne** est la
+**somme** des contributions de chaque collab affecté (Q12a : additif
+uniforme). Chacun voit sa propre part dans son plan de charge.
+
+### RG-GANTT-1700
+
+Une activité peut avoir 0..N collaborateurs affectés via le tableau
+`collaborator_ids[]` (POST/PATCH). Le champ legacy `collaborator_id`
+reste alimenté avec le 1er affecté (ordre alpha) en lecture pour ne
+pas casser les clients qui le lisent encore.
+
+**Tests :** `db/index.test.js` → « createTask avec collaborator_ids[] :
+N collabs persistés ».
+
+### RG-GANTT-1701
+
+Rétro-compat : `collaborator_id` (legacy mono-collab) crée toujours
+exactement une entrée dans `task_assignments`. Les bases / clients
+d'avant F6 continuent de fonctionner sans modification.
+
+**Tests :** `db/index.test.js` → « createTask avec collaborator_id legacy ».
+
+### RG-GANTT-1702
+
+**Additif uniforme** : la capacité du jour est la somme des
+contributions individuelles (pct × (1−absence) par collab). Exemples :
+
+- 2 collabs à 100 % chacun → capacité 2/jour → une charge de 4 j
+  se fait en 2 j.
+- 1 collab 100 % + 1 collab 50 % → capacité 1,5/jour → 3 j en 2 j.
+
+**Tests :** `db/index.test.js` → « 2 collabs 100 % font une charge 4 j en 2 j » ;
+« 100 % + 50 % → capacité 1,5/jour ».
+
+### RG-GANTT-1703
+
+`updateTask` remplace atomiquement la liste de collaborateurs depuis
+`patch.collaborator_ids[]`. Un tableau vide = retire toutes les
+affectations (cohérent avec `collaborator_id: null` legacy).
+
+**Tests :** `db/index.test.js` → « updateTask : remplace atomiquement la liste ».
+
+### RG-GANTT-1704
+
+La suppression d'une tâche retire en cascade toutes ses affectations
+(`task_assignments.task_id ON DELETE CASCADE`).
+
+**Tests :** `db/index.test.js` → « cascade suppression tâche : assignments effacés ».
+
+### RG-GANTT-1705
+
+La suppression d'un collaborateur le retire automatiquement de toutes
+les tâches auxquelles il était affecté (`task_assignments.collaborator_id
+ON DELETE CASCADE`). Les tâches restantes conservent leurs autres
+collaborateurs.
+
+**Tests :** `db/index.test.js` → « cascade suppression collab : retiré des tâches ».
+
+### RG-GANTT-1706
+
+Migration auto-pop v2.0/F6 : pour chaque activité existante avec
+`tasks.collaborator_id` non-null, une ligne `(task_id, collaborator_id)`
+est créée dans `task_assignments` au premier boot v2.0/F6. Les
+affectations existantes sont ainsi préservées sans intervention.
+
+**Tests :** `db/index.test.js` → « migration auto-pop depuis tasks.collaborator_id ».
+
+---
+
 ## Synthèse de couverture
 
 | Famille                       |  Règles |            Couverture |
@@ -1236,5 +1308,6 @@ Route fetchée à la demande au passage en mode global.
 | 14 — Absences (v2.0/F3)       |       7 |                 7 / 7 |
 | 15 — FNLT (v2.0/F4)           |       7 |                 7 / 7 |
 | 16 — Plan de charge (v2.0/F5) |       7 |                 7 / 7 |
-| 17 — Charge stockée (v2.0/F0) |       5 |                 5 / 5 |
-| **Total**                     | **135** | **135 / 135 (100 %)** |
+| 17 — Multi-collab (v2.0/F6)   |       7 |                 7 / 7 |
+| 18 — Charge stockée (v2.0/F0) |       5 |                 5 / 5 |
+| **Total**                     | **142** | **142 / 142 (100 %)** |

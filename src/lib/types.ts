@@ -50,8 +50,19 @@ export interface Task {
   end_date: string
   /** Avancement 0..100 (en %). */
   progress: number
-  /** Collaborateur responsable (null si non affectée). */
+  /** Collaborateur responsable (null si non affectée).
+   *  v2.0 / F6 — Reste alimenté comme alias rétro-compat (= 1er affecté par
+   *  ordre alpha sur `collaborators[]`). Pour le multi-collab, lire
+   *  `collaborators[]` directement. */
   collaborator_id: string | null
+  /** v2.0 / F6 — Liste des collaborateurs affectés (multi-collab).
+   *  Tableau toujours présent (vide pour les jalons et les phases).
+   *  Source de vérité pour le moteur de calcul de fin et le plan de charge. */
+  collaborators?: { id: string }[]
+  /** v2.0 / F6 — Tableau d'ids envoyé au serveur lors d'un save (POST/PATCH
+   *  Task). Côté lecture (GET /api/state), `collaborators[]` est la source.
+   *  Conservé optionnel pour les fixtures de tests qui ne le posent pas. */
+  collaborator_ids?: string[]
   /** Couleur custom de la barre (sinon : couleur du collab, sinon défaut). */
   color: string | null
   /** Tâche parent (regroupement en phases). */

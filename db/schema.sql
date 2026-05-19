@@ -210,3 +210,26 @@ CREATE TABLE IF NOT EXISTS collaborator_absences (
 );
 CREATE INDEX IF NOT EXISTS idx_collaborator_absences_date
   ON collaborator_absences(date);
+
+-- =============================================================================
+-- v2.0 / F6 — Multi-affectations : N collaborateurs par activité.
+-- Remplace progressivement la colonne legacy `tasks.collaborator_id` (qui est
+-- conservée pour rétro-compat et reste alimentée avec le 1er collab par ordre
+-- d'id, mais le DAL/UI lit désormais cette table comme source de vérité).
+--
+-- Sémantique multi-collab (validé Q12a) : **additive uniforme**. Chaque jour,
+-- chaque collab affecté contribue `pct/100 × (1−absence)`. La capacité du
+-- jour = Σ contributions. La fin = dernier jour où la charge cumulée atteint
+-- la cible.
+--
+-- Cascades :
+--   • Suppression d'une tâche → ses affectations sont retirées.
+--   • Suppression d'un collaborateur → il est retiré de toutes les tâches.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS task_assignments (
+  task_id         TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  collaborator_id TEXT NOT NULL REFERENCES collaborators(id) ON DELETE CASCADE,
+  PRIMARY KEY (task_id, collaborator_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_assignments_collab
+  ON task_assignments(collaborator_id);

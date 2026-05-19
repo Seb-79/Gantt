@@ -914,16 +914,28 @@ function rightEdgeX(task: Task, windowStart: string, dayWidth: number): number {
 }
 
 /**
- * v1.23 — Petit handle bleu rendu à droite d'une barre `task` / `milestone`
- * pour démarrer un drag-to-link. Visible uniquement si `onCreateLink` est
- * fourni au composant parent. Au mousedown, calcule les coordonnées du
- * point d'origine (dans le repère du panneau scrollable, incluant le
- * scroll horizontal) et appelle `startLink`.
+ * v1.23 / v2.1 — Petit handle bleu rendu à droite d'une barre `task` /
+ * `milestone` pour démarrer un drag-to-link. Visible uniquement si
+ * `onCreateLink` est fourni au composant parent. Au mousedown, calcule les
+ * coordonnées du point d'origine (dans le repère du panneau scrollable,
+ * incluant le scroll horizontal) et appelle `startLink`.
  *
- * Le handle s'affiche en permanence (8 px de diamètre, bleu indigo).
- * Il vit dans la div ligne (en `position: relative`), positionné en
- * absolute selon `x` et `y`. `pointer-events:auto` malgré son z-index
- * élevé pour qu'on puisse l'attraper.
+ * v2.1 / F3 — Le handle est désormais ENTIÈREMENT HORS de la barre (6 px
+ * de marge claire avec le bord droit) pour éviter le conflit avec la zone
+ * de resize-end (8 derniers px de la barre, gérés par `handleBarMouseDown`).
+ * Avant v2.1 : le handle était centré sur le bord droit (chevauchement de
+ * 4 px) → l'utilisateur ratait régulièrement la fonction visée.
+ *
+ * Géométrie :
+ *   • Hit area (carré transparent attrapable) : 16×16 px à `left: x + 2`.
+ *     2 px de marge avec le bord de barre évitent toute collision avec la
+ *     zone resize-end (qui s'arrête à `x`).
+ *   • Visuel par défaut : pastille bleue 8×8 px centrée dans la hit area
+ *     (donc à `left: x + 6` réel, 6 px de marge claire avec le bord).
+ *   • Au survol : la pastille grossit à 12×12 px (toujours hors barre) avec
+ *     un ring blanc supplémentaire pour signaler clairement la cible.
+ *   • Point d'ancrage du lien (`sourceX`) : centre visuel du handle, soit
+ *     `x + 10`. La flèche pointillée part proprement hors de la barre.
  */
 function LinkHandle({
   task,
@@ -943,6 +955,9 @@ function LinkHandle({
   if (task.kind === 'phase') return null
   const x = rightEdgeX(task, windowStart, dayWidth)
   const y = ROW_HEIGHT / 2
+  // Centre visuel du handle (point d'origine du lien) — 10 px à droite du
+  // bord de la barre, donc bien hors zone de resize-end.
+  const handleCenterX = x + 10
   return (
     <button
       type="button"
@@ -955,12 +970,13 @@ function LinkHandle({
         const scrollEl = scrollRef.current
         if (!scrollEl) return
         const rect = scrollEl.getBoundingClientRect()
-        // Position du handle en coordonnées « panneau » : x déjà en repère
-        // intérieur (commence à 0 = bord gauche du contenu, donc inclut le
-        // scroll). Le y est local à la ligne : on ajoute rowIndex*ROW_HEIGHT.
+        // Position du handle en coordonnées « panneau » : on prend le centre
+        // visuel (handleCenterX) pour que la flèche pointillée parte du
+        // milieu du cercle bleu et pas du bord de la barre. Le y est local
+        // à la ligne : on ajoute rowIndex*ROW_HEIGHT.
         startLink({
           sourceId: task.id,
-          sourceX: x,
+          sourceX: handleCenterX,
           sourceY: rowIndex * ROW_HEIGHT + y,
           clientX: e.clientX,
           clientY: e.clientY,
@@ -968,19 +984,30 @@ function LinkHandle({
           scrollLeft: scrollEl.scrollLeft,
         })
       }}
-      className="absolute rounded-full bg-blue-600 hover:bg-blue-700 border border-white shadow-sm cursor-crosshair"
+      // `group` permet au span enfant de réagir au hover du button entier.
+      // `flex items-center justify-center` centre le span 8×8 dans la
+      // hit area 16×16.
+      className="group absolute flex items-center justify-center cursor-crosshair bg-transparent border-0 p-0"
       style={{
-        left: x - 4,
-        top: y - 4,
-        width: 8,
-        height: 8,
+        left: x + 2,
+        top: y - 8,
+        width: 16,
+        height: 16,
         // z-index 3 : au-dessus des barres (2) et des flèches (1) pour
         // être attrapable. Sous les labels de dates (3) qui sont dans une
         // couche distincte.
         zIndex: 3,
-        padding: 0,
       }}
-    />
+    >
+      {/* Pastille visuelle. Au hover du bouton (group-hover), elle grossit
+          de 8 → 12 px (w-2 → w-3) avec un ring blanc plus marqué. Le centre
+          reste fixe (le flex parent centre la pastille à chaque taille).
+          transition-all anime l'agrandissement. */}
+      <span
+        aria-hidden
+        className="block w-2 h-2 rounded-full bg-blue-600 group-hover:w-3 group-hover:h-3 group-hover:bg-blue-700 group-hover:ring-1 group-hover:ring-white border border-white shadow-sm transition-all duration-150"
+      />
+    </button>
   )
 }
 

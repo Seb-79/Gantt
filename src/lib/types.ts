@@ -137,6 +137,11 @@ export interface GanttState {
    *  paires collab/période confondues). Consommée par le moteur de calcul de
    *  fin (computeEndFromCharge), le plan de charge pondéré et l'UI. */
   member_allocations: MemberAllocation[]
+  /** v2.0 / F5 — Allocations cross-projet : nécessaires pour calculer la
+   *  capacité totale d'un collab (Σ pct sur tous projets). Utilisée par le
+   *  plan de charge pour positionner les seuils de coloration (« surcharge
+   *  ssi charge > capacité totale »). */
+  all_member_allocations: MemberAllocation[]
   /** v2.0 / F3 — Toutes les absences (cross-projet) de tous les collabs.
    *  Diminue multiplicativement la capacité quotidienne (Q8b). Saisie et
    *  affichée dans l'onglet « Congés ». */

@@ -1,8 +1,8 @@
 # Règles de gestion — Application Gantt
 
-**Version applicative couverte : v2.0 (F0 — charge stockée + F1 — memberships + F2 — allocations % + F3 — absences + F4 — FNLT)**
+**Version applicative couverte : v2.0 (F0 — charge stockée + F1 — memberships + F2 — allocations % + F3 — absences + F4 — FNLT + F5 — plan de charge global)**
 **Date de dernière mise à jour : 2026-05-19**
-**Couverture de test : 134 / 134 (100 %)**
+**Couverture de test : 148 / 148 (100 %)**
 
 Ce document est le **référentiel vivant** des règles de gestion métier de
 l'application. Chaque règle porte un identifiant stable de la forme
@@ -1126,6 +1126,95 @@ pas d'alerte (la deadline est tenue pile-poil).
 
 ---
 
+## Famille 16 — Plan de charge global (v2.0 / F5)
+
+Le plan de charge agrège la **charge réelle** d'un collaborateur sur ses
+tâches et la rapporte à sa **capacité totale** (Σ allocations tous projets
+× présence). Deux périmètres possibles :
+
+• **Projet courant** : workload affiché = tâches du projet courant
+uniquement, mais seuils colorés contre la capacité totale.
+• **Vue globale** : workload agrégé sur TOUTES les tâches de TOUS les
+projets, seuils contre la même capacité totale.
+
+### RG-GANTT-1600
+
+La capacité quotidienne d'un collaborateur sur un projet vaut
+`allocation_pct(p, c, d) / 100`. La capacité totale du jour est la somme
+sur tous les projets. Hors jour ouvré (week-end / férié), la capacité
+est 0. Hors période d'allocation, la contribution du projet est 0.
+
+**Tests :** `utils.test.ts` → « sans allocation : capacité 0 » ;
+« 50 % sur 1 projet → 0,5 » ; « week-end : capacité 0 ».
+
+### RG-GANTT-1601
+
+Σ allocations cross-projet : un collaborateur affecté à 50 % sur le
+projet A et 50 % sur le projet B a une **capacité totale de 1,0** le
+jour considéré. C'est cette somme qui sert de seuil de coloration au
+plan de charge (et non un plafond fixe de 1).
+
+**Tests :** `utils.test.ts` → « 50 % A + 50 % B → 1 ».
+
+### RG-GANTT-1602
+
+Les absences pondèrent la capacité totale **multiplicativement** :
+`capacité = (Σ pct) × (1 − fraction_absence)`. Un collaborateur à 100 %
+qui pose une demi-journée d'absence a une capacité de 0,5 ce jour-là ;
+un congé complet annule la capacité à 0 quel que soit le total des
+allocations.
+
+**Tests :** `utils.test.ts` → « alloc 100 % + congé 0,5 j → 0,5 » ;
+« congé 1 j → 0 même si 100 % alloué ».
+
+### RG-GANTT-1610
+
+Le plan de charge **colore** les cellules selon le ratio
+`workload / capacité_totale` :
+
+• `> 1` → rouge (SURCHARGE)
+• `= 1` → vert (journée pleine)
+• `[0,75 ; 1[` → bleu marqué
+• `[0,5 ; 0,75[` → bleu moyen
+• `]0 ; 0,5[` → bleu pâle (sous-charge)
+• `0` → cellule neutre (ou jaune pâle si highlightUnderload)
+
+Cas concret (Q3 validé avec utilisateur) : Léa à 50 % sur projet A
+uniquement, charge 0,5 sur ce projet → ratio 1 → cellule verte (et non
+bleue comme avant F5).
+
+**Tests :** `utils.test.ts` → « workload = capacité 0,5 → vert » ;
+« workload 0,25 sur capacité 0,5 → bleu moyen » ; « workload 0,75 sur
+capacité 0,5 → rouge » ; « workload 0 + highlightUnderload → jaune pâle ».
+
+### RG-GANTT-1611
+
+Si la capacité totale est 0 mais qu'une charge a été planifiée
+(anomalie : tâche assignée alors que le collab n'a aucune allocation),
+la cellule passe en rouge même sans dépassement relatif — c'est le
+signal que la donnée elle-même est incohérente.
+
+**Tests :** `utils.test.ts` → « capacité 0 mais workload > 0 → rouge
+(anomalie) ».
+
+### RG-GANTT-1620
+
+`GET /api/state` expose `all_member_allocations` : la liste complète
+des allocations cross-projet. Consommée côté client par le plan de
+charge pour calculer la capacité totale (même en vue « projet courant »).
+
+**Tests :** `server/app.test.js` → « GET /api/state expose all_member_allocations ».
+
+### RG-GANTT-1621
+
+`GET /api/workload/global` renvoie `{ tasks }` cross-projet (kind=task,
+collaborator non-null) pour alimenter la vue globale du plan de charge.
+Route fetchée à la demande au passage en mode global.
+
+**Tests :** `server/app.test.js` → « GET retourne les activités cross-projet ».
+
+---
+
 ## Synthèse de couverture
 
 | Famille                       |  Règles |            Couverture |
@@ -1146,5 +1235,6 @@ pas d'alerte (la deadline est tenue pile-poil).
 | 13 — Allocations % (v2.0/F2)  |      10 |               10 / 10 |
 | 14 — Absences (v2.0/F3)       |       7 |                 7 / 7 |
 | 15 — FNLT (v2.0/F4)           |       7 |                 7 / 7 |
-| 16 — Charge stockée (v2.0/F0) |       5 |                 5 / 5 |
-| **Total**                     | **128** | **128 / 128 (100 %)** |
+| 16 — Plan de charge (v2.0/F5) |       7 |                 7 / 7 |
+| 17 — Charge stockée (v2.0/F0) |       5 |                 5 / 5 |
+| **Total**                     | **135** | **135 / 135 (100 %)** |

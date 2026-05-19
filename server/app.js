@@ -134,6 +134,32 @@ export function createApp(db, { requestLog = true } = {}) {
     }),
   )
 
+  /**
+   * v2.0 / F5 — Plan de charge global : renvoie TOUTES les activités (kind=task)
+   * de TOUS les projets avec les champs nécessaires au calcul du workload
+   * (sans alourdir avec name, color, predecessors, etc.). Les allocations et
+   * absences cross-projet sont déjà exposées dans /api/state via
+   * `all_member_allocations` et `collaborator_absences`.
+   *
+   * Fetché à la demande quand l'utilisateur bascule sur la « vue globale »
+   * de l'onglet Plan de charge.
+   */
+  app.get(
+    '/api/workload/global',
+    safeRoute((_req, res) => {
+      const tasks = db
+        .prepare(
+          `SELECT id, name, kind, start_date, end_date,
+                  collaborator_id, project_id, charge_jours
+             FROM tasks
+             WHERE kind = 'task' AND collaborator_id IS NOT NULL
+             ORDER BY project_id ASC, position ASC, id ASC`,
+        )
+        .all()
+      res.json({ tasks })
+    }),
+  )
+
   // -------------------------------------------------------------------------
   // RESET (données de démo)
   // -------------------------------------------------------------------------

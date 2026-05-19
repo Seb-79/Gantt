@@ -973,6 +973,17 @@ export function getFullState(db, projectId) {
   // de TOUS les collabs, car un congé saisi sur Léa impacte tous ses projets
   // (lecture multiplicative Q8b). L'onglet « Congés » est lui-même cross-projet.
   const collaboratorAbsences = listAbsences(db)
+  // v2.0 / F5 — Allocations CROSS-PROJET : nécessaires pour calculer la
+  // capacité totale d'un collab (Σ pct sur tous projets), qui sert de seuil
+  // de coloration au plan de charge même en vue « projet courant ».
+  // Volume négligeable (allocations restent quelques dizaines de lignes max).
+  const allMemberAllocations = db
+    .prepare(
+      `SELECT id, project_id, collaborator_id, start_date, end_date, allocation_pct
+         FROM member_allocations
+         ORDER BY collaborator_id ASC, start_date ASC, id ASC`,
+    )
+    .all()
   return {
     version: getVersion(db),
     current_project_id: currentId,
@@ -981,6 +992,7 @@ export function getFullState(db, projectId) {
     tasks,
     current_project_members: currentProjectMembers,
     member_allocations: memberAllocations,
+    all_member_allocations: allMemberAllocations,
     collaborator_absences: collaboratorAbsences,
   }
 }

@@ -23,12 +23,14 @@ import {
   addDaysIso,
   buildDateRange,
   computeWorkload,
+  dateToIso,
   daysBetweenIso,
+  getTotalCapacity,
   groupByMonth,
   groupByWeek,
   isFrenchHoliday,
   isNonWorkingDay,
-  workloadCellStyle,
+  workloadCellStyleNormalized,
 } from '../lib/utils'
 import { useHorizontalPan } from '../lib/useHorizontalPan'
 import type {
@@ -61,10 +63,23 @@ interface Props {
    *  quotidienne de chaque tâche : 100 % = 1, 50 % = 0.5, etc.). Vide →
    *  comportement F1 (1 par jour ouvré couvert). */
   memberAllocations?: MemberAllocation[]
+  /** v2.0 / F5 — Allocations cross-projet : utilisées pour calculer la
+   *  capacité totale d'un collab (Σ pct tous projets) qui sert de
+   *  dénominateur aux seuils de coloration du plan de charge. */
+  allMemberAllocations?: MemberAllocation[]
   /** v2.0 / F3 — Absences cross-projet : réduit multiplicativement la
    *  contribution du collab les jours concernés (capacité = allocation_pct
    *  × (1 − fraction)). Vide → pas d'impact. */
   absences?: CollaboratorAbsence[]
+  /** v2.0 / F5 — Périmètre de calcul du workload :
+   *    • 'current' (défaut) → restreint au projet courant (prop `tasks`)
+   *    • 'global'           → cross-projet (prop `globalTasks` requise)
+   *  Dans les deux modes, les SEUILS de coloration sont positionnés par
+   *  rapport à la capacité totale du collab (cf. `allMemberAllocations`). */
+  scope?: 'current' | 'global'
+  /** v2.0 / F5 — Tâches cross-projet (kind=task, collab non-null) utilisées
+   *  uniquement en mode `scope='global'`. En mode current : ignoré. */
+  globalTasks?: Task[]
   /**
    * v1.17 — Si `true`, met en évidence les sous-charges (`sum < 1` sur les
    * jours ouvrés) avec une palette jaune (cellule libre = jaune pâle,
@@ -91,10 +106,31 @@ export default function WorkloadChart({
   tasks,
   collaborators,
   memberAllocations = [],
+  allMemberAllocations,
   absences = [],
+  scope = 'current',
+  globalTasks,
   highlightUnderload = false,
   onShiftWindow,
 }: Props) {
+  // v2.0 / F5 — Sélectionne la source de tâches selon le périmètre.
+  //   • current → on regarde uniquement le projet courant (allocations &
+  //     présences appliquées par tâche via getDailyAllocation),
+  //   • global  → on agrège toutes les tâches connues (cross-projet).
+  const tasksToShow = scope === 'global' && globalTasks ? globalTasks : tasks
+  // v2.0 / F5 — Pour la pondération individuelle de CHAQUE tâche, on a besoin
+  // des allocations couvrant son projet. En current, `memberAllocations` du
+  // projet courant suffit. En global, on a besoin des allocations cross-projet
+  // (sinon les tâches d'autres projets ne pondèrent pas correctement leur
+  // contribution journalière).
+  const effectiveAllocations =
+    scope === 'global'
+      ? (allMemberAllocations ?? memberAllocations)
+      : memberAllocations
+  // v2.0 / F5 — Capacité totale = Σ allocations TOUS projets. Fallback vers
+  // `memberAllocations` si l'appelant n'a pas fourni les allocations globales
+  // (rétro-compat tests).
+  const allAllocationsForCapacity = allMemberAllocations ?? memberAllocations
   // v1.19 — Pan horizontal à la souris (cf. useHorizontalPan).
   const { onMouseDown: handlePanMouseDown, isPanning } = useHorizontalPan(
     dayWidth,
@@ -152,10 +188,52 @@ export default function WorkloadChart({
     // jour ouvré couvert).
     // v2.0 / F3 — `absences` réduit multiplicativement la contribution les
     // jours concernés (cohérent avec le moteur de calcul de fin).
+    // v2.0 / F5 — `tasksToShow` et `effectiveAllocations` varient selon
+    // `scope` (current vs global) pour fournir le bon périmètre.
     () =>
-      computeWorkload(tasks, collaborators, dates, memberAllocations, absences),
-    [tasks, collaborators, dates, memberAllocations, absences],
+      computeWorkload(
+        tasksToShow,
+        collaborators,
+        dates,
+        effectiveAllocations,
+        absences,
+      ),
+    [tasksToShow, collaborators, dates, effectiveAllocations, absences],
   )
+
+  /**
+   * v2.0 / F5 — Capacité totale (= Σ allocations tous projets) par collab
+   * et par jour, alignée sur `dates`. Sert de dénominateur aux seuils de
+   * coloration du plan de charge.
+   *
+   * Fallback : si aucune allocation n'est connue (base F1- / tests legacy),
+   * on retombe sur capacité = 1 par jour ouvré (comportement v1.17). Les
+   * tests historiques de WorkloadChart restent ainsi verts sans modification.
+   *
+   * Map id-collab → tableau de capacités (même longueur que `dates`).
+   */
+  const capacityByCollab = useMemo(() => {
+    const m = new Map<string, number[]>()
+    const useFallback = allAllocationsForCapacity.length === 0
+    for (const c of collaborators) {
+      const arr = new Array(dates.length)
+      for (let i = 0; i < dates.length; i++) {
+        if (useFallback) {
+          // Fallback F1 : 1 jour-personne par jour ouvré, 0 sinon.
+          arr[i] = isNonWorkingDay(dates[i]) ? 0 : 1
+        } else {
+          arr[i] = getTotalCapacity(
+            dateToIso(dates[i]),
+            allAllocationsForCapacity,
+            c.id,
+            absences,
+          )
+        }
+      }
+      m.set(c.id, arr)
+    }
+    return m
+  }, [collaborators, dates, allAllocationsForCapacity, absences])
 
   /**
    * Collaborateurs triés par `position` (cohérent avec la liste partout
@@ -271,6 +349,7 @@ export default function WorkloadChart({
           <div className="relative">
             {orderedCollabs.map((c) => {
               const loads = workload.get(c.id) ?? []
+              const caps = capacityByCollab.get(c.id) ?? []
               return (
                 <div
                   key={c.id}
@@ -279,12 +358,22 @@ export default function WorkloadChart({
                 >
                   {dates.map((d, i) => {
                     const sum = loads[i] ?? 0
+                    const cap = caps[i] ?? 0
                     // v1.23 — Inclut les fériés français dans les jours
                     // non-travaillés : on grise sans afficher de chiffre.
                     const offDay = isNonWorkingDay(d)
+                    // v2.0 / F5 — Seuils de coloration normalisés par rapport
+                    // à la capacité totale du collab ce jour-là (Σ
+                    // allocations tous projets × présence). Cohérent Q3
+                    // utilisateur : un collab à 50 % sur un seul projet est
+                    // « plein » à 0,5 (vert), pas en sous-charge.
                     const cellClasses = offDay
                       ? 'bg-slate-50 text-slate-300'
-                      : workloadCellStyle(sum, highlightUnderload)
+                      : workloadCellStyleNormalized(
+                          sum,
+                          cap,
+                          highlightUnderload,
+                        )
                     // Format affiché : entier "1", "2" ; sinon on n'écrit
                     // rien (les 0 restent visuellement neutres). On évite
                     // un ternaire imbriqué pour rester sonar-friendly.

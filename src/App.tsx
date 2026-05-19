@@ -61,6 +61,9 @@ const LS_HIGHLIGHT_UNDERLOAD = 'gantt.highlightUnderload'
 /** v1.20 — Clé localStorage pour mémoriser les phases repliées (JSON: string[]). */
 const LS_COLLAPSED_PHASES = 'gantt.collapsedPhases'
 
+/** v2.0 / F5 — Clé localStorage pour mémoriser le scope du plan de charge. */
+const LS_WORKLOAD_SCOPE = 'gantt.workloadScope'
+
 /** v1.16 / v2.0 — Vues disponibles dans l'app :
  *    • 'gantt'    → planning (par défaut)
  *    • 'workload' → plan de charge par collaborateur
@@ -183,6 +186,21 @@ export default function App() {
   const [highlightUnderload, setHighlightUnderload] = useState<boolean>(
     () => lsGet(LS_HIGHLIGHT_UNDERLOAD) === '1',
   )
+  /**
+   * v2.0 / F5 — Périmètre du plan de charge :
+   *   • 'current' (défaut) → workload restreint au projet courant.
+   *   • 'global'           → workload agrégé cross-projet (fetché à la demande).
+   * Persisté en localStorage pour retrouver la même vue à l'ouverture.
+   */
+  const [workloadScope, setWorkloadScope] = useState<'current' | 'global'>(
+    () => (lsGet(LS_WORKLOAD_SCOPE) === 'global' ? 'global' : 'current'),
+  )
+  /**
+   * v2.0 / F5 — Tâches cross-projet fetchées depuis /api/workload/global,
+   * `null` tant qu'on n'a pas demandé la vue globale. Re-fetchées à chaque
+   * passage en mode global pour refléter les mutations entre-temps.
+   */
+  const [globalTasks, setGlobalTasks] = useState<Task[] | null>(null)
   /**
    * v1.18 — Aperçu de replanification en attente d'approbation. `null` quand
    * la modal est fermée, sinon contient la liste des déplacements proposés
@@ -754,6 +772,57 @@ export default function App() {
   }
 
   /**
+   * v2.0 / F5 — Bascule entre vue plan de charge « projet courant » et
+   * « globale ». Persisté en localStorage. Le fetch des global tasks est
+   * piloté par un `useEffect` séparé (cf. plus bas).
+   */
+  const toggleWorkloadScope = () => {
+    setWorkloadScope((s) => {
+      const next: 'current' | 'global' = s === 'global' ? 'current' : 'global'
+      lsSet(LS_WORKLOAD_SCOPE, next)
+      return next
+    })
+  }
+
+  /**
+   * v2.0 / F5 — Fetch des tâches cross-projet pour le plan de charge global.
+   * Déclenché à chaque passage en mode global ET à chaque incrément de
+   * version (pour refléter les mutations entre-temps). En mode current, on
+   * vide le cache local pour ne pas servir une version périmée en cas de
+   * re-bascule.
+   */
+  useEffect(() => {
+    if (workloadScope !== 'global' || !state) {
+      // Reset au passage en current (libère la mémoire et évite les fuites
+      // de données entre projets si l'utilisateur bascule plusieurs fois).
+      // setState dans l'effect est ici intentionnel (subscribe à un système
+      // externe : l'API HTTP) — on désactive la règle React 19 dédiée.
+      /* eslint-disable-next-line react-hooks/set-state-in-effect */
+      setGlobalTasks(null)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/workload/global')
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data: { tasks: Task[] } = await res.json()
+        if (!cancelled) setGlobalTasks(data.tasks)
+      } catch (err) {
+        console.error('[workload/global]', err)
+        if (!cancelled) setGlobalTasks([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // On dépend uniquement de `workloadScope` et `state?.version` (entier
+    // monotone) : `state` complet provoquerait un re-fetch à chaque mutation
+    // alors que la version suffit à signaler un changement.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workloadScope, state?.version])
+
+  /**
    * v1.20 — Bascule l'état replié/déplié d'une phase. Persiste le set
    * mis à jour en localStorage. Aucune mutation côté serveur.
    *
@@ -1002,6 +1071,29 @@ export default function App() {
               🟡
             </button>
           )}
+          {/* v2.0 / F5 — Toggle scope « projet courant / vue globale ».
+              Visible uniquement sur l'onglet Plan de charge. En mode global,
+              le bouton affiche un fond bleu pour rappeler que la vue agrège
+              toutes les tâches de tous les projets de la base. */}
+          {view === 'workload' && (
+            <button
+              className={[
+                'h-7 px-2 text-xs rounded border border-slate-300',
+                workloadScope === 'global'
+                  ? 'bg-blue-100 text-blue-700 border-blue-300'
+                  : 'hover:bg-slate-100',
+              ].join(' ')}
+              onClick={toggleWorkloadScope}
+              title={
+                workloadScope === 'global'
+                  ? 'Revenir à la vue restreinte au projet courant'
+                  : 'Voir la charge agrégée sur TOUS les projets'
+              }
+              aria-pressed={workloadScope === 'global'}
+            >
+              {workloadScope === 'global' ? '🌐 Global' : '📁 Courant'}
+            </button>
+          )}
           {/* v1.16 — Les toggles "nom" et "dates" ne concernent que la vue
               Gantt (rendu des barres). On les masque sur la vue Charge. */}
           {view === 'gantt' && (
@@ -1132,7 +1224,10 @@ export default function App() {
                 tasks={orderedTasks}
                 collaborators={state.collaborators}
                 memberAllocations={state.member_allocations}
+                allMemberAllocations={state.all_member_allocations}
                 absences={state.collaborator_absences}
+                scope={workloadScope}
+                globalTasks={globalTasks ?? undefined}
                 highlightUnderload={highlightUnderload}
                 onShiftWindow={shiftWindow}
               />

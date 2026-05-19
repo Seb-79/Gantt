@@ -770,3 +770,26 @@ describe('v2.0 / F1 — GET /api/state.current_project_members', () => {
     )
   })
 })
+
+// =============================================================================
+// v2.0 / F5 — Plan de charge global (cross-projet)
+// =============================================================================
+
+describe('v2.0 / F5 — /api/workload/global', () => {
+  it('GET retourne les activités cross-projet (kind=task, collab non-null)', async () => {
+    const app = makeApp()
+    const r = await request(app).get('/api/workload/global').expect(200)
+    expect(Array.isArray(r.body.tasks)).toBe(true)
+    // Tous les retours doivent être des activités assignées.
+    for (const t of r.body.tasks) {
+      expect(t.kind).toBe('task')
+      expect(t.collaborator_id).not.toBeNull()
+    }
+  })
+
+  it('GET /api/state expose all_member_allocations', async () => {
+    const app = makeApp()
+    const r = await request(app).get('/api/state').expect(200)
+    expect(Array.isArray(r.body.all_member_allocations)).toBe(true)
+  })
+})

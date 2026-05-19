@@ -21,7 +21,9 @@ import {
   groupByMonth,
   groupByWeek,
   computeWorkload,
+  getTotalCapacity,
   workloadCellStyle,
+  workloadCellStyleNormalized,
   isFrenchHoliday,
   isNonWorkingDay,
   isoToDate,
@@ -1700,5 +1702,136 @@ describe('checkCoherence — FNLT (v2.0 / F4)', () => {
     expect(
       checkCoherence(tasks).filter((i) => i.kind === 'fnlt_overrun'),
     ).toHaveLength(0)
+  })
+})
+
+// =============================================================================
+// v2.0 / F5 — Capacité totale + seuils normalisés
+// =============================================================================
+
+describe('getTotalCapacity (v2.0 / F5)', () => {
+  // RG-GANTT-1600 — Pas d'allocation = capacité 0.
+  it('v2.0 / RG-GANTT-1600 — sans allocation : capacité 0', () => {
+    expect(getTotalCapacity('2026-06-08', [], 'c1', [])).toBe(0)
+  })
+
+  // RG-GANTT-1600 — Allocation 50 % sur un seul projet = capacité 0,5.
+  it('v2.0 / RG-GANTT-1600 — 50 % sur 1 projet → 0,5', () => {
+    const allocs = [
+      {
+        id: 'a1',
+        project_id: 'pA',
+        collaborator_id: 'c1',
+        start_date: '2026-01-01',
+        end_date: '2026-12-31',
+        allocation_pct: 50,
+      },
+    ]
+    expect(getTotalCapacity('2026-06-08', allocs, 'c1', [])).toBe(0.5)
+  })
+
+  // RG-GANTT-1601 — Σ tous projets : 50 % A + 50 % B = capacité 1,0.
+  it('v2.0 / RG-GANTT-1601 — 50 % A + 50 % B → 1', () => {
+    const allocs = [
+      {
+        id: 'a1',
+        project_id: 'pA',
+        collaborator_id: 'c1',
+        start_date: '2026-01-01',
+        end_date: '2026-12-31',
+        allocation_pct: 50,
+      },
+      {
+        id: 'a2',
+        project_id: 'pB',
+        collaborator_id: 'c1',
+        start_date: '2026-01-01',
+        end_date: '2026-12-31',
+        allocation_pct: 50,
+      },
+    ]
+    expect(getTotalCapacity('2026-06-08', allocs, 'c1', [])).toBe(1)
+  })
+
+  // RG-GANTT-1602 — Absence multiplicative : 100 % + congé 0,5 j → 0,5.
+  it('v2.0 / RG-GANTT-1602 — alloc 100 % + congé 0,5 j → 0,5', () => {
+    const allocs = [
+      {
+        id: 'a1',
+        project_id: 'pA',
+        collaborator_id: 'c1',
+        start_date: '2026-01-01',
+        end_date: '2026-12-31',
+        allocation_pct: 100,
+      },
+    ]
+    const absences = [
+      { collaborator_id: 'c1', date: '2026-06-08', fraction: 0.5 },
+    ]
+    expect(getTotalCapacity('2026-06-08', allocs, 'c1', absences)).toBe(0.5)
+  })
+
+  // RG-GANTT-1602 — Congé complet : capacité 0 quelle que soit l'allocation.
+  it('v2.0 / RG-GANTT-1602 — congé 1 j → 0 même si 100 % alloué', () => {
+    const allocs = [
+      {
+        id: 'a1',
+        project_id: 'pA',
+        collaborator_id: 'c1',
+        start_date: '2026-01-01',
+        end_date: '2026-12-31',
+        allocation_pct: 100,
+      },
+    ]
+    const absences = [
+      { collaborator_id: 'c1', date: '2026-06-08', fraction: 1 },
+    ]
+    expect(getTotalCapacity('2026-06-08', allocs, 'c1', absences)).toBe(0)
+  })
+
+  // Week-end / férié : capacité 0.
+  it('v2.0 / RG-GANTT-1600 — week-end : capacité 0', () => {
+    const allocs = [
+      {
+        id: 'a1',
+        project_id: 'pA',
+        collaborator_id: 'c1',
+        start_date: '2026-01-01',
+        end_date: '2026-12-31',
+        allocation_pct: 100,
+      },
+    ]
+    expect(getTotalCapacity('2026-06-06', allocs, 'c1', [])).toBe(0) // samedi
+  })
+})
+
+describe('workloadCellStyleNormalized (v2.0 / F5)', () => {
+  // RG-GANTT-1610 — workload = 0 : neutre par défaut, jaune pâle si highlight.
+  it('v2.0 / RG-GANTT-1610 — workload 0 : slate par défaut', () => {
+    expect(workloadCellStyleNormalized(0, 1)).toMatch(/text-slate-300/)
+  })
+
+  it('v2.0 / RG-GANTT-1610 — workload 0 + highlightUnderload : jaune pâle', () => {
+    expect(workloadCellStyleNormalized(0, 1, true)).toMatch(/bg-yellow-200/)
+  })
+
+  // RG-GANTT-1611 — workload = capacité : vert (journée pleine).
+  it('v2.0 / RG-GANTT-1611 — workload = capacité 0,5 → vert', () => {
+    expect(workloadCellStyleNormalized(0.5, 0.5)).toMatch(/bg-emerald-300/)
+  })
+
+  // RG-GANTT-1611 — workload < capacité : bleu (sous-charge).
+  it('v2.0 / RG-GANTT-1611 — workload 0,25 sur capacité 0,5 = ratio 0,5 → bleu moyen', () => {
+    expect(workloadCellStyleNormalized(0.25, 0.5)).toMatch(/bg-blue-200/)
+  })
+
+  // RG-GANTT-1611 — workload > capacité : rouge (surcharge).
+  it('v2.0 / RG-GANTT-1611 — workload 0,75 sur capacité 0,5 → rouge', () => {
+    expect(workloadCellStyleNormalized(0.75, 0.5)).toMatch(/bg-red-500/)
+  })
+
+  // RG-GANTT-1612 — capacité 0 + workload > 0 : anomalie, surcharge brute.
+  it('v2.0 / RG-GANTT-1612 — capacité 0 mais workload > 0 → rouge (anomalie)', () => {
+    expect(workloadCellStyleNormalized(0.5, 0)).toMatch(/bg-red-500/)
   })
 })

@@ -904,6 +904,109 @@ export function workloadCellStyle(
 }
 
 /**
+ * v2.0 / F5 — Capacité totale d'un collaborateur pour un jour donné, en
+ * agrégeant ses allocations sur TOUS LES PROJETS et en appliquant
+ * l'absence éventuelle (multiplicative).
+ *
+ * Sémantique :
+ *   capacité_totale(c, d) = (Σ pct(p, c, d) sur tous projets p) × (1 − absence(c, d))
+ *
+ * Cas concrets (validés avec l'utilisateur, Q3) :
+ *   • Léa 50 % sur A seul, pas d'absence → 0,5
+ *   • Léa 50 % sur A + 50 % sur B, pas d'absence → 1,0
+ *   • Léa 100 % sur A + congé 1 j → 0
+ *   • Léa 100 % sur A + 100 % sur B + congé 0,5 j → 2 × 0,5 = 1,0
+ *
+ * Sert de **dénominateur** au plan de charge pour positionner les seuils de
+ * coloration (surcharge ssi workload > capacité, sous-charge si workload <
+ * capacité). Sans cette normalisation, un collab à 50 % apparaîtrait toujours
+ * en sous-charge même quand il est pleinement chargé sur sa capacité réelle.
+ *
+ * @param dateIso     Jour à évaluer.
+ * @param allocations TOUTES les allocations connues (cross-projet).
+ * @param collabId    Collab à évaluer.
+ * @param absences    Absences cross-projet (utilisées pour la pondération).
+ * @returns           Capacité dans [0, +∞[ (théoriquement plafonnée à 1 ou Σ
+ *                    si plusieurs projets temps plein, mais on ne plafonne
+ *                    pas — c'est le total réel des engagements).
+ */
+export function getTotalCapacity(
+  dateIso: string,
+  allocations: MemberAllocation[],
+  collabId: string,
+  absences: CollaboratorAbsence[] = [],
+): number {
+  const d = isoToDate(dateIso)
+  if (isNonWorkingDay(d)) return 0
+  // Somme des pct sur tous projets couvrant la date.
+  let sumPct = 0
+  for (const a of allocations) {
+    if (a.collaborator_id !== collabId) continue
+    if (dateIso >= a.start_date && dateIso <= a.end_date) {
+      sumPct += a.allocation_pct / 100
+    }
+  }
+  if (sumPct === 0) return 0
+  // Pondération multiplicative par l'absence du jour (cross-projet aussi).
+  let presence = 1
+  for (const ab of absences) {
+    if (ab.collaborator_id !== collabId) continue
+    if (ab.date !== dateIso) continue
+    presence = Math.max(0, 1 - Math.max(0, Math.min(1, ab.fraction)))
+    break
+  }
+  return sumPct * presence
+}
+
+/**
+ * v2.0 / F5 — Variante de `workloadCellStyle` qui positionne les seuils de
+ * coloration par rapport à la **capacité totale** du jour plutôt qu'à un
+ * plafond fixe de 1. Cohérent avec la décision utilisateur (Q3) :
+ *
+ *   • workload > capacité       → rouge (SURCHARGE)
+ *   • workload === capacité     → vert  (journée pleinement chargée)
+ *   • workload [0.75c ; capac[  → bleu marqué
+ *   • workload [0.5c  ; 0.75c[  → bleu moyen
+ *   • workload ]0     ; 0.5c[   → bleu pâle (sous-charge)
+ *   • workload === 0            → cellule neutre
+ *
+ * Cas `capacity === 0` (collab non dispo ce jour) :
+ *   • workload === 0 → neutre (cohérent, aucun travail prévu et impossible).
+ *   • workload > 0   → rouge (surcharge théorique : on a planifié alors que
+ *     le collab n'a aucune capacité — anomalie).
+ *
+ * @param workload           Charge cumulée du jour (déjà pondérée par alloc × absence).
+ * @param capacity           Capacité totale du jour (cf. `getTotalCapacity`).
+ * @param highlightUnderload v1.17 — palette jaune pour sous-charge si true.
+ * @returns                  Classes Tailwind concaténables.
+ */
+export function workloadCellStyleNormalized(
+  workload: number,
+  capacity: number,
+  highlightUnderload = false,
+): string {
+  // Tolérance numérique pour les comparaisons sur fractions 0.25/0.5/0.75/1.
+  const EPS = 1e-9
+  // Cellule « totalement libre » (workload nul) :
+  //   • highlightUnderload → jaune pâle pour matérialiser la dispo,
+  //   • sinon → neutre (slate).
+  if (workload === 0) {
+    return highlightUnderload
+      ? 'bg-yellow-200 text-yellow-800'
+      : 'text-slate-300'
+  }
+  // Capacité 0 + workload > 0 = anomalie pure → surcharge brute.
+  if (capacity <= EPS) return 'bg-red-500 text-white'
+  const ratio = workload / capacity
+  if (ratio > 1 + EPS) return 'bg-red-500 text-white'
+  if (Math.abs(ratio - 1) <= EPS) return 'bg-emerald-300 text-emerald-900'
+  if (highlightUnderload) return 'bg-yellow-400 text-yellow-900'
+  if (ratio >= 0.75) return 'bg-blue-400 text-white'
+  if (ratio >= 0.5) return 'bg-blue-200 text-blue-900'
+  return 'bg-blue-100 text-blue-900'
+}
+
+/**
  * Trie les tâches hiérarchiquement : chaque tâche enfant est placée
  * immédiatement après son parent (en respectant `position` au sein de
  * chaque niveau). Les enfants orphelins (parent_id pointe sur un id absent)

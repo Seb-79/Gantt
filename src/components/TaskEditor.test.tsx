@@ -391,7 +391,9 @@ describe('TaskEditor — kinds spécifiques', () => {
     expect(screen.queryByLabelText(/Collaborateur/)).toBeNull()
     expect(screen.queryByLabelText(/Prédécesseur/)).toBeNull()
     expect(
-      screen.getByText(/dates seront calculées automatiquement/),
+      // v2.1 — Le bandeau d'aide phases a été raccourci à « dates calculées
+      // automatiquement depuis les enfants » pour gagner de la hauteur.
+      screen.getByText(/dates calculées automatiquement/),
     ).toBeInTheDocument()
   })
 })
@@ -434,7 +436,7 @@ describe('TaskEditor — case "Replanifier après enregistrement" (v1.22)', () =
       />,
     )
     const checkbox = screen.getByRole('checkbox', {
-      name: /Replanifier le projet/,
+      name: /Replanifier après enregistrement/,
     }) as HTMLInputElement
     expect(checkbox).toBeInTheDocument()
     expect(checkbox.checked).toBe(true)
@@ -452,7 +454,9 @@ describe('TaskEditor — case "Replanifier après enregistrement" (v1.22)', () =
       />,
     )
     expect(
-      screen.queryByRole('checkbox', { name: /Replanifier le projet/ }),
+      screen.queryByRole('checkbox', {
+        name: /Replanifier après enregistrement/,
+      }),
     ).toBeNull()
   })
 
@@ -484,7 +488,9 @@ describe('TaskEditor — case "Replanifier après enregistrement" (v1.22)', () =
       />,
     )
     fireEvent.click(
-      screen.getByRole('checkbox', { name: /Replanifier le projet/ }),
+      screen.getByRole('checkbox', {
+        name: /Replanifier après enregistrement/,
+      }),
     )
     fireEvent.click(screen.getByRole('button', { name: /Enregistrer/ }))
     expect(onSave.mock.calls[0][1]).toEqual({ replan: false })

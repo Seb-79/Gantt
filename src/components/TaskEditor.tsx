@@ -523,65 +523,59 @@ export default function TaskEditor({
         className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header : titre + bandeau d'erreur (fixé en haut). */}
-        <div className="px-5 pt-5 pb-3 border-b border-slate-100">
-          <h2 className="text-lg font-semibold">
+        {/* Header : titre + bandeau d'erreur (fixé en haut).
+            v2.1 — Paddings resserrés (px-4 pt-3 pb-2) pour densifier la modale
+            sans toucher au layout. */}
+        <div className="px-4 pt-3 pb-2 border-b border-slate-100">
+          <h2 className="text-base font-semibold">
             {task ? 'Modifier' : 'Nouvelle tâche / jalon / phase'}
           </h2>
 
-          {/* Bandeau d'erreur lisible (validation locale OU erreur API
-              transmise via prop ultérieurement). */}
+          {/* Bandeau d'erreur lisible. */}
           {error && (
             <div
-              className="mt-3 text-sm rounded border border-red-300 bg-red-50 text-red-700 px-3 py-2"
+              className="mt-2 text-xs rounded border border-red-300 bg-red-50 text-red-700 px-2 py-1"
               role="alert"
             >
               {error}
             </div>
           )}
 
-          {/* v1.6 — Bandeau d'aide spécifique aux phases (déplacé du milieu
-              du formulaire vers le header pour rester visible quel que soit
-              l'état de scroll interne). */}
+          {/* v1.6 — Bandeau d'aide phases. */}
           {kind === 'phase' && (
-            <div className="mt-3 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded px-3 py-2">
-              🗂️ <strong>Phase</strong> : les dates seront calculées
-              automatiquement à partir des activités enfants (début = la plus
-              précoce, fin = la plus tardive). Une phase n'a pas de
-              collaborateur ni de prédécesseur.
+            <div className="mt-2 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded px-2 py-1">
+              🗂️ <strong>Phase</strong> : dates calculées automatiquement depuis
+              les enfants. Pas de collaborateur ni de prédécesseur.
             </div>
           )}
         </div>
 
-        {/* Corps scrollable. flex-1 + overflow-y-auto : si le contenu dépasse
-            (petit écran), on scroll À L'INTÉRIEUR de la modale et les boutons
-            du footer restent accrochés en bas. */}
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-          {/* Nom — pleine largeur, c'est le champ le plus important. */}
-          <label className="block text-sm">
+        {/* Corps scrollable. v2.1 — Paddings et gaps densifiés. */}
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+          {/* Nom — pleine largeur. */}
+          <label className="block text-xs">
             <span className="text-slate-600">Nom</span>
             <input
-              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+              className="mt-0.5 block w-full text-sm border border-slate-300 rounded px-2 py-1"
               value={name}
               onChange={(e) => setName(e.target.value)}
               autoFocus
             />
           </label>
 
-          {/* Grille 2 colonnes (1 col en mobile). Chaque section regroupe des
-              champs cohérents par thème pour faciliter le repérage visuel. */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
+          {/* Grille 2 colonnes. v2.1 — gap-y-3 (au lieu de 4) pour densifier. */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-3">
             {/* SECTION 1 — IDENTITÉ */}
-            <section className="space-y-3">
+            <section className="space-y-2">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                 🏷 Identité
               </h3>
 
               <div className="flex gap-2">
-                <label className="block text-sm flex-1">
+                <label className="block text-xs flex-1">
                   <span className="text-slate-600">Type</span>
                   <select
-                    className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+                    className="mt-0.5 block w-full border border-slate-300 rounded px-2 py-1"
                     value={kind}
                     onChange={(e) => setKind(e.target.value as TaskKind)}
                   >
@@ -591,13 +585,13 @@ export default function TaskEditor({
                   </select>
                 </label>
 
-                <label className="block text-sm flex-1">
+                <label className="block text-xs flex-1">
                   <span className="text-slate-600">Avancement (%)</span>
                   <input
                     type="number"
                     min={0}
                     max={100}
-                    className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
+                    className="mt-0.5 block w-full border border-slate-300 rounded px-2 py-1 disabled:bg-slate-100 disabled:text-slate-500"
                     value={progress}
                     onChange={(e) => setProgress(Number(e.target.value))}
                     disabled={kind === 'milestone' || kind === 'phase'}
@@ -609,7 +603,7 @@ export default function TaskEditor({
                   défaut 3). Masquée pour les jalons et les phases. 1 = la
                   plus prioritaire, 5 = la moins. */}
               {kind === 'task' && (
-                <label className="block text-sm">
+                <label className="block text-xs">
                   {/* v2.1 / F2 — Le texte d'aide (1=plus prioritaire, 5=moins)
                       cassait sur 2 lignes en demi-largeur. Déplacé en tooltip
                       sur le label ; les valeurs des options portent déjà
@@ -621,7 +615,7 @@ export default function TaskEditor({
                     Priorité
                   </span>
                   <select
-                    className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+                    className="mt-0.5 block w-full border border-slate-300 rounded px-2 py-1"
                     value={String(priority ?? 3)}
                     onChange={(e) => setPriority(Number(e.target.value))}
                     title="1 = la plus prioritaire, 5 = la moins. Défaut : 3."
@@ -636,7 +630,7 @@ export default function TaskEditor({
               )}
 
               {/* COULEUR — éditable, par défaut = couleur effective */}
-              <div className="block text-sm">
+              <div className="block text-xs">
                 <span className="text-slate-600">Couleur de la barre</span>
                 <div className="mt-1 flex items-center gap-2">
                   <input
@@ -702,13 +696,13 @@ export default function TaskEditor({
             </section>
 
             {/* SECTION 2 — DATES & CHARGE */}
-            <section className="space-y-3">
+            <section className="space-y-2">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                 📅 Dates &amp; charge
               </h3>
 
               <div className="flex gap-2">
-                <label className="block text-sm flex-1">
+                <label className="block text-xs flex-1">
                   <span className="text-slate-600">
                     Début
                     {minStart && (
@@ -722,7 +716,7 @@ export default function TaskEditor({
                   </span>
                   <input
                     type="date"
-                    className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
+                    className="mt-0.5 block w-full border border-slate-300 rounded px-2 py-1 disabled:bg-slate-100 disabled:text-slate-500"
                     value={startDate}
                     min={minStart || undefined}
                     onChange={(e) => handleStartDateChange(e.target.value)}
@@ -734,7 +728,7 @@ export default function TaskEditor({
                 {/* v1.9 — Champ Charge (jours ouvrés). Affiché uniquement
                     pour kind='task'. */}
                 {kind === 'task' && (
-                  <label className="block text-sm w-24">
+                  <label className="block text-xs w-24">
                     <span
                       className="text-slate-600"
                       title="Nombre de jours ouvrés (lundi-vendredi). Détermine la date de fin."
@@ -745,7 +739,7 @@ export default function TaskEditor({
                       type="number"
                       min={1}
                       step={1}
-                      className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+                      className="mt-0.5 block w-full border border-slate-300 rounded px-2 py-1"
                       value={charge}
                       onChange={(e) => handleChargeChange(e.target.value)}
                       title="Nombre de jours ouvrés (lundi-vendredi). La date de fin est recalculée automatiquement (les week-ends sont sautés)."
@@ -757,7 +751,7 @@ export default function TaskEditor({
               {/* v2.0 — Pour une activité, la date de fin est READ-ONLY :
                   dérivée de (start_date + charge_jours). Pour les jalons /
                   phases, comportement inchangé. */}
-              <label className="block text-sm">
+              <label className="block text-xs">
                 <span className="text-slate-600">
                   Fin
                   {kind === 'task' && (
@@ -771,7 +765,7 @@ export default function TaskEditor({
                 </span>
                 <input
                   type="date"
-                  className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500 read-only:bg-slate-50 read-only:text-slate-500"
+                  className="mt-0.5 block w-full border border-slate-300 rounded px-2 py-1 disabled:bg-slate-100 disabled:text-slate-500 read-only:bg-slate-50 read-only:text-slate-500"
                   value={endDate}
                   min={startDate || undefined}
                   onChange={(e) => handleEndDateChange(e.target.value)}
@@ -783,7 +777,7 @@ export default function TaskEditor({
 
               {/* v1.24 — Contrainte SNET « Ne doit pas démarrer avant le ». */}
               {kind !== 'phase' && (
-                <label className="block text-sm">
+                <label className="block text-xs">
                   <span className="text-slate-600">
                     Ne doit pas démarrer avant le
                     <span className="ml-1 text-xs text-slate-400">
@@ -792,7 +786,7 @@ export default function TaskEditor({
                   </span>
                   <input
                     type="date"
-                    className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+                    className="mt-0.5 block w-full border border-slate-300 rounded px-2 py-1"
                     value={notBeforeDate}
                     onChange={(e) => setNotBeforeDate(e.target.value)}
                     title="Date avant laquelle la tâche ne peut pas démarrer. La règle « plus tardive gagne » s'applique entre cette date et la fin du prédécesseur."
@@ -811,7 +805,7 @@ export default function TaskEditor({
                   BLOQUANTE : si la fin calculée dépasse, on n'empêche pas la
                   sauvegarde — un signal visuel avertit l'utilisateur. */}
               {kind !== 'phase' && (
-                <label className="block text-sm">
+                <label className="block text-xs">
                   <span className="text-slate-600">
                     Fin au plus tard
                     <span className="ml-1 text-xs text-slate-400">
@@ -820,7 +814,7 @@ export default function TaskEditor({
                   </span>
                   <input
                     type="date"
-                    className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+                    className="mt-0.5 block w-full border border-slate-300 rounded px-2 py-1"
                     value={notLaterThanDate}
                     min={notBeforeDate || startDate || undefined}
                     onChange={(e) => setNotLaterThanDate(e.target.value)}
@@ -839,8 +833,10 @@ export default function TaskEditor({
               )}
             </section>
 
-            {/* SECTION 3 — RESSOURCES */}
-            <section className="space-y-3">
+            {/* SECTION 3 — RESSOURCES (pleine largeur).
+                v2.1 — col-span-2 pour éviter le grand vide à droite quand
+                la section Ressources est seule sur sa ligne. */}
+            <section className="space-y-2 md:col-span-2">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                 👥 Ressources
               </h3>
@@ -848,7 +844,7 @@ export default function TaskEditor({
               {/* Collaborateurs — masqué pour les phases ET les jalons (règle
                   J3 v1.24). v2.0 / F6 — Multi-affectation. */}
               {kind === 'task' ? (
-                <div className="block text-sm">
+                <div className="block text-xs">
                   <span className="text-slate-600">
                     Collaborateurs
                     {memberIds && (
@@ -875,7 +871,7 @@ export default function TaskEditor({
                   {addableCollaborators.length > 0 && (
                     <div className="mt-1 flex gap-1">
                       <select
-                        className="flex-1 block border border-slate-300 rounded px-2 py-1.5"
+                        className="flex-1 block border border-slate-300 rounded px-2 py-1"
                         value={picked}
                         onChange={(e) => setPicked(e.target.value)}
                       >
@@ -924,15 +920,15 @@ export default function TaskEditor({
                 de prédécesseurs (qui peuvent être nombreux) et au popover de
                 sélection. Évite le wrap qui rendait le 2e prédécesseur peu
                 lisible en demi-largeur. */}
-            <section className="space-y-3 md:col-span-2">
+            <section className="space-y-2 md:col-span-2">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                 🔗 Dépendances
               </h3>
 
-              <label className="block text-sm">
+              <label className="block text-xs">
                 <span className="text-slate-600">Phase parent</span>
                 <select
-                  className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+                  className="mt-0.5 block w-full border border-slate-300 rounded px-2 py-1"
                   value={parentId}
                   onChange={(e) => setParentId(e.target.value)}
                 >
@@ -949,7 +945,7 @@ export default function TaskEditor({
 
               {/* v1.22 — Prédécesseurs (multi). Masqué pour les phases. */}
               {kind !== 'phase' && (
-                <div className="text-sm">
+                <div className="text-xs">
                   <span className="text-slate-600">
                     Prédécesseurs
                     <span className="ml-1 text-xs text-slate-400">
@@ -972,21 +968,24 @@ export default function TaskEditor({
 
         {/* Footer fixe : Replan checkbox + Supprimer / Annuler / Enregistrer.
             Toujours visible, même si le corps scrolle. */}
-        <div className="px-5 py-3 border-t border-slate-100 space-y-2">
-          {/* v1.22 — Case « Replanifier après enregistrement », visible
-              UNIQUEMENT en mode édition. Cochée par défaut. */}
+        <div className="px-4 py-2 border-t border-slate-100 space-y-1.5">
+          {/* v1.22 — Case « Replanifier après enregistrement ». v2.1 — text-xs
+              et libellé raccourci pour gagner de la hauteur. */}
           {task && (
-            <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer select-none">
+            <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
               <input
                 type="checkbox"
-                className="h-4 w-4 rounded border-slate-300 accent-amber-500"
+                className="h-3.5 w-3.5 rounded border-slate-300 accent-amber-500"
                 checked={replanAfterSave}
                 onChange={(e) => setReplanAfterSave(e.target.checked)}
               />
               <span>
-                🔄 Replanifier le projet après enregistrement
-                <span className="ml-1 text-xs text-slate-500">
-                  (recommandé pour préserver charge et prédécesseurs)
+                🔄 Replanifier après enregistrement
+                <span
+                  className="ml-1 text-slate-400"
+                  title="Recommandé pour préserver charge et prédécesseurs."
+                >
+                  (recommandé)
                 </span>
               </span>
             </label>
@@ -995,7 +994,7 @@ export default function TaskEditor({
           <div className="flex justify-between">
             {task && onDelete ? (
               <button
-                className="px-3 py-1.5 text-sm rounded border border-red-300 text-red-600 hover:bg-red-50"
+                className="px-2.5 py-1 text-xs rounded border border-red-300 text-red-600 hover:bg-red-50"
                 onClick={onDelete}
               >
                 Supprimer
@@ -1005,13 +1004,13 @@ export default function TaskEditor({
             )}
             <div className="flex gap-2">
               <button
-                className="px-3 py-1.5 text-sm rounded border border-slate-300 hover:bg-slate-50"
+                className="px-2.5 py-1 text-xs rounded border border-slate-300 hover:bg-slate-50"
                 onClick={onClose}
               >
                 Annuler
               </button>
               <button
-                className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
+                className="px-2.5 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-700"
                 onClick={handleSave}
               >
                 {task ? 'Enregistrer' : 'Créer'}

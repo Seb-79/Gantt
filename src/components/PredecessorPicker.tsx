@@ -64,10 +64,16 @@ export default function PredecessorPicker({
   /** v2.1 / F2 — Ref sur le contenu du popover (rendu en portail). Sert au
    *  listener mousedown extérieur pour ne pas fermer en cliquant dedans. */
   const popoverRef = useRef<HTMLDivElement>(null)
-  /** v2.1 / F2 — Position absolue (viewport) du popover, mise à jour quand
-   *  open change ou que la fenêtre est redimensionnée. {0,0,0} = pas encore
-   *  calculée → invisible le 1er frame, normal. */
-  const [popoverPos, setPopoverPos] = useState({ top: 0, left: 0, width: 0 })
+  /** v2.1 / F2 — Position absolue (viewport) du popover + hauteur max
+   *  calculée dynamiquement. `placeAbove` indique si on ouvre vers le haut
+   *  (peu de place en bas et plus de place en haut). */
+  const [popoverPos, setPopoverPos] = useState({
+    top: 0,
+    left: 0,
+    width: 0,
+    maxHeight: 288,
+    placeAbove: false,
+  })
 
   /**
    * Ids interdits comme prédécesseur : la tâche elle-même et ses descendants
@@ -162,10 +168,29 @@ export default function PredecessorPicker({
       if (!anchor || !root) return
       const aRect = anchor.getBoundingClientRect()
       const rRect = root.getBoundingClientRect()
+      // v2.1 / F2 — Placement intelligent : si pas assez de place en bas
+      // (cas typique d'une modale qui descend bas) et plus de place au-dessus,
+      // on ouvre vers le HAUT. La hauteur max est ajustée à la place dispo
+      // moins 16 px de marge avec le bord de l'écran.
+      const SAFE_MARGIN = 16
+      const PREFERRED_HEIGHT = 288 // max-h-72 par défaut
+      const vh = window.innerHeight
+      const spaceBelow = vh - aRect.bottom - SAFE_MARGIN
+      const spaceAbove = aRect.top - SAFE_MARGIN
+      const placeAbove =
+        spaceBelow < PREFERRED_HEIGHT && spaceAbove > spaceBelow
+      const maxHeight = Math.max(
+        160, // minimum lisible
+        Math.min(PREFERRED_HEIGHT, placeAbove ? spaceAbove : spaceBelow),
+      )
       setPopoverPos({
-        top: aRect.bottom + 4, // 4 px sous le bouton
+        top: placeAbove
+          ? Math.max(SAFE_MARGIN, aRect.top - maxHeight - 4)
+          : aRect.bottom + 4,
         left: rRect.left, // aligné sur la rangée de chips
         width: rRect.width,
+        maxHeight,
+        placeAbove,
       })
     }
     updatePos()
@@ -262,11 +287,12 @@ export default function PredecessorPicker({
         createPortal(
           <div
             ref={popoverRef}
-            className="fixed z-[60] max-h-72 overflow-auto bg-white border border-slate-300 rounded shadow-lg"
+            className="fixed z-[60] overflow-auto bg-white border border-slate-300 rounded shadow-lg"
             style={{
               top: popoverPos.top,
               left: popoverPos.left,
               width: popoverPos.width,
+              maxHeight: popoverPos.maxHeight,
             }}
           >
             <div className="sticky top-0 bg-white border-b border-slate-200 p-1.5">

@@ -886,7 +886,9 @@ describe("App — auto-replan après modification d'une tâche (v1.22)", () => {
 
     // Décoche la case.
     fireEvent.click(
-      screen.getByRole('checkbox', { name: /Replanifier le projet/ }),
+      screen.getByRole('checkbox', {
+        name: /Replanifier après enregistrement/,
+      }),
     )
     fireEvent.click(screen.getByRole('button', { name: /Enregistrer/ }))
 

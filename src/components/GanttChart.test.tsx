@@ -31,6 +31,7 @@ function mkTask(overrides: Partial<Task> = {}): Task {
     predecessor_lag: 0,
     priority: null,
     not_before_date: null,
+    not_later_than_date: null,
     charge_jours: null,
     position: 0,
     project_id: 'p_test',
@@ -932,6 +933,7 @@ describe('v1.24 — RG-GANTT-0708 — triangle SNET dans le diagramme', () => {
         start_date: '2026-05-20',
         end_date: '2026-05-25',
         not_before_date: null,
+        not_later_than_date: null,
         charge_jours: null,
       }),
     ]

@@ -17,6 +17,18 @@ import {
   startOfWeek,
   startOfMonth,
 } from 'date-fns'
+// v2.0 / Refacto (b) — Helpers ISO partagés avec le serveur. Source de vérité
+// unique pour les fériés FR, l'arithmétique de date et les jours ouvrés.
+import {
+  addDaysIso as sharedAddDaysIso,
+  addWorkingDaysIso,
+  computeSuccessorStartIso,
+  isFrenchHolidayIso,
+  isNonWorkingDayIso,
+  snapBackwardToWorkingDayIso,
+  snapForwardToWorkingDayIso,
+  workingDaysBetweenIso,
+} from '../../shared/working-days.js'
 import type { Collaborator, Task } from './types'
 
 /** Couleur de barre par défaut quand ni la tâche ni son collab n'en ont. */
@@ -203,73 +215,18 @@ export function isWeekendDay(d: Date): boolean {
 // -----------------------------------------------------------------------------
 
 /**
- * v1.23 — Calcule la date du dimanche de Pâques pour une année donnée
- * (algorithme grégorien anonyme). Renvoie un objet `{ month, day }` 1-based
- * — `month` est dans 3..4 (mars ou avril).
- *
- * @param year  Année grégorienne (≥ 1583 ; en pratique tout 20–22e siècle).
- * @returns     `{ month, day }` du dimanche de Pâques.
- */
-function easterSunday(year: number): { month: number; day: number } {
-  const a = year % 19
-  const b = Math.floor(year / 100)
-  const c = year % 100
-  const d = Math.floor(b / 4)
-  const e = b % 4
-  const f = Math.floor((b + 8) / 25)
-  const g = Math.floor((b - f + 1) / 3)
-  const h = (19 * a + b - d - g + 15) % 30
-  const i = Math.floor(c / 4)
-  const k = c % 4
-  const l = (32 + 2 * e + 2 * i - h - k) % 7
-  const m = Math.floor((a + 11 * h + 22 * l) / 451)
-  const n = h + l - 7 * m + 114
-  return { month: Math.floor(n / 31), day: (n % 31) + 1 }
-}
-
-/** Cache interne : année → set des dates ISO fériées. */
-const FRENCH_HOLIDAYS_CACHE = new Map<number, Set<string>>()
-
-/**
- * v1.23 — Renvoie le set (en cache) des dates ISO fériées en France pour une
- * année donnée. Le calcul est partagé entre les détecteurs et les tests.
- *
- * @param year  Année grégorienne.
- * @returns     Set des dates ISO (YYYY-MM-DD) — 11 entrées en pratique.
- */
-function frenchHolidaysOf(year: number): Set<string> {
-  const cached = FRENCH_HOLIDAYS_CACHE.get(year)
-  if (cached) return cached
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const set = new Set<string>([
-    `${year}-01-01`, // Jour de l'An
-    `${year}-05-01`, // Fête du Travail
-    `${year}-05-08`, // Victoire 1945
-    `${year}-07-14`, // Fête nationale
-    `${year}-08-15`, // Assomption
-    `${year}-11-01`, // Toussaint
-    `${year}-11-11`, // Armistice 1918
-    `${year}-12-25`, // Noël
-  ])
-  const e = easterSunday(year)
-  const easterIso = `${year}-${pad(e.month)}-${pad(e.day)}`
-  set.add(addDaysIso(easterIso, 1)) // Lundi de Pâques
-  set.add(addDaysIso(easterIso, 39)) // Jeudi de l'Ascension
-  set.add(addDaysIso(easterIso, 50)) // Lundi de Pentecôte
-  FRENCH_HOLIDAYS_CACHE.set(year, set)
-  return set
-}
-
-/**
  * v1.23 — Indique si une date tombe un jour férié du calendrier français
  * (national, hors Alsace-Moselle). Couvre toutes les années (algorithmique,
  * pas une liste figée à 2026).
+ *
+ * v2.0 / Refacto (b) — Délègue à `isFrenchHolidayIso` (module shared/) pour
+ * une source de vérité unique avec le serveur.
  *
  * @param d  Objet Date.
  * @returns  true si la date est un jour férié français.
  */
 export function isFrenchHoliday(d: Date): boolean {
-  return frenchHolidaysOf(d.getFullYear()).has(dateToIso(d))
+  return isFrenchHolidayIso(dateToIso(d))
 }
 
 /**
@@ -278,17 +235,18 @@ export function isFrenchHoliday(d: Date): boolean {
  * (`addWorkingDays`, `workingDaysBetween`, `snapForwardToWorkingDay`,
  * `snapBackwardToWorkingDay`, `computeWorkload`).
  *
+ * v2.0 / Refacto (b) — Délègue à `isNonWorkingDayIso` (module shared/).
+ *
  * @param d  Objet Date.
  * @returns  true si jour non ouvré.
  */
 export function isNonWorkingDay(d: Date): boolean {
-  return isWeekendDay(d) || isFrenchHoliday(d)
+  return isNonWorkingDayIso(dateToIso(d))
 }
 
 /**
  * v1.9 — Ajoute `charge` jours OUVRÉS à partir de startIso et renvoie la
- * date de fin (incluse). La date de début est comptée comme le 1er jour
- * ouvré si elle en est un ; les week-ends sont sautés.
+ * date de fin (incluse). Saute week-ends ET jours fériés français.
  *
  * Exemples (start = lundi 18 mai 2026) :
  *   • charge=1 → 18 mai (un seul jour ouvré : le lundi)
@@ -296,26 +254,14 @@ export function isNonWorkingDay(d: Date): boolean {
  *   • charge=5 → 22 mai (lundi → vendredi)
  *   • charge=6 → 25 mai (lun→ven puis sauté sam/dim, lundi suivant)
  *
- * Si la date de début est elle-même un week-end, le décompte ne commence
- * qu'au 1er jour ouvré rencontré (la fin se retrouve alors décalée).
+ * v2.0 / Refacto (b) — Délègue à `addWorkingDaysIso` (module shared/).
  *
  * @param startIso  Date de début YYYY-MM-DD.
  * @param charge    Nombre de jours ouvrés (≥ 1 ; toute valeur ≤ 1 vaut 1).
  * @returns         Date de fin YYYY-MM-DD (incluse).
  */
 export function addWorkingDays(startIso: string, charge: number): string {
-  // Charge ≤ 1 → 1 seul jour ouvré → fin = début (convention : 1 jour de
-  // présence, même si start tombe un week-end / férié on garde la date
-  // saisie pour ne pas surprendre l'utilisateur).
-  if (charge <= 1) return startIso
-  let cur = isoToDate(startIso)
-  // v1.23 — `isNonWorkingDay` couvre week-ends ET jours fériés français.
-  let count = isNonWorkingDay(cur) ? 0 : 1
-  while (count < charge) {
-    cur = addDays(cur, 1)
-    if (!isNonWorkingDay(cur)) count++
-  }
-  return dateToIso(cur)
+  return addWorkingDaysIso(startIso, charge)
 }
 
 /**
@@ -530,7 +476,7 @@ export function computeEndFromCharge(
  * @returns     Date ISO décalée.
  */
 export function addDaysIso(iso: string, days: number): string {
-  return dateToIso(addDays(isoToDate(iso), days))
+  return sharedAddDaysIso(iso, days)
 }
 
 /**
@@ -542,10 +488,7 @@ export function addDaysIso(iso: string, days: number): string {
  * @returns    Date ISO d'un jour ouvré (= iso ou décalée au lundi suivant).
  */
 export function snapForwardToWorkingDay(iso: string): string {
-  let cur = isoToDate(iso)
-  // v1.23 — Saute week-ends ET jours fériés français.
-  while (isNonWorkingDay(cur)) cur = addDays(cur, 1)
-  return dateToIso(cur)
+  return snapForwardToWorkingDayIso(iso)
 }
 
 /**
@@ -557,10 +500,7 @@ export function snapForwardToWorkingDay(iso: string): string {
  * @returns    Date ISO d'un jour ouvré (= iso ou reculée au vendredi précédent).
  */
 export function snapBackwardToWorkingDay(iso: string): string {
-  let cur = isoToDate(iso)
-  // v1.23 — Recule sur week-ends ET jours fériés français.
-  while (isNonWorkingDay(cur)) cur = addDays(cur, -1)
-  return dateToIso(cur)
+  return snapBackwardToWorkingDayIso(iso)
 }
 
 /**
@@ -603,9 +543,7 @@ export function daysBetweenIso(startIso: string, endIso: string): number {
  * @returns        Date de début du successeur YYYY-MM-DD.
  */
 export function computeSuccessorStart(predEnd: string, lag: number): string {
-  const base = snapForwardToWorkingDay(predEnd)
-  if (lag <= 0) return base
-  return addWorkingDays(base, lag + 2)
+  return computeSuccessorStartIso(predEnd, lag)
 }
 
 /**
@@ -686,15 +624,7 @@ export function flattenTaskTree(
  * @returns         Nombre de jours ouvrés (≥ 0).
  */
 export function workingDaysBetween(startIso: string, endIso: string): number {
-  if (!startIso || !endIso || endIso < startIso) return 0
-  const start = isoToDate(startIso)
-  const n = differenceInCalendarDays(isoToDate(endIso), start) + 1
-  let count = 0
-  for (let i = 0; i < n; i++) {
-    // v1.23 — Ne compte que les jours ouvrés (hors week-ends et fériés).
-    if (!isNonWorkingDay(addDays(start, i))) count++
-  }
-  return count
+  return workingDaysBetweenIso(startIso, endIso)
 }
 
 /**

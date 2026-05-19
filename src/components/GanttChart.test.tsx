@@ -14,30 +14,8 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import GanttChart from './GanttChart'
 import type { Collaborator, Task } from '../lib/types'
-
-/** Helper tâche. */
-function mkTask(overrides: Partial<Task> = {}): Task {
-  return {
-    id: 't',
-    name: 'T',
-    kind: 'task',
-    start_date: '2026-05-01',
-    end_date: '2026-05-05',
-    progress: 0,
-    collaborator_id: null,
-    color: null,
-    parent_id: null,
-    predecessor_id: null,
-    predecessor_lag: 0,
-    priority: null,
-    not_before_date: null,
-    not_later_than_date: null,
-    charge_jours: null,
-    position: 0,
-    project_id: 'p_test',
-    ...overrides,
-  }
-}
+// v2.0 / Refacto (f) — Fixture mutualisée (src/test/fixtures.ts).
+import { mkTask } from '../test/fixtures'
 
 const COLLABS: Collaborator[] = [
   { id: 'c1', name: 'Alice', color: '#3b82f6', position: 0 },

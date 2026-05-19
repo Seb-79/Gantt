@@ -101,13 +101,17 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_collab ON tasks(collaborator_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
--- idx_tasks_project est créé par `ensureProjectsMigration()` dans db/index.js
+-- idx_tasks_project est créé par `ensureProjectsMigration()` dans db/migrations.js
 -- (même raison que idx_tasks_predecessor : la colonne peut être ajoutée par
 -- migration ALTER TABLE sur une base antérieure à la v1.8).
 -- L'index `idx_tasks_predecessor` est créé par `ensureTaskColumns()` dans
--- db/index.js : il dépend d'une colonne ajoutée par migration ALTER TABLE,
+-- db/migrations.js : il dépend d'une colonne ajoutée par migration ALTER TABLE,
 -- qui n'existe pas forcément quand `schema.sql` est rejoué sur une base
 -- créée avant la v1.2 (CREATE TABLE IF NOT EXISTS ne migre pas).
+-- v2.0 / Audit (e) — Idem pour `idx_tasks_kind_collab` (créé dans
+-- `ensureTaskColumns()`) et `idx_tasks_project_position` (créé dans
+-- `ensureProjectsMigration()`) : leurs colonnes peuvent être ajoutées par
+-- ALTER TABLE après que schema.sql se soit rejoué.
 
 -- =============================================================================
 -- v1.21 — Table de liaison N:M tasks ↔ prédécesseurs.
@@ -186,6 +190,10 @@ CREATE TABLE IF NOT EXISTS member_allocations (
 );
 CREATE INDEX IF NOT EXISTS idx_member_allocations_lookup
   ON member_allocations(project_id, collaborator_id);
+-- v2.0 / Audit (e) — Recherche d'allocations actives sur une date donnée
+-- (capacité cross-projet, plan de charge global).
+CREATE INDEX IF NOT EXISTS idx_member_allocations_dates
+  ON member_allocations(start_date, end_date);
 
 -- =============================================================================
 -- v2.0 / F3 — Absences (congés) d'un collaborateur.

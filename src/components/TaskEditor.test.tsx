@@ -16,29 +16,21 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import TaskEditor from './TaskEditor'
 import type { Collaborator, Task } from '../lib/types'
+import { mkTask as mkTaskBase } from '../test/fixtures'
 
-/** Helper pour fabriquer une tâche complète sans verbosité dans chaque test. */
+/**
+ * Wrapper local : ce fichier veut une tâche par défaut nommée « Tâche A »
+ * (id `t1`) avec une fenêtre [2026-05-01, 2026-05-10] — suffisamment large
+ * pour exercer les contrôles d'édition (modifier `end_date`, déplacer
+ * `start_date`, etc.). Les autres champs viennent de la fixture partagée.
+ */
 function mkTask(overrides: Partial<Task> = {}): Task {
-  return {
+  return mkTaskBase({
     id: 't1',
     name: 'Tâche A',
-    kind: 'task',
-    start_date: '2026-05-01',
     end_date: '2026-05-10',
-    progress: 0,
-    collaborator_id: null,
-    color: null,
-    parent_id: null,
-    predecessor_id: null,
-    predecessor_lag: 0,
-    priority: null,
-    not_before_date: null,
-    not_later_than_date: null,
-    charge_jours: null,
-    position: 0,
-    project_id: 'p_test',
     ...overrides,
-  }
+  })
 }
 
 const COLLABS: Collaborator[] = [

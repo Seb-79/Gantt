@@ -48,33 +48,26 @@ import {
   MIN_DAY_WIDTH,
 } from './utils'
 import type { Collaborator, Task } from './types'
+import { mkTask as mkTaskBase } from '../test/fixtures'
 
-/** Petit helper pour fabriquer une tâche minimale dans les tests. */
+/**
+ * Wrapper local autour de la fixture partagée `mkTaskBase` pour conserver
+ * la signature positionnelle historique `mkTask(id, overrides?)` utilisée
+ * par ~100 cas de ce fichier.
+ *
+ * Spécificités de ce fichier de tests (vs la fixture par défaut) :
+ *   • `name = id` (les assertions ciblent le libellé par l'id).
+ *   • Fenêtre par défaut [2026-01-01, 2026-01-02] : on commence l'année,
+ *     fenêtre courte → idéal pour exercer les calculs d'extension.
+ */
 function mkTask(id: string, overrides: Partial<Task> = {}): Task {
-  return {
+  return mkTaskBase({
     id,
     name: id,
-    kind: 'task',
     start_date: '2026-01-01',
     end_date: '2026-01-02',
-    progress: 0,
-    collaborator_id: null,
-    color: null,
-    parent_id: null,
-    predecessor_id: null,
-    predecessor_lag: 0,
-    priority: null,
-    not_before_date: null,
-    // v2.0 / F4 — FNLT facultatif, null par défaut (pas de deadline imposée).
-    not_later_than_date: null,
-    // v2.0 — charge_jours par défaut à null pour les tests qui ne s'en
-    // soucient pas (rétro-compatibilité : la replan utilise un fallback sur
-    // workingDaysBetween(start, end) si charge_jours n'est pas positionnée).
-    charge_jours: null,
-    position: 0,
-    project_id: 'p_test',
     ...overrides,
-  }
+  })
 }
 
 describe('isoToDate / dateToIso', () => {
@@ -1830,8 +1823,8 @@ describe('workloadCellStyleNormalized (v2.0 / F5)', () => {
     expect(workloadCellStyleNormalized(0.75, 0.5)).toMatch(/bg-red-500/)
   })
 
-  // RG-GANTT-1612 — capacité 0 + workload > 0 : anomalie, surcharge brute.
-  it('v2.0 / RG-GANTT-1612 — capacité 0 mais workload > 0 → rouge (anomalie)', () => {
+  // RG-GANTT-1611 — capacité 0 + workload > 0 : anomalie, surcharge brute.
+  it('v2.0 / RG-GANTT-1611 — capacité 0 mais workload > 0 → rouge (anomalie)', () => {
     expect(workloadCellStyleNormalized(0.5, 0)).toMatch(/bg-red-500/)
   })
 })

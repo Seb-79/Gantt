@@ -46,6 +46,8 @@ export default defineConfig({
       'src/**/*.test.{ts,tsx}',
       'db/**/*.test.{js,ts}',
       'server/**/*.test.{js,ts}',
+      // v2.0 / Refacto (d) — Méta-test traçabilité du catalogue RG-GANTT.
+      'docs/**/*.test.{js,ts}',
     ],
     // Setup global pour les tests React (extensions DOM de jest-dom).
     setupFiles: ['./src/test/setup.ts'],

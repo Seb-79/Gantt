@@ -14,28 +14,19 @@ import { describe, it, expect } from 'vitest'
 import { render } from '@testing-library/react'
 import WorkloadChart from './WorkloadChart'
 import type { Collaborator, Task } from '../lib/types'
+import { mkTask as mkTaskBase } from '../test/fixtures'
 
+/**
+ * Wrapper local : ce fichier veut une fenêtre lundi-mardi (2026-05-11/12)
+ * pour exercer la grille de charge sans tomber sur un WE. Les autres
+ * champs viennent de la fixture partagée.
+ */
 function mkTask(overrides: Partial<Task> = {}): Task {
-  return {
-    id: 't',
-    name: 'T',
-    kind: 'task',
+  return mkTaskBase({
     start_date: '2026-05-11',
     end_date: '2026-05-12',
-    progress: 0,
-    collaborator_id: null,
-    color: null,
-    parent_id: null,
-    predecessor_id: null,
-    predecessor_lag: 0,
-    priority: null,
-    not_before_date: null,
-    not_later_than_date: null,
-    charge_jours: null,
-    position: 0,
-    project_id: 'p_test',
     ...overrides,
-  }
+  })
 }
 
 const COLLABS: Collaborator[] = [

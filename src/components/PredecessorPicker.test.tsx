@@ -7,30 +7,20 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import PredecessorPicker from './PredecessorPicker'
 import type { Task } from '../lib/types'
+import { mkTask as mkTaskBase } from '../test/fixtures'
 
-/** Fabrique une tâche minimale typée (les champs non utilisés sont par défaut). */
+/**
+ * Wrapper local : ce fichier teste un picker qui exige des tâches avec
+ * `priority=3` (les jalons n'ont pas de priorité) et `project_id='p1'`
+ * (jeton historique du fichier). On dérive de la fixture partagée pour
+ * ne pas dupliquer les autres champs.
+ */
 function mkTask(overrides: Partial<Task>): Task {
-  return {
-    id: 't',
-    name: 'T',
-    kind: 'task',
-    start_date: '2026-05-01',
-    end_date: '2026-05-05',
-    progress: 0,
-    collaborator_id: null,
-    color: null,
-    parent_id: null,
-    predecessors: [],
-    predecessor_id: null,
-    predecessor_lag: 0,
+  return mkTaskBase({
     priority: 3,
-    not_before_date: null,
-    not_later_than_date: null,
-    charge_jours: null,
-    position: 0,
     project_id: 'p1',
     ...overrides,
-  }
+  })
 }
 
 /**

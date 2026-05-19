@@ -222,6 +222,23 @@ export default function TaskEditor({
   }, [task, defaults])
 
   /**
+   * v2.1 / F2 — Listener ESC global : ferme la modale sans sauvegarder.
+   * Cohérent avec le comportement du composant `<Dialogs />` et du clic
+   * sur le backdrop. Le bouton Annuler reste : ESC est un raccourci, pas
+   * un remplacement (accessibilité clavier + souris).
+   */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
+  /**
    * v2.0 / F2 — Helper local : calcule la date de fin d'une activité depuis
    * sa charge en consommant la capacité allouée du collab sélectionné. Sans
    * collab sélectionné OU sans allocations OU sans projectId, retombe sur le
@@ -494,473 +511,505 @@ export default function TaskEditor({
 
   return (
     <div
-      className="fixed inset-0 bg-black/40 flex items-center justify-center z-50"
+      className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4"
       onClick={onClose}
     >
+      {/* v2.1 / F2 — Largeur élargie à max-w-3xl (768 px) + max-h 90 % de
+          viewport avec scroll interne, pour que titre + zones de champs +
+          boutons restent visibles sans déborder l'écran. Layout en 4 zones
+          en grille 2 colonnes : Identité / Dates & Charge / Ressources /
+          Dépendances. Footer fixe en bas (boutons toujours visibles). */}
       <div
-        className="bg-white rounded-lg shadow-xl w-full max-w-md p-5 space-y-3"
+        className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="text-lg font-semibold">
-          {task ? 'Modifier' : 'Nouvelle tâche / jalon / phase'}
-        </h2>
+        {/* Header : titre + bandeau d'erreur (fixé en haut). */}
+        <div className="px-5 pt-5 pb-3 border-b border-slate-100">
+          <h2 className="text-lg font-semibold">
+            {task ? 'Modifier' : 'Nouvelle tâche / jalon / phase'}
+          </h2>
 
-        {/* Bandeau d'erreur lisible (validation locale OU erreur API
-            transmise via prop ultérieurement). */}
-        {error && (
-          <div
-            className="text-sm rounded border border-red-300 bg-red-50 text-red-700 px-3 py-2"
-            role="alert"
-          >
-            {error}
-          </div>
-        )}
-
-        <label className="block text-sm">
-          <span className="text-slate-600">Nom</span>
-          <input
-            className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            autoFocus
-          />
-        </label>
-
-        <div className="flex gap-2">
-          <label className="block text-sm flex-1">
-            <span className="text-slate-600">Type</span>
-            <select
-              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
-              value={kind}
-              onChange={(e) => setKind(e.target.value as TaskKind)}
+          {/* Bandeau d'erreur lisible (validation locale OU erreur API
+              transmise via prop ultérieurement). */}
+          {error && (
+            <div
+              className="mt-3 text-sm rounded border border-red-300 bg-red-50 text-red-700 px-3 py-2"
+              role="alert"
             >
-              <option value="task">Tâche</option>
-              <option value="milestone">Jalon</option>
-              <option value="phase">Phase (regroupement)</option>
-            </select>
-          </label>
+              {error}
+            </div>
+          )}
 
-          <label className="block text-sm flex-1">
-            <span className="text-slate-600">Avancement (%)</span>
-            <input
-              type="number"
-              min={0}
-              max={100}
-              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
-              value={progress}
-              onChange={(e) => setProgress(Number(e.target.value))}
-              disabled={kind === 'milestone' || kind === 'phase'}
-            />
-          </label>
+          {/* v1.6 — Bandeau d'aide spécifique aux phases (déplacé du milieu
+              du formulaire vers le header pour rester visible quel que soit
+              l'état de scroll interne). */}
+          {kind === 'phase' && (
+            <div className="mt-3 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded px-3 py-2">
+              🗂️ <strong>Phase</strong> : les dates seront calculées
+              automatiquement à partir des activités enfants (début = la plus
+              précoce, fin = la plus tardive). Une phase n'a pas de
+              collaborateur ni de prédécesseur.
+            </div>
+          )}
         </div>
 
-        {/* v1.6 — Bandeau d'aide spécifique aux phases. */}
-        {kind === 'phase' && (
-          <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded px-3 py-2">
-            🗂️ <strong>Phase</strong> : les dates seront calculées
-            automatiquement à partir des activités enfants (début = la plus
-            précoce, fin = la plus tardive). Une phase n'a pas de collaborateur
-            ni de prédécesseur.
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          <label className="block text-sm flex-1">
-            <span className="text-slate-600">
-              Début
-              {minStart && (
-                <span
-                  className="ml-1 text-xs text-slate-400"
-                  title={`Minimum : ${minStart} (max des fins de prédécesseurs + lag)`}
-                >
-                  (≥ {minStart})
-                </span>
-              )}
-            </span>
+        {/* Corps scrollable. flex-1 + overflow-y-auto : si le contenu dépasse
+            (petit écran), on scroll À L'INTÉRIEUR de la modale et les boutons
+            du footer restent accrochés en bas. */}
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+          {/* Nom — pleine largeur, c'est le champ le plus important. */}
+          <label className="block text-sm">
+            <span className="text-slate-600">Nom</span>
             <input
-              type="date"
-              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
-              value={startDate}
-              min={minStart || undefined}
-              onChange={(e) => handleStartDateChange(e.target.value)}
-              disabled={kind === 'phase'}
-              title={startDateTooltip()}
+              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
             />
           </label>
 
-          {/* v1.9 — Champ Charge (jours ouvrés). Affiché uniquement pour
-              kind='task' : un jalon est ponctuel, une phase est auto-calculée. */}
-          {kind === 'task' && (
-            <label className="block text-sm w-28">
-              <span
-                className="text-slate-600"
-                title="Nombre de jours ouvrés (lundi-vendredi). Détermine la date de fin."
-              >
-                Charge (j)
-              </span>
+          {/* Grille 2 colonnes (1 col en mobile). Chaque section regroupe des
+              champs cohérents par thème pour faciliter le repérage visuel. */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
+            {/* SECTION 1 — IDENTITÉ */}
+            <section className="space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                🏷 Identité
+              </h3>
+
+              <div className="flex gap-2">
+                <label className="block text-sm flex-1">
+                  <span className="text-slate-600">Type</span>
+                  <select
+                    className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+                    value={kind}
+                    onChange={(e) => setKind(e.target.value as TaskKind)}
+                  >
+                    <option value="task">Tâche</option>
+                    <option value="milestone">Jalon</option>
+                    <option value="phase">Phase (regroupement)</option>
+                  </select>
+                </label>
+
+                <label className="block text-sm flex-1">
+                  <span className="text-slate-600">Avancement (%)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
+                    value={progress}
+                    onChange={(e) => setProgress(Number(e.target.value))}
+                    disabled={kind === 'milestone' || kind === 'phase'}
+                  />
+                </label>
+              </div>
+
+              {/* v1.18 / v1.24 — Priorité OBLIGATOIRE sur les activités (1..5,
+                  défaut 3). Masquée pour les jalons et les phases. 1 = la
+                  plus prioritaire, 5 = la moins. */}
+              {kind === 'task' && (
+                <label className="block text-sm">
+                  <span className="text-slate-600">
+                    Priorité
+                    <span className="ml-1 text-xs text-slate-400">
+                      (1 = plus prioritaire, 5 = moins ; utilisée par « Replan
+                      »)
+                    </span>
+                  </span>
+                  <select
+                    className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+                    value={String(priority ?? 3)}
+                    onChange={(e) => setPriority(Number(e.target.value))}
+                    title="1 = la plus prioritaire, 5 = la moins. Défaut : 3."
+                  >
+                    <option value="1">1 (la plus prioritaire)</option>
+                    <option value="2">2</option>
+                    <option value="3">3 (par défaut)</option>
+                    <option value="4">4</option>
+                    <option value="5">5 (la moins prioritaire)</option>
+                  </select>
+                </label>
+              )}
+
+              {/* COULEUR — éditable, par défaut = couleur effective */}
+              <div className="block text-sm">
+                <span className="text-slate-600">Couleur de la barre</span>
+                <div className="mt-1 flex items-center gap-2">
+                  <input
+                    type="color"
+                    className="h-9 w-14 border border-slate-300 rounded cursor-pointer"
+                    value={
+                      color ||
+                      effectiveTaskColor(
+                        // tâche fictive juste pour le calcul de couleur effective
+                        {
+                          id: '',
+                          name: '',
+                          kind: 'task',
+                          start_date: '',
+                          end_date: '',
+                          progress: 0,
+                          // v2.0 / F6 — 1er collab affecté (ordre d'ajout)
+                          // pour résoudre la couleur effective.
+                          collaborator_id: collabIds[0] || null,
+                          color: null,
+                          parent_id: null,
+                          predecessor_id: null,
+                          predecessor_lag: 0,
+                          priority: null,
+                          not_before_date: null,
+                          not_later_than_date: null,
+                          charge_jours: null,
+                          position: 0,
+                          project_id: '',
+                        },
+                        collaborators,
+                      )
+                    }
+                    onChange={(e) => setColor(e.target.value)}
+                    title="Choisir une couleur personnalisée"
+                  />
+                  <span className="text-xs text-slate-500 flex-1">
+                    {color ? (
+                      <>Couleur personnalisée : {color}</>
+                    ) : (
+                      <>
+                        Auto :{' '}
+                        <span
+                          className="inline-block w-3 h-3 rounded align-middle mr-1"
+                          style={{ backgroundColor: defaultColor }}
+                        />
+                        hérite du collaborateur
+                      </>
+                    )}
+                  </span>
+                  {color && (
+                    <button
+                      type="button"
+                      className="px-2 py-1 text-xs rounded border border-slate-300 hover:bg-slate-100"
+                      onClick={() => setColor('')}
+                      title="Repasser en automatique (hérite du collaborateur)"
+                    >
+                      ↺ Auto
+                    </button>
+                  )}
+                </div>
+              </div>
+            </section>
+
+            {/* SECTION 2 — DATES & CHARGE */}
+            <section className="space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                📅 Dates &amp; charge
+              </h3>
+
+              <div className="flex gap-2">
+                <label className="block text-sm flex-1">
+                  <span className="text-slate-600">
+                    Début
+                    {minStart && (
+                      <span
+                        className="ml-1 text-xs text-slate-400"
+                        title={`Minimum : ${minStart} (max des fins de prédécesseurs + lag)`}
+                      >
+                        (≥ {minStart})
+                      </span>
+                    )}
+                  </span>
+                  <input
+                    type="date"
+                    className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500"
+                    value={startDate}
+                    min={minStart || undefined}
+                    onChange={(e) => handleStartDateChange(e.target.value)}
+                    disabled={kind === 'phase'}
+                    title={startDateTooltip()}
+                  />
+                </label>
+
+                {/* v1.9 — Champ Charge (jours ouvrés). Affiché uniquement
+                    pour kind='task'. */}
+                {kind === 'task' && (
+                  <label className="block text-sm w-24">
+                    <span
+                      className="text-slate-600"
+                      title="Nombre de jours ouvrés (lundi-vendredi). Détermine la date de fin."
+                    >
+                      Charge (j)
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+                      value={charge}
+                      onChange={(e) => handleChargeChange(e.target.value)}
+                      title="Nombre de jours ouvrés (lundi-vendredi). La date de fin est recalculée automatiquement (les week-ends sont sautés)."
+                    />
+                  </label>
+                )}
+              </div>
+
+              {/* v2.0 — Pour une activité, la date de fin est READ-ONLY :
+                  dérivée de (start_date + charge_jours). Pour les jalons /
+                  phases, comportement inchangé. */}
+              <label className="block text-sm">
+                <span className="text-slate-600">
+                  Fin
+                  {kind === 'task' && (
+                    <span
+                      className="ml-1 text-xs text-slate-400"
+                      title="Calculée automatiquement depuis le début et la charge."
+                    >
+                      (calculée)
+                    </span>
+                  )}
+                </span>
+                <input
+                  type="date"
+                  className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500 read-only:bg-slate-50 read-only:text-slate-500"
+                  value={endDate}
+                  min={startDate || undefined}
+                  onChange={(e) => handleEndDateChange(e.target.value)}
+                  disabled={kind === 'milestone' || kind === 'phase'}
+                  readOnly={kind === 'task'}
+                  title={endDateTooltip()}
+                />
+              </label>
+
+              {/* v1.24 — Contrainte SNET « Ne doit pas démarrer avant le ». */}
+              {kind !== 'phase' && (
+                <label className="block text-sm">
+                  <span className="text-slate-600">
+                    Ne doit pas démarrer avant le
+                    <span className="ml-1 text-xs text-slate-400">
+                      (facultatif)
+                    </span>
+                  </span>
+                  <input
+                    type="date"
+                    className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+                    value={notBeforeDate}
+                    onChange={(e) => setNotBeforeDate(e.target.value)}
+                    title="Date avant laquelle la tâche ne peut pas démarrer. La règle « plus tardive gagne » s'applique entre cette date et la fin du prédécesseur."
+                  />
+                  {notBeforeDate &&
+                    isNonWorkingDay(new Date(notBeforeDate + 'T00:00:00')) && (
+                      <span className="block mt-1 text-xs text-amber-700">
+                        ⚠ Cette date tombe un week-end ou un jour férié. Elle
+                        sera appliquée au prochain jour ouvré.
+                      </span>
+                    )}
+                </label>
+              )}
+
+              {/* v2.0 / F4 — Contrainte FNLT « Fin au plus tard ». NON
+                  BLOQUANTE : si la fin calculée dépasse, on n'empêche pas la
+                  sauvegarde — un signal visuel avertit l'utilisateur. */}
+              {kind !== 'phase' && (
+                <label className="block text-sm">
+                  <span className="text-slate-600">
+                    Fin au plus tard
+                    <span className="ml-1 text-xs text-slate-400">
+                      (deadline non bloquante)
+                    </span>
+                  </span>
+                  <input
+                    type="date"
+                    className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+                    value={notLaterThanDate}
+                    min={notBeforeDate || startDate || undefined}
+                    onChange={(e) => setNotLaterThanDate(e.target.value)}
+                    title="Date de fin AU PLUS TARD souhaitée. Si la fin calculée dépasse, c'est signalé visuellement mais la sauvegarde reste possible."
+                  />
+                  {notLaterThanDate &&
+                    endDate &&
+                    endDate > notLaterThanDate && (
+                      <span className="block mt-1 text-xs text-red-700">
+                        ⚠ La fin calculée ({endDate}) dépasse cette deadline. La
+                        tâche sera signalée comme « en retard » dans le bandeau
+                        d'alertes.
+                      </span>
+                    )}
+                </label>
+              )}
+            </section>
+
+            {/* SECTION 3 — RESSOURCES */}
+            <section className="space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                👥 Ressources
+              </h3>
+
+              {/* Collaborateurs — masqué pour les phases ET les jalons (règle
+                  J3 v1.24). v2.0 / F6 — Multi-affectation. */}
+              {kind === 'task' ? (
+                <div className="block text-sm">
+                  <span className="text-slate-600">
+                    Collaborateurs
+                    {memberIds && (
+                      <span
+                        className="ml-1 text-xs text-slate-400"
+                        title="Seuls les membres du projet sont proposés. Plusieurs collaborateurs sont autorisés ; la durée prend en compte la somme de leurs capacités."
+                      >
+                        (multi — membres du projet)
+                      </span>
+                    )}
+                  </span>
+                  {collabIds.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {collabIds.map((cId) => (
+                        <CollabChip
+                          key={cId}
+                          cId={cId}
+                          collaborators={collaborators}
+                          onRemove={removeCollab}
+                        />
+                      ))}
+                    </div>
+                  )}
+                  {addableCollaborators.length > 0 && (
+                    <div className="mt-1 flex gap-1">
+                      <select
+                        className="flex-1 block border border-slate-300 rounded px-2 py-1.5"
+                        value={picked}
+                        onChange={(e) => setPicked(e.target.value)}
+                      >
+                        <option value="">— ajouter —</option>
+                        {addableCollaborators.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!picked) return
+                          setCollabIds((ids) =>
+                            ids.includes(picked) ? ids : [...ids, picked],
+                          )
+                          setPicked('')
+                        }}
+                        disabled={!picked}
+                        className="px-2 rounded bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed"
+                        title="Ajouter ce collaborateur à la tâche"
+                      >
+                        +
+                      </button>
+                    </div>
+                  )}
+                  {memberIds && eligibleCollaborators.length === 0 && (
+                    <p className="mt-1 text-xs text-amber-700">
+                      Aucun collaborateur n’est encore membre de ce projet.
+                      Ouvrez l’onglet « Affectation » pour en ajouter.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500 italic">
+                  {kind === 'milestone'
+                    ? "Un jalon n'est pas affecté à un collaborateur."
+                    : "Une phase n'est pas affectée à un collaborateur."}
+                </p>
+              )}
+            </section>
+
+            {/* SECTION 4 — DÉPENDANCES */}
+            <section className="space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                🔗 Dépendances
+              </h3>
+
+              <label className="block text-sm">
+                <span className="text-slate-600">Phase parent</span>
+                <select
+                  className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
+                  value={parentId}
+                  onChange={(e) => setParentId(e.target.value)}
+                >
+                  <option value="">— aucune —</option>
+                  {tasks
+                    .filter((t) => t.id !== task?.id && t.kind === 'phase')
+                    .map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+
+              {/* v1.22 — Prédécesseurs (multi). Masqué pour les phases. */}
+              {kind !== 'phase' && (
+                <div className="text-sm">
+                  <span className="text-slate-600">
+                    Prédécesseurs
+                    <span className="ml-1 text-xs text-slate-400">
+                      (facultatif)
+                    </span>
+                  </span>
+                  <div className="mt-1">
+                    <PredecessorPicker
+                      task={task}
+                      allTasks={tasks}
+                      value={predecessorsList}
+                      onChange={handlePredecessorsChange}
+                    />
+                  </div>
+                </div>
+              )}
+            </section>
+          </div>
+        </div>
+
+        {/* Footer fixe : Replan checkbox + Supprimer / Annuler / Enregistrer.
+            Toujours visible, même si le corps scrolle. */}
+        <div className="px-5 py-3 border-t border-slate-100 space-y-2">
+          {/* v1.22 — Case « Replanifier après enregistrement », visible
+              UNIQUEMENT en mode édition. Cochée par défaut. */}
+          {task && (
+            <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer select-none">
               <input
-                type="number"
-                min={1}
-                step={1}
-                className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
-                value={charge}
-                onChange={(e) => handleChargeChange(e.target.value)}
-                title="Nombre de jours ouvrés (lundi-vendredi). La date de fin est recalculée automatiquement (les week-ends sont sautés)."
+                type="checkbox"
+                className="h-4 w-4 rounded border-slate-300 accent-amber-500"
+                checked={replanAfterSave}
+                onChange={(e) => setReplanAfterSave(e.target.checked)}
               />
+              <span>
+                🔄 Replanifier le projet après enregistrement
+                <span className="ml-1 text-xs text-slate-500">
+                  (recommandé pour préserver charge et prédécesseurs)
+                </span>
+              </span>
             </label>
           )}
 
-          {/* v2.0 — Pour une activité, la date de fin devient READ-ONLY :
-              elle est désormais DÉRIVÉE de (start_date + charge_jours), la
-              charge étant la source de vérité. L'utilisateur saisit la charge,
-              le champ « Fin » affiche le résultat. Pour les jalons / phases,
-              comportement inchangé (jalon : fin = début forcé ; phase : fin =
-              MAX des enfants). */}
-          <label className="block text-sm flex-1">
-            <span className="text-slate-600">
-              Fin
-              {kind === 'task' && (
-                <span
-                  className="ml-1 text-xs text-slate-400"
-                  title="Calculée automatiquement depuis le début et la charge."
-                >
-                  (calculée)
-                </span>
-              )}
-            </span>
-            <input
-              type="date"
-              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500 read-only:bg-slate-50 read-only:text-slate-500"
-              value={endDate}
-              min={startDate || undefined}
-              onChange={(e) => handleEndDateChange(e.target.value)}
-              disabled={kind === 'milestone' || kind === 'phase'}
-              readOnly={kind === 'task'}
-              title={endDateTooltip()}
-            />
-          </label>
-        </div>
-
-        {/* Collaborateurs — masqué pour les phases ET les jalons (règle J3 v1.24 :
-            seules les activités sont affectées à un collaborateur ; un jalon est
-            un point de repère ponctuel, une phase est une synthèse).
-            v2.0 / F6 — Multi-affectation : on affiche les collabs déjà cochés
-            sous forme de chips, et une dropdown permet d'en ajouter un de
-            plus. La capacité du jour est sommée additivement (Q12a). */}
-        {kind === 'task' && (
-          <div className="block text-sm">
-            <span className="text-slate-600">
-              Collaborateurs
-              {memberIds && (
-                <span
-                  className="ml-1 text-xs text-slate-400"
-                  title="Seuls les membres du projet sont proposés. Plusieurs collaborateurs sont autorisés ; la durée prend en compte la somme de leurs capacités."
-                >
-                  (multi — membres du projet)
-                </span>
-              )}
-            </span>
-            {/* Chips des collabs actuellement affectés (clic ✕ = retire). */}
-            {collabIds.length > 0 && (
-              <div className="mt-1 flex flex-wrap gap-1">
-                {collabIds.map((cId) => (
-                  <CollabChip
-                    key={cId}
-                    cId={cId}
-                    collaborators={collaborators}
-                    onRemove={removeCollab}
-                  />
-                ))}
-              </div>
-            )}
-            {/* Dropdown d'ajout (filtre les déjà affectés). Bouton "+" valide. */}
-            {addableCollaborators.length > 0 && (
-              <div className="mt-1 flex gap-1">
-                <select
-                  className="flex-1 block border border-slate-300 rounded px-2 py-1.5"
-                  value={picked}
-                  onChange={(e) => setPicked(e.target.value)}
-                >
-                  <option value="">— ajouter —</option>
-                  {addableCollaborators.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!picked) return
-                    setCollabIds((ids) =>
-                      ids.includes(picked) ? ids : [...ids, picked],
-                    )
-                    setPicked('')
-                  }}
-                  disabled={!picked}
-                  className="px-2 rounded bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed"
-                  title="Ajouter ce collaborateur à la tâche"
-                >
-                  +
-                </button>
-              </div>
-            )}
-            {/* v2.0 / F1 — Info-bulle quand la liste est vide : oriente
-                l'utilisateur vers l'onglet d'affectation pour débloquer. */}
-            {memberIds && eligibleCollaborators.length === 0 && (
-              <p className="mt-1 text-xs text-amber-700">
-                Aucun collaborateur n’est encore membre de ce projet. Ouvrez
-                l’onglet « Affectation » pour en ajouter.
-              </p>
-            )}
-          </div>
-        )}
-
-        <label className="block text-sm">
-          <span className="text-slate-600">Phase parent</span>
-          <select
-            className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
-            value={parentId}
-            onChange={(e) => setParentId(e.target.value)}
-          >
-            <option value="">— aucune —</option>
-            {/* v1.6 — Une "phase parent" doit être de kind='phase'. */}
-            {tasks
-              .filter((t) => t.id !== task?.id && t.kind === 'phase')
-              .map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-          </select>
-        </label>
-
-        {/* v1.22 — Prédécesseurs (multi). Masqué pour les phases (qui n'ont
-            jamais de prédécesseur). Le PredecessorPicker affiche les chips
-            sélectionnées + un popover arborescent pour en ajouter. */}
-        {kind !== 'phase' && (
-          <div className="text-sm">
-            <span className="text-slate-600">
-              Prédécesseurs
-              <span className="ml-1 text-xs text-slate-400">
-                (facultatif — la date de début se cale sur le plus tardif)
-              </span>
-            </span>
-            <div className="mt-1">
-              <PredecessorPicker
-                task={task}
-                allTasks={tasks}
-                value={predecessorsList}
-                onChange={handlePredecessorsChange}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* v1.24 — Contrainte SNET « Ne doit pas démarrer avant le ».
-            Masquée pour les phases (dont les dates sont synthétisées depuis
-            les enfants). La validation au save bloque toute date de début
-            antérieure à cette borne ; un avertissement non-bloquant signale
-            une saisie tombant un week-end ou un jour férié français. */}
-        {kind !== 'phase' && (
-          <label className="block text-sm">
-            <span className="text-slate-600">
-              Ne doit pas démarrer avant le
-              <span className="ml-1 text-xs text-slate-400">
-                (facultatif — borne indépendante du prédécesseur)
-              </span>
-            </span>
-            <input
-              type="date"
-              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
-              value={notBeforeDate}
-              onChange={(e) => setNotBeforeDate(e.target.value)}
-              title="Date avant laquelle la tâche ne peut pas démarrer. La règle « plus tardive gagne » s'applique entre cette date et la fin du prédécesseur."
-            />
-            {/* Avertissement non-bloquant si la date tombe un jour non ouvré.
-                Le serveur snape automatiquement au prochain jour ouvré, mais
-                on prévient l'utilisateur pour qu'il puisse corriger si besoin. */}
-            {notBeforeDate &&
-              isNonWorkingDay(new Date(notBeforeDate + 'T00:00:00')) && (
-                <span className="block mt-1 text-xs text-amber-700">
-                  ⚠ Cette date tombe un week-end ou un jour férié. Elle sera
-                  appliquée au prochain jour ouvré.
-                </span>
-              )}
-          </label>
-        )}
-
-        {/* v2.0 / F4 — Contrainte FNLT « Fin au plus tard ». Sœur jumelle du
-            SNET mais NON BLOQUANTE : si la date de fin calculée dépasse cette
-            valeur, on n'empêche pas la sauvegarde — un signal visuel (bandeau
-            de cohérence + icône rouge en bout de barre) avertit l'utilisateur.
-            Masquée pour les phases. */}
-        {kind !== 'phase' && (
-          <label className="block text-sm">
-            <span className="text-slate-600">
-              Fin au plus tard
-              <span className="ml-1 text-xs text-slate-400">
-                (facultatif — deadline non bloquante)
-              </span>
-            </span>
-            <input
-              type="date"
-              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
-              value={notLaterThanDate}
-              min={notBeforeDate || startDate || undefined}
-              onChange={(e) => setNotLaterThanDate(e.target.value)}
-              title="Date de fin AU PLUS TARD souhaitée. Si la fin calculée dépasse, c'est signalé visuellement mais la sauvegarde reste possible."
-            />
-            {/* Avertissement non-bloquant si la deadline est déjà dépassée
-                par la fin calculée. Le calcul reste exact côté serveur. */}
-            {notLaterThanDate && endDate && endDate > notLaterThanDate && (
-              <span className="block mt-1 text-xs text-red-700">
-                ⚠ La fin calculée ({endDate}) dépasse cette deadline. La tâche
-                sera signalée comme « en retard » dans le bandeau d'alertes.
-              </span>
-            )}
-          </label>
-        )}
-
-        {/* v1.18 / v1.24 — Priorité OBLIGATOIRE sur les activités (1..5,
-            défaut 3). Masquée pour les jalons et les phases (qui n'ont ni
-            collaborateur, ni replan applicable). 1 = la plus prioritaire,
-            5 = la moins. */}
-        {kind === 'task' && (
-          <label className="block text-sm">
-            <span className="text-slate-600">
-              Priorité
-              <span className="ml-1 text-xs text-slate-400">
-                (1 = plus prioritaire, 5 = moins ; utilisée par « Replan »)
-              </span>
-            </span>
-            <select
-              className="mt-1 block w-full border border-slate-300 rounded px-2 py-1.5"
-              value={String(priority ?? 3)}
-              onChange={(e) => setPriority(Number(e.target.value))}
-              title="1 = la plus prioritaire, 5 = la moins. Défaut : 3."
-            >
-              <option value="1">1 (la plus prioritaire)</option>
-              <option value="2">2</option>
-              <option value="3">3 (par défaut)</option>
-              <option value="4">4</option>
-              <option value="5">5 (la moins prioritaire)</option>
-            </select>
-          </label>
-        )}
-
-        {/* COULEUR — éditable, par défaut = couleur effective */}
-        <div className="block text-sm">
-          <span className="text-slate-600">Couleur de la barre</span>
-          <div className="mt-1 flex items-center gap-2">
-            <input
-              type="color"
-              className="h-9 w-14 border border-slate-300 rounded cursor-pointer"
-              value={
-                color ||
-                effectiveTaskColor(
-                  // tâche fictive juste pour le calcul de couleur effective
-                  {
-                    id: '',
-                    name: '',
-                    kind: 'task',
-                    start_date: '',
-                    end_date: '',
-                    progress: 0,
-                    // v2.0 / F6 — 1er collab affecté (ordre d'ajout) pour
-                    // résoudre la couleur effective. Cohérent avec le legacy.
-                    collaborator_id: collabIds[0] || null,
-                    color: null,
-                    parent_id: null,
-                    predecessor_id: null,
-                    predecessor_lag: 0,
-                    priority: null,
-                    not_before_date: null,
-                    not_later_than_date: null,
-                    charge_jours: null,
-                    position: 0,
-                    project_id: '',
-                  },
-                  collaborators,
-                )
-              }
-              onChange={(e) => setColor(e.target.value)}
-              title="Choisir une couleur personnalisée"
-            />
-            <span className="text-xs text-slate-500 flex-1">
-              {color ? (
-                <>Couleur personnalisée : {color}</>
-              ) : (
-                <>
-                  Auto :{' '}
-                  <span
-                    className="inline-block w-3 h-3 rounded align-middle mr-1"
-                    style={{ backgroundColor: defaultColor }}
-                  />
-                  hérite du collaborateur
-                </>
-              )}
-            </span>
-            {color && (
+          <div className="flex justify-between">
+            {task && onDelete ? (
               <button
-                type="button"
-                className="px-2 py-1 text-xs rounded border border-slate-300 hover:bg-slate-100"
-                onClick={() => setColor('')}
-                title="Repasser en automatique (hérite du collaborateur)"
+                className="px-3 py-1.5 text-sm rounded border border-red-300 text-red-600 hover:bg-red-50"
+                onClick={onDelete}
               >
-                ↺ Auto
+                Supprimer
               </button>
+            ) : (
+              <span />
             )}
-          </div>
-        </div>
-
-        {/* v1.22 — Case « Replanifier après enregistrement », visible UNIQUEMENT
-            en mode édition. Cochée par défaut : à l'enregistrement, le caller
-            relance un Replan complet pour préserver les invariants métier
-            (charge collab, prédécesseurs, priorités). Décocher = figer son
-            geste — typiquement quand on a délibérément déplacé une tâche
-            dans le passé et qu'on ne veut pas la voir poussée. */}
-        {task && (
-          <label className="flex items-center gap-2 pt-2 text-sm text-slate-700 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              className="h-4 w-4 rounded border-slate-300 accent-amber-500"
-              checked={replanAfterSave}
-              onChange={(e) => setReplanAfterSave(e.target.checked)}
-            />
-            <span>
-              🔄 Replanifier le projet après enregistrement
-              <span className="ml-1 text-xs text-slate-500">
-                (recommandé pour préserver charge et prédécesseurs)
-              </span>
-            </span>
-          </label>
-        )}
-
-        <div className="flex justify-between pt-2">
-          {task && onDelete ? (
-            <button
-              className="px-3 py-1.5 text-sm rounded border border-red-300 text-red-600 hover:bg-red-50"
-              onClick={onDelete}
-            >
-              Supprimer
-            </button>
-          ) : (
-            <span />
-          )}
-          <div className="flex gap-2">
-            <button
-              className="px-3 py-1.5 text-sm rounded border border-slate-300 hover:bg-slate-50"
-              onClick={onClose}
-            >
-              Annuler
-            </button>
-            <button
-              className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
-              onClick={handleSave}
-            >
-              {task ? 'Enregistrer' : 'Créer'}
-            </button>
+            <div className="flex gap-2">
+              <button
+                className="px-3 py-1.5 text-sm rounded border border-slate-300 hover:bg-slate-50"
+                onClick={onClose}
+              >
+                Annuler
+              </button>
+              <button
+                className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
+                onClick={handleSave}
+              >
+                {task ? 'Enregistrer' : 'Créer'}
+              </button>
+            </div>
           </div>
         </div>
       </div>

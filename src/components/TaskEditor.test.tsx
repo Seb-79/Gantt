@@ -108,7 +108,11 @@ describe('TaskEditor — édition', () => {
     )
     expect(screen.getByLabelText(/Nom/)).toHaveValue('Existante')
     expect(screen.getByLabelText(/Avancement/)).toHaveValue(42)
-    expect(screen.getByRole('heading')).toHaveTextContent('Modifier')
+    // v2.1 / F2 — Le layout 2 colonnes introduit des <h3> de section (Identité,
+    // Dates, Ressources, Dépendances) en plus du <h2> titre. On cible le h2.
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(
+      'Modifier',
+    )
   })
 
   it('refuse une end_date < start_date', () => {

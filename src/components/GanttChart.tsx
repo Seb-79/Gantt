@@ -793,92 +793,108 @@ export default function GanttChart({
                 rowsCount={tasks.length}
               />
             )}
-            {tasks.map((t, rowIndex) => (
-              <div
-                key={t.id}
-                className="relative border-b border-slate-100"
-                style={{ height: ROW_HEIGHT }}
-                // v1.23 — Drop d'un drag-to-link : le hook ferme le drag et
-                // appelle onCreateLink si target ≠ source. On filtre les
-                // phases (non sélectionnables comme cible) au niveau caller :
-                // App.tsx peut décider d'ignorer.
-                onMouseUp={
-                  onCreateLink
-                    ? () => {
-                        if (t.kind !== 'phase') linkDrag.dropOnTarget(t.id)
-                      }
-                    : undefined
-                }
-              >
-                {/* v1.23 — Fond grisé pour les jours NON OUVRÉS : week-ends
+            {tasks.map((t, rowIndex) => {
+              // v2.1 / F3 — Quand un LinkHandle est rendu après la barre
+              // (onCreateLink fourni ET kind ≠ phase), pousse l'étiquette de
+              // date de fin à 20 px pour qu'elle passe à droite du handle
+              // (hit-area 16 px + 4 px de marge). Sinon 4 px, comme avant.
+              const dateRightOffset =
+                onCreateLink && t.kind !== 'phase' ? 20 : 4
+              return (
+                <div
+                  key={t.id}
+                  className="relative border-b border-slate-100"
+                  style={{ height: ROW_HEIGHT }}
+                  // v1.23 — Drop d'un drag-to-link : le hook ferme le drag et
+                  // appelle onCreateLink si target ≠ source. On filtre les
+                  // phases (non sélectionnables comme cible) au niveau caller :
+                  // App.tsx peut décider d'ignorer.
+                  onMouseUp={
+                    onCreateLink
+                      ? () => {
+                          if (t.kind !== 'phase') linkDrag.dropOnTarget(t.id)
+                        }
+                      : undefined
+                  }
+                >
+                  {/* v1.23 — Fond grisé pour les jours NON OUVRÉS : week-ends
                     ET jours fériés français (cohérence visuelle avec la grille
                     du header). */}
-                <div className="absolute inset-0 flex pointer-events-none">
-                  {dates.map((d, i) => (
-                    <div
-                      key={i}
-                      className={isNonWorkingDay(d) ? 'bg-slate-50' : ''}
-                      style={{ width: dayWidth }}
-                    />
-                  ))}
-                </div>
+                  <div className="absolute inset-0 flex pointer-events-none">
+                    {dates.map((d, i) => (
+                      <div
+                        key={i}
+                        className={isNonWorkingDay(d) ? 'bg-slate-50' : ''}
+                        style={{ width: dayWidth }}
+                      />
+                    ))}
+                  </div>
 
-                {/* Barre de tâche OU jalon OU phase.
+                  {/* Barre de tâche OU jalon OU phase.
                     v1.9 — Pour kind='task', on rend une barre interactive
                     (drag = move ou resize-end) ; les autres types restent
-                    statiques via `renderBar`. */}
-                {t.kind === 'task'
-                  ? renderInteractiveTaskBar(
-                      t,
-                      windowStart,
-                      dayWidth,
-                      collabById,
-                      resizing,
-                      handleBarMouseDown,
-                      !!onResizeTask,
-                      showDates,
-                      showBarNames,
-                    )
-                  : renderBar(
-                      t,
-                      windowStart,
-                      dayWidth,
-                      collabById,
-                      showDates,
-                      showBarNames,
-                      // v1.19.2 — onTaskClick : jalon/phase deviennent cliquables
-                      // dans le planning (cohérent avec le clic sur la barre
-                      // tâche et avec le clic dans la colonne gauche).
-                      onTaskClick,
-                    )}
+                    statiques via `renderBar`.
+                    v2.1 / F3 — dateRightOffset = 20 quand un LinkHandle est
+                    rendu (onCreateLink fourni ET kind ≠ phase), pour pousser
+                    l'étiquette de fin à droite du handle (sinon superposition
+                    avec le toggle 📅 actif). 4 sinon. */}
+                  {t.kind === 'task'
+                    ? renderInteractiveTaskBar(
+                        t,
+                        windowStart,
+                        dayWidth,
+                        collabById,
+                        resizing,
+                        handleBarMouseDown,
+                        !!onResizeTask,
+                        showDates,
+                        showBarNames,
+                        dateRightOffset,
+                      )
+                    : renderBar(
+                        t,
+                        windowStart,
+                        dayWidth,
+                        collabById,
+                        showDates,
+                        showBarNames,
+                        // v1.19.2 — onTaskClick : jalon/phase deviennent cliquables
+                        // dans le planning (cohérent avec le clic sur la barre
+                        // tâche et avec le clic dans la colonne gauche).
+                        onTaskClick,
+                        // v2.1 / F3 — dateRightOffset = 20 sur les jalons (qui
+                        // ont un LinkHandle), 4 sur les phases (pas de handle).
+                        dateRightOffset,
+                      )}
 
-                {/* v1.24 — Repère SNET « Ne doit pas démarrer avant le ».
+                  {/* v1.24 — Repère SNET « Ne doit pas démarrer avant le ».
                     Petit triangle gris discret affiché sous la ligne de la
                     tâche concernée (activités et jalons uniquement). Aucun
                     interactif : c'est un repère visuel pur. */}
-                {renderNotBeforeMarker(t, windowStart, dayWidth)}
+                  {renderNotBeforeMarker(t, windowStart, dayWidth)}
 
-                {/* v2.0 / F4 — Marker FNLT « Fin au plus tard ». Triangle
+                  {/* v2.0 / F4 — Marker FNLT « Fin au plus tard ». Triangle
                     gris si tenue, ROUGE si dépassée (signal d'alerte
                     miroir du bandeau de cohérence). */}
-                {renderFnltMarker(t, windowStart, dayWidth)}
+                  {renderFnltMarker(t, windowStart, dayWidth)}
 
-                {/* v1.23 — Handle de drag-to-link à droite de la barre
+                  {/* v1.23 — Handle de drag-to-link à droite de la barre
                     (uniquement si onCreateLink défini ET kind = task/jalon).
                     Tirer ce handle vers une autre barre crée un lien
                     prédécesseur. */}
-                {onCreateLink && (
-                  <LinkHandle
-                    task={t}
-                    windowStart={windowStart}
-                    dayWidth={dayWidth}
-                    rowIndex={rowIndex}
-                    scrollRef={scrollRef}
-                    startLink={linkDrag.startLink}
-                  />
-                )}
-              </div>
-            ))}
+                  {onCreateLink && (
+                    <LinkHandle
+                      task={t}
+                      windowStart={windowStart}
+                      dayWidth={dayWidth}
+                      rowIndex={rowIndex}
+                      scrollRef={scrollRef}
+                      startLink={linkDrag.startLink}
+                    />
+                  )}
+                </div>
+              )
+            })}
           </div>
         </div>
       </div>
@@ -1273,6 +1289,10 @@ function renderBar(
   showDates: boolean,
   showBarNames: boolean,
   onTaskClick?: (task: Task) => void,
+  // v2.1 / F3 — Décalage de l'étiquette de date de fin (px). Passé à 20 par
+  // GanttChart quand un LinkHandle est rendu juste après la barre, pour
+  // éviter que les deux ne se superposent.
+  dateRightOffset = 4,
 ) {
   // v1.19.2 — Handlers communs aux phases et jalons pour ouvrir l'éditeur
   // au clic ET empêcher que le mousedown ne démarre un pan parent.
@@ -1369,6 +1389,8 @@ function renderBar(
             task.start_date,
             task.start_date,
             true,
+            false,
+            dateRightOffset,
           )}
       </>
     )
@@ -1416,6 +1438,7 @@ function renderBar(
           // évite la collision avec la pointe de flèche entrante et le doublon
           // avec la date de fin du prédécesseur.
           !!task.predecessor_id,
+          dateRightOffset,
         )}
     </>
   )
@@ -1459,6 +1482,8 @@ function renderInteractiveTaskBar(
   enabled: boolean,
   showDates: boolean,
   showBarNames: boolean,
+  // v2.1 / F3 — Cf. renderBar : 20 quand un LinkHandle est rendu, 4 sinon.
+  dateRightOffset = 4,
 ) {
   const color = effectiveTaskColor(task, Array.from(collabById.values()))
   const baseLeft = dateToX(task.start_date, windowStart, dayWidth)
@@ -1548,6 +1573,7 @@ function renderInteractiveTaskBar(
           task.end_date,
           false,
           !!task.predecessor_id,
+          dateRightOffset,
         )}
     </>
   )

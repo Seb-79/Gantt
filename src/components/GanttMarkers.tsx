@@ -28,9 +28,9 @@ export function formatShortDate(iso: string): string {
 }
 
 /**
- * v1.11 / v1.19 / v1.19.1 — Rend les étiquettes de dates de début et de fin
- * d'une barre du Gantt, positionnées juste en-dehors de la barre. Le rendu
- * est purement visuel : aucune interaction.
+ * v1.11 / v1.19 / v1.19.1 / v2.1 — Rend les étiquettes de dates de début et
+ * de fin d'une barre du Gantt, positionnées juste en-dehors de la barre.
+ * Le rendu est purement visuel : aucune interaction.
  *
  * Options :
  *   • `single = true`  → affiche uniquement la fin (utilisé pour les jalons :
@@ -38,6 +38,13 @@ export function formatShortDate(iso: string): string {
  *   • `hideStart = true` → masque la date de début quand on sait qu'elle est
  *                        immédiatement après la fin d'un prédécesseur (la
  *                        flèche fait l'indicateur de début).
+ *   • `rightOffset` (v2.1 / F3) → décalage en pixels de l'étiquette de fin
+ *                        par rapport au bord droit de la barre. Défaut 4 px.
+ *                        Quand un handle de drag-to-link est rendu juste
+ *                        après la barre (16 px de hit area à partir de x+2),
+ *                        passer 20 pour laisser l'étiquette PASSER À DROITE
+ *                        du handle, sinon les deux se superposent (toggle 📅
+ *                        + onCreateLink actif).
  */
 export function renderDateLabels(
   leftPx: number,
@@ -46,6 +53,7 @@ export function renderDateLabels(
   endIso: string,
   single = false,
   hideStart = false,
+  rightOffset = 4,
 ) {
   // v1.19 — Style noir gras sur fond blanc semi-opaque : reste lisible
   // au-dessus des cellules week-end grisées ET au-dessus des flèches
@@ -85,7 +93,7 @@ export function renderDateLabels(
       <span
         style={{
           ...baseStyle,
-          left: leftPx + widthPx + 4,
+          left: leftPx + widthPx + rightOffset,
         }}
       >
         {formatShortDate(endIso)}

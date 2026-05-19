@@ -436,17 +436,18 @@ describe('App — Replan (non-régression métier)', () => {
   it("sans surcharge : alerte 'Aucune surcharge' et aucune modal n'apparaît", async () => {
     // L'état mkState() ne contient qu'une tâche sans collaborateur → aucune
     // surcharge possible → l'algorithme n'a rien à proposer.
+    // F1 — askAlert remplace window.alert : on vérifie l'affichage DOM dans
+    // le composant <Dialogs /> plutôt que de spy sur window.alert.
     const { calls } = setupFetchMock()
-    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
 
     fireEvent.click(screen.getByRole('button', { name: /^🔄 Replan$/ }))
 
-    expect(alertSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/Aucune surcharge/),
+    await waitFor(() =>
+      expect(screen.getByText(/Aucune surcharge/)).toBeInTheDocument(),
     )
-    // Aucune modal ouverte (pas de bouton "Appliquer" visible).
+    // Aucune modal de replan ouverte (pas de bouton "Appliquer" visible).
     expect(
       screen.queryByRole('button', { name: 'Appliquer' }),
     ).not.toBeInTheDocument()

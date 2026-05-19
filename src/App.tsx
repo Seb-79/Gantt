@@ -23,7 +23,7 @@ import Dialogs from './components/Dialogs'
 // v2.0 — Remplace window.confirm / window.prompt (qui affichent l'en-tête
 // « localhost:5174 indique ») par des modales custom alignées sur le style
 // de l'app. Voir src/lib/dialogs.ts pour le détail.
-import { askConfirm, askPrompt } from './lib/dialogs'
+import { askAlert, askConfirm, askPrompt } from './lib/dialogs'
 import {
   checkCoherence,
   clampDayWidth,
@@ -374,7 +374,7 @@ export default function App() {
       } catch (err) {
         console.error('[mutate]', err)
         setStatus('error')
-        alert(`Erreur : ${(err as Error).message}`)
+        await askAlert(`Erreur : ${(err as Error).message}`)
       }
     },
     [fetchState],
@@ -482,7 +482,7 @@ export default function App() {
       link.click()
     } catch (err) {
       console.error('[screenshot]', err)
-      alert('Capture impossible — voir la console.')
+      await askAlert('Capture impossible — voir la console.')
     }
   }
 
@@ -523,7 +523,9 @@ export default function App() {
       } catch (err) {
         console.error('[replan]', err)
         setStatus('error')
-        alert(`Erreur pendant la replanification : ${(err as Error).message}`)
+        await askAlert(
+          `Erreur pendant la replanification : ${(err as Error).message}`,
+        )
       }
     },
     [fetchState],
@@ -860,7 +862,7 @@ export default function App() {
    *
    * @param scope  Portée du replan (cf. ci-dessus).
    */
-  const handleOpenReplan = (scope: 'full' | 'partial' = 'full') => {
+  const handleOpenReplan = async (scope: 'full' | 'partial' = 'full') => {
     if (!state) return
     // v2.0 / F2 — Le replan consomme la capacité quotidienne réelle de chaque
     // collab : on lui passe `member_allocations` du projet courant.
@@ -879,7 +881,7 @@ export default function App() {
           )
         : replanTasks(orderedTasks, undefined, allocs, absences)
     if (moves.length === 0) {
-      alert(
+      await askAlert(
         scope === 'partial'
           ? 'Aucun déplacement nécessaire — les incohérences ne peuvent pas être résolues sans déverrouiller d’autres tâches (essayez « Replan complet »).'
           : 'Aucune surcharge détectée — rien à replanifier.',

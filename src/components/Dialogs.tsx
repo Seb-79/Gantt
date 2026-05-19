@@ -64,19 +64,35 @@ export default function Dialogs() {
   const close = (result: boolean | string | null) => {
     setStack((s) => s.slice(0, -1))
     if (current.kind === 'confirm') current.resolve(result as boolean)
-    else current.resolve(result as string | null)
+    else if (current.kind === 'prompt') current.resolve(result as string | null)
+    else current.resolve()
+  }
+
+  /**
+   * Valeur retournée par défaut quand l'utilisateur "annule" la modale
+   * (Échap, clic backdrop, bouton Annuler). Pour un alert il n'y a pas
+   * d'annulation possible — on ferme simplement (resolve sans valeur).
+   */
+  const cancelValue = (): boolean | string | null => {
+    if (current.kind === 'confirm') return false
+    if (current.kind === 'prompt') return null
+    return null
   }
 
   /** Touche Échap → annulation (équivalent du clic Annuler). */
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Escape') {
       e.preventDefault()
-      close(current.kind === 'confirm' ? false : null)
+      close(cancelValue())
     } else if (e.key === 'Enter' && current.kind === 'prompt') {
       // Pour le prompt, Entrée = OK. Pour le confirm, on laisse l'utilisateur
       // cliquer (deux choix bivalents, pas de raccourci ambigu).
       e.preventDefault()
       close(promptValue)
+    } else if (e.key === 'Enter' && current.kind === 'alert') {
+      // Pour l'alert, Entrée = OK = fermeture.
+      e.preventDefault()
+      close(null)
     }
   }
 
@@ -85,7 +101,7 @@ export default function Dialogs() {
       // Backdrop semi-transparent qui couvre tout l'écran. Click ailleurs
       // que sur la carte = annulation (cohérent avec TaskEditor).
       className="fixed inset-0 bg-black/40 flex items-center justify-center z-50"
-      onClick={() => close(current.kind === 'confirm' ? false : null)}
+      onClick={() => close(cancelValue())}
       // role / aria-modal : signaler le rôle accessibilité.
       role="dialog"
       aria-modal="true"
@@ -116,24 +132,30 @@ export default function Dialogs() {
           />
         )}
 
-        {/* Boutons Annuler / OK alignés à droite, à la TaskEditor. */}
+        {/* Boutons. Pour confirm/prompt : Annuler + OK. Pour alert : OK seul
+            (rien à annuler, c'est juste une info à acquitter). */}
         <div className="flex justify-end gap-2">
+          {current.kind !== 'alert' && (
+            <button
+              type="button"
+              onClick={() => close(cancelValue())}
+              className="px-4 py-2 rounded bg-slate-100 hover:bg-slate-200 text-slate-700"
+            >
+              Annuler
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => close(current.kind === 'confirm' ? false : null)}
-            className="px-4 py-2 rounded bg-slate-100 hover:bg-slate-200 text-slate-700"
-          >
-            Annuler
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              close(current.kind === 'confirm' ? true : promptValue)
-            }
+            onClick={() => {
+              if (current.kind === 'confirm') close(true)
+              else if (current.kind === 'prompt') close(promptValue)
+              else close(null)
+            }}
             // Bouton primaire (bordeaux/amber selon thème) — on s'aligne
             // sur la teinte amber utilisée ailleurs pour les actions
             // principales (cf. capture utilisateur).
             className="px-4 py-2 rounded bg-amber-700 hover:bg-amber-800 text-white"
+            autoFocus={current.kind === 'alert'}
           >
             OK
           </button>

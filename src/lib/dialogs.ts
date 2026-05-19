@@ -38,6 +38,11 @@ export type DialogRequest =
       defaultValue: string
       resolve: (value: string | null) => void
     }
+  | {
+      kind: 'alert'
+      message: string
+      resolve: () => void
+    }
 
 /** Le composant Dialogs s'enregistre ici. `null` = aucun listener actif. */
 let listener: ((req: DialogRequest) => void) | null = null
@@ -101,5 +106,27 @@ export function askPrompt(
       return
     }
     listener({ kind: 'prompt', message, defaultValue, resolve })
+  })
+}
+
+/**
+ * Boîte d'information. Équivalent custom de `window.alert(message)`.
+ * Évite l'en-tête « localhost:5174 indique » des alerts natifs.
+ *
+ * @param message — Texte à afficher (peut contenir des sauts de ligne).
+ * @returns Promise<void> — Résout dès que l'utilisateur ferme la modale
+ *   (clic OK, touche Échap, ou clic backdrop). Aucune valeur de retour.
+ *
+ * Fallback : voir `askConfirm`.
+ */
+export function askAlert(message: string): Promise<void> {
+  return new Promise((resolve) => {
+    if (!listener) {
+      if (typeof window !== 'undefined' && typeof window.alert === 'function')
+        window.alert(message)
+      resolve()
+      return
+    }
+    listener({ kind: 'alert', message, resolve })
   })
 }

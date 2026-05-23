@@ -840,6 +840,74 @@ function buildExtensionOperations(args: {
 }
 
 /**
+ * v2.1 / F2.9.C — Scanne la liste des tâches d'un projet et retourne pour
+ * chaque activité (kind='task') ayant des collaborateurs affectés et une
+ * charge non nulle, son `AllocationShortfall` calculé. Les entrées avec
+ * `missing = 0` sont FILTRÉES : la liste retournée ne contient que les
+ * tâches problématiques à présenter au user (cf. `ReplanAllocationFixDialog`).
+ *
+ * Fonction pure (testable). Utilisée par `handleOpenReplan` dans `App.tsx`
+ * avant de lancer le calcul de déplacements via `replanTasks` : si la liste
+ * n'est pas vide, on bloque le replan tant que les allocations manquantes
+ * n'ont pas été étendues.
+ *
+ * @param tasks       Liste ordonnée des tâches du projet (incl. phases/jalons).
+ * @param projectId   Id du projet courant.
+ * @param allocations Allocations connues (toutes paires).
+ * @param absences    Absences cross-projet.
+ * @returns           Un objet par tâche en problème : `{ taskId, taskName,
+ *                    startDate, charge, collaboratorIds, shortfall }`.
+ */
+export function scanReplanShortfalls(
+  tasks: Task[],
+  projectId: string,
+  allocations: MemberAllocation[],
+  absences: CollaboratorAbsence[],
+): {
+  taskId: string
+  taskName: string
+  startDate: string
+  charge: number
+  collaboratorIds: string[]
+  shortfall: AllocationShortfall
+}[] {
+  const out: {
+    taskId: string
+    taskName: string
+    startDate: string
+    charge: number
+    collaboratorIds: string[]
+    shortfall: AllocationShortfall
+  }[] = []
+  for (const t of tasks) {
+    if (t.kind !== 'task') continue
+    const cids = taskCollabIds(t)
+    if (cids.length === 0) continue
+    const charge = typeof t.charge_jours === 'number' ? t.charge_jours : 0
+    if (charge <= 0) continue
+    const sh = computeAllocationShortfall({
+      startDate: t.start_date,
+      charge,
+      collaboratorIds: cids,
+      projectId,
+      allocations,
+      absences,
+    })
+    if (sh.missing > 1e-9) {
+      out.push({
+        taskId: t.id,
+        taskName: t.name,
+        startDate: t.start_date,
+        charge,
+        collaboratorIds: cids,
+        shortfall: sh,
+      })
+    }
+  }
+  return out
+}
+
+/**
  * v1.9 — Ajoute N jours calendaires (peu importe le type) à une date ISO.
  * Helper pour le drag des barres dans le Gantt (où on raisonne en pixels
  * → jours calendaires, puis on snape en jours ouvrés via les helpers ci-dessus).

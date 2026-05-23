@@ -10,6 +10,7 @@ import {
   computeAllocationShortfall,
   computeExtensionPlan,
   computeEndFromCharge,
+  scanReplanShortfalls,
   checkCoherence,
   clampDayWidth,
   concernedTaskIds,
@@ -2161,5 +2162,127 @@ describe('computeExtensionPlan (v2.1 / F2.9.B)', () => {
       pct: 100,
     })
     expect(plan.feasible).toBe(true)
+  })
+})
+
+// =============================================================================
+// v2.1 / F2.9.C — scanReplanShortfalls
+// =============================================================================
+// Vérifie le scan multi-tâches qui prépare le récap du dialog F2.9.D.
+// =============================================================================
+
+describe('scanReplanShortfalls (v2.1 / F2.9.C)', () => {
+  const PROJ = 'p'
+  const ALICE = 'alice'
+
+  it('phases et jalons ignorés (kind != task)', () => {
+    const tasks = [
+      mkTask('phase1', { kind: 'phase' }),
+      mkTask('milestone1', { kind: 'milestone' }),
+    ]
+    const r = scanReplanShortfalls(tasks, PROJ, [], [])
+    expect(r).toEqual([])
+  })
+
+  it('activités sans collaborateur ignorées', () => {
+    const tasks = [mkTask('t1', { collaborator_id: null, charge_jours: 5 })]
+    const r = scanReplanShortfalls(tasks, PROJ, [], [])
+    expect(r).toEqual([])
+  })
+
+  it('activités sans charge ignorées', () => {
+    const tasks = [mkTask('t1', { collaborator_id: ALICE, charge_jours: 0 })]
+    const r = scanReplanShortfalls(tasks, PROJ, [], [])
+    expect(r).toEqual([])
+  })
+
+  it('activité absorbable → exclue du résultat', () => {
+    const tasks = [
+      mkTask('t1', {
+        collaborator_id: ALICE,
+        charge_jours: 3,
+        start_date: '2026-06-01',
+      }),
+    ]
+    const r = scanReplanShortfalls(
+      tasks,
+      PROJ,
+      [
+        {
+          id: 'a1',
+          project_id: PROJ,
+          collaborator_id: ALICE,
+          start_date: '2026-06-01',
+          end_date: '2026-06-30',
+          allocation_pct: 100,
+        },
+      ],
+      [],
+    )
+    expect(r).toEqual([])
+  })
+
+  it('activité non absorbable → présente avec son shortfall', () => {
+    const tasks = [
+      mkTask('t1', {
+        name: 'Tournage extérieur',
+        collaborator_id: ALICE,
+        charge_jours: 8,
+        start_date: '2026-07-24', // après fin allocation
+      }),
+    ]
+    const r = scanReplanShortfalls(
+      tasks,
+      PROJ,
+      [
+        {
+          id: 'a1',
+          project_id: PROJ,
+          collaborator_id: ALICE,
+          start_date: '2026-06-01',
+          end_date: '2026-07-23',
+          allocation_pct: 100,
+        },
+      ],
+      [],
+    )
+    expect(r).toHaveLength(1)
+    expect(r[0].taskId).toBe('t1')
+    expect(r[0].taskName).toBe('Tournage extérieur')
+    expect(r[0].charge).toBe(8)
+    expect(r[0].shortfall.missing).toBe(8)
+    expect(r[0].shortfall.horizon).toBe('2026-07-23')
+  })
+
+  it('plusieurs activités : seules les non absorbables sont retournées', () => {
+    const tasks = [
+      mkTask('ok', {
+        collaborator_id: ALICE,
+        charge_jours: 2,
+        start_date: '2026-06-01',
+      }),
+      mkTask('ko', {
+        collaborator_id: ALICE,
+        charge_jours: 5,
+        start_date: '2026-08-01',
+      }),
+    ]
+    const r = scanReplanShortfalls(
+      tasks,
+      PROJ,
+      [
+        {
+          id: 'a1',
+          project_id: PROJ,
+          collaborator_id: ALICE,
+          start_date: '2026-06-01',
+          end_date: '2026-06-30',
+          allocation_pct: 100,
+        },
+      ],
+      [],
+    )
+    expect(r).toHaveLength(1)
+    expect(r[0].taskId).toBe('ko')
   })
 })

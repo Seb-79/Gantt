@@ -802,7 +802,7 @@ describe('v2.0 / F5 — /api/workload/global', () => {
 // non absorbable.
 // =============================================================================
 
-describe('v2.1 / F2.9 — PATCH /api/allocations/:id', () => {
+describe('v2.1 / RG-GANTT-1907 — PATCH /api/allocations/:id', () => {
   let app
   /** Id d'une allocation pré-créée pour les tests. */
   let allocId

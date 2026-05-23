@@ -1534,8 +1534,8 @@ describe('v2.0 / F2 — member_allocations', () => {
     expect(listMemberAllocations(db, 'pA', 'c1')).toHaveLength(0)
   })
 
-  // v2.1 / F2.9 — updateMemberAllocation : prolonge end_date sans erreur.
-  it('v2.1 / F2.9 — updateMemberAllocation : prolonge end_date', () => {
+  // v2.1 / RG-GANTT-1907 — updateMemberAllocation : prolonge end_date sans erreur.
+  it('v2.1 / RG-GANTT-1907 — updateMemberAllocation : prolonge end_date', () => {
     clearAllocations()
     const r = addMemberAllocation(db, {
       project_id: 'pA',
@@ -1554,7 +1554,7 @@ describe('v2.0 / F2 — member_allocations', () => {
   })
 
   // v2.1 / F2.9 — id inconnu → changed=false (no-op cohérent avec delete).
-  it('v2.1 / F2.9 — updateMemberAllocation : id inconnu → changed=false', () => {
+  it('v2.1 / RG-GANTT-1907 — updateMemberAllocation : id inconnu → changed=false', () => {
     const upd = updateMemberAllocation(db, 'alloc_inexistant', {
       end_date: '2026-12-31',
     })
@@ -1562,7 +1562,7 @@ describe('v2.0 / F2 — member_allocations', () => {
   })
 
   // v2.1 / F2.9 — Rejette si l'extension chevauche une autre période existante.
-  it('v2.1 / F2.9 — updateMemberAllocation : chevauchement → INVALID/OVERLAP', () => {
+  it('v2.1 / RG-GANTT-1907 — updateMemberAllocation : chevauchement → INVALID/OVERLAP', () => {
     clearAllocations()
     const r1 = addMemberAllocation(db, {
       project_id: 'pA',
@@ -1587,7 +1587,7 @@ describe('v2.0 / F2 — member_allocations', () => {
   })
 
   // v2.1 / F2.9 — Modification du pct vers une valeur interdite.
-  it('v2.1 / F2.9 — updateMemberAllocation : pct invalide → rejette', () => {
+  it('v2.1 / RG-GANTT-1907 — updateMemberAllocation : pct invalide → rejette', () => {
     clearAllocations()
     const r = addMemberAllocation(db, {
       project_id: 'pA',

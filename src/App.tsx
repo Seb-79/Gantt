@@ -18,7 +18,7 @@ import TaskEditor from './components/TaskEditor'
 import WorkloadChart from './components/WorkloadChart'
 import CoherenceAlert from './components/CoherenceAlert'
 import MembersGrid from './components/MembersGrid'
-import Absences from './components/Absences'
+import AbsencesGrid from './components/AbsencesGrid'
 import Dialogs from './components/Dialogs'
 // v2.0 — Remplace window.confirm / window.prompt (qui affichent l'en-tête
 // « localhost:5174 indique ») par des modales custom alignées sur le style
@@ -507,34 +507,99 @@ export default function App() {
   )
 
   /**
-   * v2.0 / F3 — Ajoute (ou remplace via UPSERT) une absence pour un
-   * collaborateur. Le serveur valide la fraction (∈ {0.25, 0.5, 0.75, 1})
-   * et renvoie 400 sinon.
+   * v2.1 / F5 — Commit du drag-paint / clic dans la grille « Congés ».
+   * Pour chaque jour modifié :
+   *   • fraction > 0 → POST absence (UPSERT serveur, RG-GANTT-1403) ;
+   *   • fraction = 0 → DELETE absence (no-op si elle n'existait pas).
+   * Exécute en série puis fait un seul `fetchState`.
+   *
+   * @param collaboratorId  Collaborateur cible (ligne du drag).
+   * @param changes         Map<dateIso, fraction>.
    */
-  const handleAddAbsence = useCallback(
-    (collaboratorId: string, body: { date: string; fraction: number }) => {
-      mutate(
-        'POST',
-        `/api/collaborators/${encodeURIComponent(collaboratorId)}/absences`,
-        body,
-      )
+  const handleCommitAbsencesGrid = useCallback(
+    async (collaboratorId: string, changes: Map<string, number>) => {
+      setStatus('loading')
+      try {
+        for (const [date, fr] of changes) {
+          if (fr > 0) {
+            const res = await fetch(
+              `/api/collaborators/${encodeURIComponent(collaboratorId)}/absences`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ date, fraction: fr }),
+              },
+            )
+            if (!res.ok) throw new Error(await formatApiError(res))
+          } else {
+            const res = await fetch(
+              `/api/collaborators/${encodeURIComponent(collaboratorId)}/absences/${encodeURIComponent(date)}`,
+              { method: 'DELETE' },
+            )
+            // 404 silencieux = jour qui n'avait pas d'absence (cas drag qui
+            // passe sur des cases vides). Tout autre 4xx/5xx remonte.
+            if (!res.ok && res.status !== 404) {
+              throw new Error(await formatApiError(res))
+            }
+          }
+        }
+        await fetchState()
+      } catch (err) {
+        console.error('[commitAbsencesGrid]', err)
+        setStatus('error')
+        await askAlert(
+          `Mise à jour des congés impossible : ${(err as Error).message}`,
+        )
+      }
     },
-    [mutate],
+    [fetchState],
   )
 
   /**
-   * v2.0 / F3 — Supprime une absence par (collab, date). 404 silencieux
-   * (l'UI se rafraîchit via fetchState).
+   * v2.1 / F5 — Ajout d'une plage de congés en une fois (mini-formulaire
+   * « + Période »). On POST une absence par jour OUVRÉ entre start et end
+   * (les jours non ouvrés sont skip — un congé sur un samedi n'a pas de sens
+   * métier, et le serveur n'a pas de validation côté date).
    */
-  const handleDeleteAbsence = useCallback(
-    async (collaboratorId: string, date: string) => {
-      if (!(await askConfirm(`Supprimer le congé du ${date} ?`))) return
-      mutate(
-        'DELETE',
-        `/api/collaborators/${encodeURIComponent(collaboratorId)}/absences/${encodeURIComponent(date)}`,
-      )
+  const handleAddAbsencePeriod = useCallback(
+    async (
+      collaboratorId: string,
+      body: { start_date: string; end_date: string; fraction: number },
+    ) => {
+      setStatus('loading')
+      try {
+        let cur = body.start_date
+        while (cur <= body.end_date) {
+          const d = new Date(cur + 'T00:00:00')
+          // Skip week-ends (samedi=6, dimanche=0). On laisse les fériés
+          // passer : un congé en semaine sur un férié reste sémantiquement
+          // valide même si redondant (ne nuit pas).
+          const dow = d.getDay()
+          if (dow !== 0 && dow !== 6) {
+            const res = await fetch(
+              `/api/collaborators/${encodeURIComponent(collaboratorId)}/absences`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ date: cur, fraction: body.fraction }),
+              },
+            )
+            if (!res.ok) throw new Error(await formatApiError(res))
+          }
+          // Avance d'un jour calendaire.
+          d.setDate(d.getDate() + 1)
+          cur = d.toISOString().slice(0, 10)
+        }
+        await fetchState()
+      } catch (err) {
+        console.error('[addAbsencePeriod]', err)
+        setStatus('error')
+        await askAlert(
+          `Ajout de la période impossible : ${(err as Error).message}`,
+        )
+      }
     },
-    [mutate],
+    [fetchState],
   )
 
   /**
@@ -1450,11 +1515,15 @@ export default function App() {
               />
             )}
             {view === 'absences' && (
-              <Absences
+              <AbsencesGrid
+                windowStart={startIso}
+                windowEnd={endIso}
+                dayWidth={dayWidth}
                 collaborators={state.collaborators}
                 absences={state.collaborator_absences}
-                onAddAbsence={handleAddAbsence}
-                onDeleteAbsence={handleDeleteAbsence}
+                onCommitChanges={handleCommitAbsencesGrid}
+                onAddPeriod={handleAddAbsencePeriod}
+                onShiftWindow={shiftWindow}
               />
             )}
           </div>

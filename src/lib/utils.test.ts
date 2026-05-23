@@ -1842,7 +1842,7 @@ describe('workloadCellStyleNormalized (v2.0 / F5)', () => {
 // (TaskEditor) et au blocage de replan (App).
 // =============================================================================
 
-describe('computeAllocationShortfall (v2.1 / F2.9)', () => {
+describe('computeAllocationShortfall (v2.1 / F2.9 / RG-GANTT-1900 / RG-GANTT-1901 / RG-GANTT-1902)', () => {
   // Fixture commune : projet "p", collab "alice".
   const PROJ = 'p'
   const ALICE = 'alice'
@@ -2036,7 +2036,7 @@ describe('computeAllocationShortfall (v2.1 / F2.9)', () => {
 // date cible et les opérations (patch vs create selon Q5=C).
 // =============================================================================
 
-describe('computeExtensionPlan (v2.1 / F2.9.B)', () => {
+describe('computeExtensionPlan (v2.1 / F2.9.B / RG-GANTT-1903 / RG-GANTT-1904)', () => {
   const PROJ = 'p'
   const ALICE = 'alice'
   const BOB = 'bob'
@@ -2172,7 +2172,7 @@ describe('computeExtensionPlan (v2.1 / F2.9.B)', () => {
 // Vérifie le scan multi-tâches qui prépare le récap du dialog F2.9.D.
 // =============================================================================
 
-describe('scanReplanShortfalls (v2.1 / F2.9.C)', () => {
+describe('scanReplanShortfalls (v2.1 / F2.9.C / RG-GANTT-1906)', () => {
   const PROJ = 'p'
   const ALICE = 'alice'
 
@@ -2295,7 +2295,7 @@ describe('scanReplanShortfalls (v2.1 / F2.9.C)', () => {
 // dans la grille « Affectation » (clic / drag-paint).
 // =============================================================================
 
-describe('rebuildAllocationsForCollab (v2.1 / F4)', () => {
+describe('rebuildAllocationsForCollab (v2.1 / F4 / RG-GANTT-2002)', () => {
   const PROJ = 'p'
   const ALICE = 'alice'
   const BOB = 'bob'

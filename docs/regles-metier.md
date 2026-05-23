@@ -1287,27 +1287,244 @@ affectations existantes sont ainsi préservées sans intervention.
 
 ---
 
+## Famille 19 — Allocation absorbante (v2.1 / F2.9)
+
+Verrouille la sauvegarde d'une activité et le replan global du projet quand
+la **capacité cumulée** des collaborateurs affectés ne suffit pas à absorber
+la charge demandée. L'utilisateur a le choix : étendre l'allocation
+limitante via le dialog dédié, ou aller ajuster manuellement les
+affectations dans l'onglet « Affectation ».
+
+### RG-GANTT-1900
+
+Pour une activité (kind=task) avec une charge `> 0` et au moins un
+collaborateur affecté, on calcule un **shortfall** `missing` =
+`charge − absorbed`, où `absorbed` est la capacité cumulée (somme additive
+des `pct × (1 − absence)` de tous les collabs affectés) sur les jours
+ouvrés entre `start_date` et `max(end_date)` des allocations existantes.
+Si `missing > 0` (au-delà d'une tolérance numérique de 1e-9), la
+sauvegarde de l'activité est bloquée et un dialog s'ouvre.
+
+**Tests :** `src/lib/utils.test.ts` → « computeAllocationShortfall :
+aucun collab, aucune alloc, 100% suffisant, 2 collabs Q1, trou Q2, démarre
+après fin alloc, 50% insuffisant ».
+
+### RG-GANTT-1901
+
+La **capacité cumulée** est calculée comme dans `computeEndFromCharge`
+(invariant déjà testé v2.0/F6) — additive sur tous les collabs affectés à
+la tâche. Une tâche affectée à 2 collabs dont l'un finit son allocation
+plus tôt peut quand même être absorbée si l'autre couvre la durée
+restante (Q1=A : pas d'alerte tant que le total absorbe).
+
+**Tests :** `src/lib/utils.test.ts` → « Q1 — 2 collabs Alice 1j + Bob 9j
+→ missing = 0 ».
+
+### RG-GANTT-1902
+
+Un **trou d'allocation** au milieu n'est pas en soi un blocage : si la
+charge peut s'absorber sur les jours dispos avant + après le trou, la
+sauvegarde passe (Q2 — pas d'alerte tant que le total absorbe).
+
+**Tests :** `src/lib/utils.test.ts` → « Q2 — trou d'allocation au milieu :
+charge absorbée sur les jours dispos ».
+
+### RG-GANTT-1903
+
+Le dialog `AllocationFixDialog` propose, pour un taux d'extension choisi
+parmi {25, 50, 75, 100}, une **date d'extension auto-calculée** qui est
+la première date où la capacité cumulée étendue absorberait le manque.
+La date est **éditable** par l'utilisateur (Q3=C), mais bornée par un
+`min` égal à la date proposée (interdit de saisir plus tôt — incohérent
+avec la simulation).
+
+**Tests :** `src/lib/utils.test.ts` → « computeExtensionPlan : 1 collab,
+manque 3j à 100% → PATCH end_date ».
+
+### RG-GANTT-1904
+
+Q5=C — Quand on étend l'allocation d'un collab :
+
+- si la **dernière allocation existante** du couple (projet, collab) a déjà
+  le `pct` cible, on **PATCH** son `end_date` (fusion par prolongation) ;
+- sinon, on **CREATE** une nouvelle allocation `[lendemain_de_l_existante,
+targetEndDate]` au `pct` cible (préserve l'historique d'allocations à
+  d'autres taux).
+
+**Tests :** `src/lib/utils.test.ts` → « Q5=C — changement de % → CREATE
+nouvelle allocation » ; « 1 collab, allocation 100% existante → PATCH
+end_date ».
+
+### RG-GANTT-1905
+
+Q6 — Après l'extension d'allocation, le `end_date` de la tâche est
+**recalculé automatiquement** par `computeEndFromCharge` au moment où le
+`onSave` est rejoué (la charge reste source de vérité). Si l'utilisateur
+préfère figer la fin, il décoche « Replanifier après enregistrement » dans
+le TaskEditor (pattern v1.22 existant).
+
+**Tests :** couvert indirectement par `src/lib/utils.test.ts` →
+`computeEndFromCharge` qui est rappelé côté DAL au `createTask` /
+`updateTask` ; intégration end-to-end pas testée (manipulation UI).
+
+### RG-GANTT-1906
+
+Le `Replan` global est bloqué dès qu'**au moins une activité** du projet
+courant a un `missing > 0`. Le `ReplanAllocationFixDialog` propose un
+récapitulatif Q4=B : une ligne par tâche en problème, cochée par défaut,
+avec date + % éditables. Les actions globales « Tout cocher / Tout
+décocher » basculent toutes les cases. « Étendre et replanifier » exécute
+en série les extensions cochées, puis relance automatiquement le replan
+une fois le state rafraîchi.
+
+**Tests :** `src/lib/utils.test.ts` → `scanReplanShortfalls` (6 tests :
+phases ignorées, sans collab ignoré, sans charge ignoré, absorbable
+exclu, non absorbable inclus, mix).
+
+### RG-GANTT-1907
+
+Endpoint `PATCH /api/allocations/:id` (v2.1 / F2.9) : met à jour une
+période d'allocation existante (partiel — tout champ omis reste
+inchangé). Validations dupliquées côté DAL : pct ∈ {25, 50, 75, 100},
+`start_date ≤ end_date`, pas de chevauchement avec une autre période du
+même (projet, collab) — l'id courant est exclu du check d'overlap.
+404 si l'id n'existe pas, 400 sinon avec un `code` applicatif.
+
+**Tests :** `db/index.test.js` → 4 tests `updateMemberAllocation` ;
+`server/app.test.js` → 4 tests d'intégration HTTP (200/404/400/400).
+
+---
+
+## Famille 20 — Grilles éditables Affectation & Congés (v2.1 / F4 + F5)
+
+Refonte des onglets « Affectation » et « Congés » en grilles calendaires
+calquées sur le Plan de charge. Édition directe à la souris (clic =
+cycle palier, drag-paint horizontal) pour éviter les formulaires
+répétitifs.
+
+### RG-GANTT-2000
+
+**Grille Affectation** (`MembersGrid`) — chaque cellule représente le pct
+d'allocation d'un collaborateur membre du projet pour un jour donné.
+Le clic gauche cycle au palier suivant dans
+`vide → 25 → 50 → 75 → 100 → vide`. Un seul commit serveur par clic.
+
+**Tests :** non couvert par tests automatisés (interaction UI souris) —
+vérifié visuellement.
+
+### RG-GANTT-2001
+
+**Drag-paint horizontal** (commun F4/F5 via le hook `useDragPaint`) :
+mousedown sur une cellule capture la ligne et la valeur du pinceau
+(= valeur cible après cycle). Mousemove peint toutes les cellules
+survolées de la **même ligne** avec cette valeur (verrouillage horizontal,
+Q3). Mouseup commit en batch via le callback parent. Écrasement
+silencieux Q2 : les valeurs existantes différentes sont remplacées sans
+confirmation.
+
+**Tests :** non couvert par tests automatisés (drag souris) — vérifié
+visuellement. Le hook est typé `<V>` générique pour mutualiser F4 et F5.
+
+### RG-GANTT-2002
+
+**Compactage Affectation** (`rebuildAllocationsForCollab`) — après
+modification jour-par-jour via la grille, on **rebuild from scratch** les
+allocations du couple (projet, collab) en :
+
+1. supprimant toutes les anciennes (toDelete = ids existants) ;
+2. créant des **runs contigus de même pct** (jours calendaires).
+
+Évite la complexité de PATCH partiel sur des périodes existantes
+fragmentées. Les jours à `pct = 0` sont des trous (= jours libres).
+
+**Tests :** `src/lib/utils.test.ts` → 6 tests `rebuildAllocationsForCollab`
+(vide, 1 jour isolé, compaction, split milieu, retrait milieu, ignore
+autres collabs/projets).
+
+### RG-GANTT-2003
+
+**Grille Congés** (`AbsencesGrid`) — chaque cellule représente la fraction
+d'absence d'un collaborateur pour un jour donné. Le clic cycle dans
+`vide → 0,25 → 0,5 → 0,75 → 1 → vide`. Cross-projet : la grille montre
+tous les collabs connus, pas seulement les membres du projet courant
+(cohérent avec RG-GANTT-1401).
+
+**Tests :** non couvert par tests automatisés (interaction UI) — vérifié
+visuellement.
+
+### RG-GANTT-2004
+
+**Commit Congés** : 1 jour = 1 ligne en base (PRIMARY KEY composite
+`(collab, date)` — RG-GANTT-1403). Pas de compactage nécessaire :
+chaque cellule génère soit un POST (UPSERT serveur, fraction > 0) soit
+un DELETE (fraction = 0). 404 silencieux sur DELETE = la cellule était
+déjà vide (cas drag passant sur des jours libres).
+
+**Tests :** route POST/DELETE absences couverte par les tests v2.0/F3
+existants (RG-GANTT-1403, 1405, 1406). Intégration grille-spécifique
+non couverte (manipulation UI).
+
+### RG-GANTT-2005
+
+**Bouton « + Période »** conservé sur les deux grilles : ouvre un
+mini-formulaire inline (date début, date fin, % ou fraction) pour saisir
+une plage entière en une fois. Côté Affectation, 1 POST allocation. Côté
+Congés, 1 POST par jour ouvré de la plage (les week-ends sont skippés).
+
+**Tests :** routes existantes (RG-GANTT-1300, RG-GANTT-1403). Intégration
+mini-form non couverte (manipulation UI).
+
+### RG-GANTT-2006
+
+**Drag oblique** (vertical) **désactivé** sur les deux grilles : le hook
+`useDragPaint` mémorise la ligne de départ au mousedown et ignore les
+cellules d'autres lignes pendant le drag. Évite les peintures
+involontaires sur des collabs voisins.
+
+**Tests :** propriété du hook `useDragPaint` ; vérifié par revue de code,
+pas par test automatisé (souris).
+
+---
+
 ## Synthèse de couverture
 
-| Famille                       |  Règles |            Couverture |
-| ----------------------------- | ------: | --------------------: |
-| 1 — Communes                  |       7 |                 7 / 7 |
-| 2 — Activités                 |       6 |                 6 / 6 |
-| 3 — Jalons                    |       7 |                 7 / 7 |
-| 4 — Phases                    |      10 |               10 / 10 |
-| 5 — Prédécesseur et délai     |      10 |               10 / 10 |
-| 6 — Priorité                  |       5 |                 5 / 5 |
-| 7 — Surcharge collaborateur   |       7 |                 7 / 7 |
-| 8 — SNET                      |      10 |               10 / 10 |
-| 9 — Cohérence                 |       8 |                 8 / 8 |
-| 10 — Replanification          |      10 |               10 / 10 |
-| 11 — Calendrier               |       5 |                 5 / 5 |
-| 12 — Hiérarchie / Projets     |       8 |                 8 / 8 |
-| 12bis — Memberships (v2.0/F1) |       6 |                 6 / 6 |
-| 13 — Allocations % (v2.0/F2)  |      10 |               10 / 10 |
-| 14 — Absences (v2.0/F3)       |       7 |                 7 / 7 |
-| 15 — FNLT (v2.0/F4)           |       7 |                 7 / 7 |
-| 16 — Plan de charge (v2.0/F5) |       7 |                 7 / 7 |
-| 17 — Multi-collab (v2.0/F6)   |       7 |                 7 / 7 |
-| 18 — Charge stockée (v2.0/F0) |       5 |                 5 / 5 |
-| **Total**                     | **142** | **142 / 142 (100 %)** |
+| Famille                       |  Règles |           Couverture |
+| ----------------------------- | ------: | -------------------: |
+| 1 — Communes                  |       7 |                7 / 7 |
+| 2 — Activités                 |       6 |                6 / 6 |
+| 3 — Jalons                    |       7 |                7 / 7 |
+| 4 — Phases                    |      10 |              10 / 10 |
+| 5 — Prédécesseur et délai     |      10 |              10 / 10 |
+| 6 — Priorité                  |       5 |                5 / 5 |
+| 7 — Surcharge collaborateur   |       7 |                7 / 7 |
+| 8 — SNET                      |      10 |              10 / 10 |
+| 9 — Cohérence                 |       8 |                8 / 8 |
+| 10 — Replanification          |      10 |              10 / 10 |
+| 11 — Calendrier               |       5 |                5 / 5 |
+| 12 — Hiérarchie / Projets     |       8 |                8 / 8 |
+| 12bis — Memberships (v2.0/F1) |       6 |                6 / 6 |
+| 13 — Allocations % (v2.0/F2)  |      10 |              10 / 10 |
+| 14 — Absences (v2.0/F3)       |       7 |                7 / 7 |
+| 15 — FNLT (v2.0/F4)           |       7 |                7 / 7 |
+| 16 — Plan de charge (v2.0/F5) |       7 |                7 / 7 |
+| 17 — Multi-collab (v2.0/F6)   |       7 |                7 / 7 |
+| 18 — Charge stockée (v2.0/F0) |       5 |                5 / 5 |
+| 19 — Allocation absorbante    |       8 |                7 / 8 |
+| (v2.1/F2.9)                   |         |                      |
+| 20 — Grilles éditables        |       7 |                2 / 7 |
+| (v2.1/F4+F5)                  |         |                      |
+| **Total**                     | **157** | **151 / 157 (96 %)** |
+
+**Notes de couverture v2.1 :**
+
+- Famille 19 — toutes les règles métier (calcul shortfall, extension plan,
+  routes API) sont couvertes par tests unitaires et intégration HTTP.
+  Seule RG-GANTT-1905 (recalcul auto de la fin de tâche post-extension)
+  n'a pas de test end-to-end — c'est `computeEndFromCharge` qui est rejoué
+  côté DAL, déjà testé par ailleurs.
+- Famille 20 — les helpers purs (`rebuildAllocationsForCollab`,
+  `useDragPaint`) sont couverts pour leur logique pure ; les interactions
+  souris (clic / drag / drag oblique désactivé / mini-form Période) sont
+  vérifiées visuellement, pas par tests automatisés (manipuler des
+  mousedown/mouseup/mousemove en jsdom est fragile et apporte peu de
+  garantie supplémentaire).

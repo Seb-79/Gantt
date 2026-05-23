@@ -67,6 +67,13 @@ interface Props {
   projectId: string | null
   /** Callback : ajoute un collab au projet (POST membership). */
   onAddMember: (collaboratorId: string) => void
+  /**
+   * v2.2 / F4 — Callback : crée un nouveau collaborateur (entité globale)
+   * ET l'affecte au projet courant. Déclenché par le bouton « + Nouveau ».
+   * Tout le détail (prompt, POST, refresh) est porté côté App.tsx ; le grid
+   * se contente de signaler l'intention.
+   */
+  onCreateCollaborator: () => void
   /** Callback : ajoute une période d'allocation (POST allocation). */
   onAddAllocation: (
     collaboratorId: string,
@@ -115,6 +122,7 @@ export default function MembersGrid({
   projectName,
   projectId,
   onAddMember,
+  onCreateCollaborator,
   onAddAllocation,
   onCommitChanges,
   onShiftWindow,
@@ -311,31 +319,48 @@ export default function MembersGrid({
             <span className="text-slate-500 font-normal"> — {projectName}</span>
           )}
         </h2>
-        {/* Mini-formulaire d'ajout d'un membre (dropdown des candidats). */}
-        {candidates.length > 0 && (
-          <div className="ml-auto flex items-center gap-1">
-            <select
-              className="text-xs border border-slate-300 rounded px-2 py-1"
-              value={pickedCandidate}
-              onChange={(e) => setPickedCandidate(e.target.value)}
-            >
-              <option value="">— ajouter un collaborateur —</option>
-              {candidates.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              onClick={handleAddMember}
-              disabled={!pickedCandidate}
-              className="px-2 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed"
-            >
-              +
-            </button>
-          </div>
-        )}
+        {/* v2.2 / F4 — Zone d'ajout d'un membre. Contient :
+              • Le dropdown des candidats existants (affichés UNIQUEMENT s'il
+                en reste — sinon caché pour ne pas montrer un select vide).
+              • Le bouton « + Nouveau » qui crée un collab inédit ET l'affecte
+                au projet courant. TOUJOURS visible (même candidates vide :
+                c'est le seul moyen sur un projet où tous les collabs
+                existants sont déjà membres). */}
+        <div className="ml-auto flex items-center gap-1">
+          {candidates.length > 0 && (
+            <>
+              <select
+                className="text-xs border border-slate-300 rounded px-2 py-1"
+                value={pickedCandidate}
+                onChange={(e) => setPickedCandidate(e.target.value)}
+              >
+                <option value="">— ajouter un collaborateur —</option>
+                {candidates.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleAddMember}
+                disabled={!pickedCandidate}
+                className="px-2 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed"
+                title="Affecter le collaborateur sélectionné au projet"
+              >
+                +
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={onCreateCollaborator}
+            className="px-2 py-1 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700"
+            title="Créer un nouveau collaborateur et l'affecter au projet"
+          >
+            + Nouveau
+          </button>
+        </div>
       </header>
 
       {orderedMembers.length === 0 ? (

@@ -173,6 +173,10 @@ export interface GanttState {
    *  plan de charge pour positionner les seuils de coloration (« surcharge
    *  ssi charge > capacité totale »). */
   all_member_allocations: MemberAllocation[]
+  /** v2.2 / F5 — Memberships cross-projet : tous les couples (project_id,
+   *  collaborator_id) existants. Consommé par la vue « Affectation × Tous
+   *  les projets » qui rend la matrice croisée. */
+  all_project_members: { project_id: string; collaborator_id: string }[]
   /** v2.0 / F3 — Toutes les absences (cross-projet) de tous les collabs.
    *  Diminue multiplicativement la capacité quotidienne (Q8b). Saisie et
    *  affichée dans l'onglet « Congés ». */

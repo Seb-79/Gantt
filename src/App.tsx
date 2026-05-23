@@ -18,6 +18,8 @@ import TaskEditor from './components/TaskEditor'
 import WorkloadChart from './components/WorkloadChart'
 import CoherenceAlert from './components/CoherenceAlert'
 import MembersGrid from './components/MembersGrid'
+// v2.2 / F5 — Vue Affectation × Tous les projets (mode 'all' du sélecteur).
+import MembersGridGlobal from './components/MembersGridGlobal'
 import AbsencesGrid from './components/AbsencesGrid'
 import Dialogs from './components/Dialogs'
 // v2.2 / F1 — Tooltip custom : remplace les attributs HTML natifs `title=` de la
@@ -526,6 +528,51 @@ export default function App() {
   )
 
   /**
+   * v2.2 / F4 — Crée un nouveau collaborateur (entité globale) ET l'affecte
+   * immédiatement au projet courant. Déclenché par le bouton « + Nouveau »
+   * dans l'en-tête de la vue Affectation.
+   *
+   * Couleur par défaut bleue (`#3b82f6`) — l'utilisateur pourra la changer
+   * plus tard (UI dédiée à venir). Nom non vide requis (askPrompt valide).
+   *
+   * Le chaînage est volontairement séquentiel (await sur la création avant
+   * l'affectation) pour éviter une race où l'affectation serait POSTée avant
+   * que le collab n'existe en base.
+   */
+  const handleCreateCollaborator = useCallback(async () => {
+    if (!currentProjectId) return
+    const rawName = await askPrompt('Nom du nouveau collaborateur :', '')
+    const name = rawName?.trim()
+    if (!name) return
+    const id = makeId('c')
+    // 1. Crée le collab via un fetch direct (mutate swallow l'erreur, on a
+    //    besoin de la propagation pour ne PAS POSTer le membership si la
+    //    création échoue — typiquement collision d'id, rare mais possible).
+    try {
+      setStatus('loading')
+      const res = await fetch('/api/collaborators', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, name, color: '#3b82f6' }),
+      })
+      if (!res.ok) throw new Error(await formatApiError(res))
+    } catch (err) {
+      console.error('[createCollaborator]', err)
+      setStatus('error')
+      await askAlert(`Erreur : ${(err as Error).message}`)
+      return
+    }
+    // 2. Affecte le nouveau collab au projet courant (POST membership).
+    //    `mutate` enchaîne le re-fetch du state → le sélecteur de candidats
+    //    et la liste des membres se rafraîchissent automatiquement.
+    mutate(
+      'POST',
+      `/api/projects/${encodeURIComponent(currentProjectId)}/members`,
+      { collaborator_id: id },
+    )
+  }, [currentProjectId, mutate])
+
+  /**
    * v2.0 / F2 — Ajoute une période d'allocation pour un membre du projet
    * courant. Le serveur valide les invariants (% ∈ {25,50,75,100}, pas de
    * chevauchement, membership existante) et renvoie 400 en cas de violation
@@ -557,6 +604,65 @@ export default function App() {
    * @param collaboratorId  Collaborateur cible (ligne du drag).
    * @param changes         Map<dateIso, pct> (pct=0 = jour libre).
    */
+  /**
+   * v2.2 / F5 — Commit d'un changement de pct sur la grille globale
+   * « Affectation × Tous les projets ». Variante du handler ci-dessous,
+   * paramétrée par le `projectId` cible (le couple est désigné par
+   * (collaboratorId, projectId)).
+   *
+   * Limité à 1 jour à la fois (clic-cycle V1, pas de drag-paint global).
+   */
+  const handleCommitGlobalCellChange = useCallback(
+    async (
+      collaboratorId: string,
+      projectId: string,
+      dayIso: string,
+      newPct: number,
+    ) => {
+      if (!state) return
+      const changes = new Map<string, number>([[dayIso, newPct]])
+      const plan = rebuildAllocationsForCollab({
+        projectId,
+        collaboratorId,
+        existing: state.all_member_allocations,
+        changes,
+      })
+      setStatus('loading')
+      try {
+        for (const id of plan.toDelete) {
+          const res = await fetch(
+            `/api/allocations/${encodeURIComponent(id)}`,
+            { method: 'DELETE' },
+          )
+          if (!res.ok && res.status !== 404) {
+            throw new Error(await formatApiError(res))
+          }
+        }
+        for (const period of plan.toCreate) {
+          const res = await fetch(
+            `/api/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(collaboratorId)}/allocations`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(period),
+            },
+          )
+          if (!res.ok) {
+            throw new Error(await formatApiError(res))
+          }
+        }
+        await fetchState()
+      } catch (err) {
+        console.error('[commitGlobalCellChange]', err)
+        setStatus('error')
+        await askAlert(
+          `Mise à jour de l'allocation impossible : ${(err as Error).message}`,
+        )
+      }
+    },
+    [state, fetchState],
+  )
+
   const handleCommitAllocationGrid = useCallback(
     async (collaboratorId: string, changes: Map<string, number>) => {
       if (!state || !currentProjectId) return
@@ -1648,7 +1754,7 @@ export default function App() {
                 onShiftWindow={shiftWindow}
               />
             )}
-            {view === 'members' && (
+            {view === 'members' && projectSelection.mode === 'single' && (
               <MembersGrid
                 windowStart={startIso}
                 windowEnd={endIso}
@@ -1659,8 +1765,23 @@ export default function App() {
                 projectName={currentProject?.name ?? null}
                 projectId={state.current_project_id}
                 onAddMember={handleAddProjectMember}
+                onCreateCollaborator={handleCreateCollaborator}
                 onAddAllocation={handleAddMemberAllocation}
                 onCommitChanges={handleCommitAllocationGrid}
+                onShiftWindow={shiftWindow}
+              />
+            )}
+            {/* v2.2 / F5 — Vue Affectation en mode « Tous les projets ». */}
+            {view === 'members' && projectSelection.mode === 'all' && (
+              <MembersGridGlobal
+                windowStart={startIso}
+                windowEnd={endIso}
+                dayWidth={dayWidth}
+                projects={state.projects}
+                collaborators={state.collaborators}
+                allProjectMembers={state.all_project_members}
+                allMemberAllocations={state.all_member_allocations}
+                onCommitCellChange={handleCommitGlobalCellChange}
                 onShiftWindow={shiftWindow}
               />
             )}

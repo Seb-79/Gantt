@@ -67,6 +67,8 @@ function mkState(overrides: Partial<GanttState> = {}): GanttState {
     member_allocations: [],
     // v2.0 / F5 — Allocations cross-projet (capacité totale). Vide par défaut.
     all_member_allocations: [],
+    // v2.2 / F5 — Memberships cross-projet (matrice). Vide par défaut.
+    all_project_members: [],
     // v2.0 / F3 — Absences cross-projet. Vide par défaut.
     collaborator_absences: [],
     ...overrides,

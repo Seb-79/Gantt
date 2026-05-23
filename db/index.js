@@ -500,6 +500,17 @@ export function getFullState(db, projectId) {
          ORDER BY collaborator_id ASC, start_date ASC, id ASC`,
     )
     .all()
+  // v2.2 / F5 — Memberships CROSS-PROJET : nécessaires pour la vue
+  // « Affectation × Tous les projets » qui affiche la matrice complète
+  // collab × projet (avec ✓ pour chaque couple membre). Volume négligeable
+  // (~ quelques dizaines de lignes max sur des plannings PME/consulting).
+  const allProjectMembers = db
+    .prepare(
+      `SELECT project_id, collaborator_id
+         FROM project_members
+         ORDER BY project_id ASC, collaborator_id ASC`,
+    )
+    .all()
   return {
     version: getVersion(db),
     current_project_id: currentId,
@@ -509,6 +520,7 @@ export function getFullState(db, projectId) {
     current_project_members: currentProjectMembers,
     member_allocations: memberAllocations,
     all_member_allocations: allMemberAllocations,
+    all_project_members: allProjectMembers,
     collaborator_absences: collaboratorAbsences,
   }
 }

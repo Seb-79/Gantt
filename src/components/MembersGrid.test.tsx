@@ -22,6 +22,7 @@ const PROJ = 'p1'
 /** Helper : monte la grille avec des callbacks mockés. */
 function mount(opts?: Partial<React.ComponentProps<typeof MembersGrid>>) {
   const onAddMember = vi.fn()
+  const onCreateCollaborator = vi.fn()
   const onAddAllocation = vi.fn()
   const onCommitChanges = vi.fn()
   const utils = render(
@@ -35,12 +36,19 @@ function mount(opts?: Partial<React.ComponentProps<typeof MembersGrid>>) {
       projectName="Projet 1"
       projectId={PROJ}
       onAddMember={onAddMember}
+      onCreateCollaborator={onCreateCollaborator}
       onAddAllocation={onAddAllocation}
       onCommitChanges={onCommitChanges}
       {...opts}
     />,
   )
-  return { onAddMember, onAddAllocation, onCommitChanges, ...utils }
+  return {
+    onAddMember,
+    onCreateCollaborator,
+    onAddAllocation,
+    onCommitChanges,
+    ...utils,
+  }
 }
 
 describe('MembersGrid (v2.1 / RG-GANTT-2000 / RG-GANTT-2005)', () => {
@@ -126,5 +134,19 @@ describe('MembersGrid (v2.1 / RG-GANTT-2000 / RG-GANTT-2005)', () => {
       end_date: '2026-07-15',
       allocation_pct: 100,
     })
+  })
+
+  // v2.2 / F4 — Bouton « + Nouveau collaborateur » : doit toujours être
+  // visible (même si la liste des candidats est vide, cas où tous les
+  // collabs existants sont déjà membres du projet courant).
+  it('F4 — le bouton « + Nouveau » est visible même quand tous les collabs sont déjà membres', () => {
+    mount({ memberIds: ['alice', 'bob'] })
+    expect(screen.getByRole('button', { name: /Nouveau/ })).toBeInTheDocument()
+  })
+
+  it('F4 — clic sur « + Nouveau » appelle onCreateCollaborator', () => {
+    const { onCreateCollaborator } = mount({ memberIds: ['alice', 'bob'] })
+    fireEvent.click(screen.getByRole('button', { name: /Nouveau/ }))
+    expect(onCreateCollaborator).toHaveBeenCalledTimes(1)
   })
 })

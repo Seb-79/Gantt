@@ -395,13 +395,19 @@ export default function MembersGridGlobal({
                           nextPct(pct),
                         )
                       }
+                      // v2.2 — Lisibilité : on n'affiche le nombre que si la
+                      // cellule est assez large (≥ 22 px). Sous ce seuil, on
+                      // se contente du fond coloré pour ne pas avoir « 100 »
+                      // qui déborde sur la cellule voisine.
+                      const showPct =
+                        pct > 0 && !isWeekend && !isHoliday && dayWidth >= 22
                       return (
                         <button
                           type="button"
                           key={dIso}
                           onClick={handleClick}
                           disabled={isWeekend || isHoliday}
-                          className="border-r border-slate-100 text-[10px] flex items-center justify-center disabled:cursor-default"
+                          className="border-r border-slate-100 text-[10px] flex items-center justify-center disabled:cursor-default overflow-hidden"
                           style={{
                             width: dayWidth,
                             height: ROW_HEIGHT,
@@ -412,7 +418,7 @@ export default function MembersGridGlobal({
                             projectById.get(project_id)?.name ?? project_id
                           } — ${dIso.slice(8, 10)}/${dIso.slice(5, 7)}/${dIso.slice(0, 4)} : ${pct} %`}
                         >
-                          {pct > 0 && !isWeekend && !isHoliday ? pct : ''}
+                          {showPct ? pct : ''}
                         </button>
                       )
                     })}

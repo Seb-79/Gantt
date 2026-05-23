@@ -485,7 +485,7 @@ export default function MembersGrid({
                         <div
                           key={i}
                           className={[
-                            'flex items-center justify-center text-[10px] font-medium border-r border-slate-100',
+                            'flex items-center justify-center text-[10px] font-medium border-r border-slate-100 overflow-hidden',
                             cellBg,
                             textClass,
                             'cursor-pointer select-none',
@@ -507,7 +507,12 @@ export default function MembersGrid({
                             drag.onCellEnter(c.id, iso)
                           }}
                         >
-                          {offDay || pct === 0 ? '' : pct}
+                          {/* v2.2 — Lisibilité : on n'affiche le pct que si la
+                              cellule est assez large. Sous 22 px on garde
+                              uniquement le fond coloré (suffisant pour lire
+                              l'intensité d'allocation). overflow-hidden
+                              ci-dessus empêche tout débordement résiduel. */}
+                          {offDay || pct === 0 || dayWidth < 22 ? '' : pct}
                         </div>
                       )
                     })}

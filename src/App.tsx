@@ -20,6 +20,10 @@ import CoherenceAlert from './components/CoherenceAlert'
 import MembersGrid from './components/MembersGrid'
 import AbsencesGrid from './components/AbsencesGrid'
 import Dialogs from './components/Dialogs'
+// v2.2 / F1 — Tooltip custom : remplace les attributs HTML natifs `title=` de la
+// toolbar dont le délai d'apparition (~700-1500 ms) et le comportement de
+// disparition au moindre mouvement rendaient l'usage frustrant.
+import { Tooltip } from './components/Tooltip'
 // v2.0 — Remplace window.confirm / window.prompt (qui affichent l'en-tête
 // « localhost:5174 indique ») par des modales custom alignées sur le style
 // de l'app. Voir src/lib/dialogs.ts pour le détail.
@@ -1211,76 +1215,86 @@ export default function App() {
                 ))
               )}
             </select>
-            <button
-              className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
-              onClick={handleCreateProject}
-              title="Nouveau projet"
-            >
-              +
-            </button>
-            <button
-              className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
-              onClick={handleRenameProject}
-              disabled={!currentProject}
-              title="Renommer le projet"
-            >
-              ✎
-            </button>
+            <Tooltip label="Nouveau projet">
+              <button
+                className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
+                onClick={handleCreateProject}
+              >
+                +
+              </button>
+            </Tooltip>
+            <Tooltip label="Renommer le projet">
+              <button
+                className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                onClick={handleRenameProject}
+                disabled={!currentProject}
+              >
+                ✎
+              </button>
+            </Tooltip>
             {/* v1.24 — Règle RG-GANTT-1106 : la suppression est autorisée
                 même pour le dernier projet. Le bouton n'est désactivé que
                 lorsqu'il n'y a aucun projet courant (cas "base vide"). */}
-            <button
-              className="w-7 h-7 text-sm rounded border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
-              onClick={handleDeleteProject}
-              disabled={!currentProject}
-              title={
+            <Tooltip
+              label={
                 state.projects.length <= 1
                   ? 'Supprimer le projet (base vide après suppression)'
                   : 'Supprimer le projet'
               }
             >
-              🗑
-            </button>
+              <button
+                className="w-7 h-7 text-sm rounded border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                onClick={handleDeleteProject}
+                disabled={!currentProject}
+              >
+                🗑
+              </button>
+            </Tooltip>
           </div>
         )}
 
         {/* Navigation temporelle — icônes seules + tooltips */}
         <div className="flex items-center gap-1 pl-2 border-l border-slate-200 shrink-0">
-          <button
-            className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
-            onClick={() => shiftWindow(-30)}
-            title="Reculer d'un mois"
-          >
-            «
-          </button>
-          <button
-            className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
-            onClick={() => shiftWindow(-7)}
-            title="Reculer d'une semaine"
-          >
-            ‹
-          </button>
-          <button
-            className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
-            onClick={() => setWindow(defaultWindow())}
-            title="Recentrer sur aujourd'hui"
-          >
-            ⌂
-          </button>
-          <button
-            className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
-            onClick={() => shiftWindow(7)}
-            title="Avancer d'une semaine"
-          >
-            ›
-          </button>
-          <button
-            className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
-            onClick={() => shiftWindow(30)}
-            title="Avancer d'un mois"
-          >
-            »
-          </button>
+          <Tooltip label="Reculer d'un mois">
+            <button
+              className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
+              onClick={() => shiftWindow(-30)}
+            >
+              «
+            </button>
+          </Tooltip>
+          <Tooltip label="Reculer d'une semaine">
+            <button
+              className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
+              onClick={() => shiftWindow(-7)}
+            >
+              ‹
+            </button>
+          </Tooltip>
+          <Tooltip label="Recentrer sur aujourd'hui">
+            <button
+              className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
+              onClick={() => setWindow(defaultWindow())}
+            >
+              ⌂
+            </button>
+          </Tooltip>
+          <Tooltip label="Avancer d'une semaine">
+            <button
+              className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
+              onClick={() => shiftWindow(7)}
+            >
+              ›
+            </button>
+          </Tooltip>
+          <Tooltip label="Avancer d'un mois">
+            <button
+              className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
+              onClick={() => shiftWindow(30)}
+            >
+              »
+            </button>
+          </Tooltip>
         </div>
 
         {/* Zoom — slider plus court, libellé masqué */}
@@ -1288,13 +1302,14 @@ export default function App() {
           className="flex items-center gap-1 pl-2 border-l border-slate-200 shrink-0"
           title="Zoom (largeur d'un jour)"
         >
-          <button
-            className="w-7 h-7 rounded border border-slate-300 hover:bg-slate-100"
-            onClick={() => setDayWidth((v) => clampDayWidth(v - 4))}
-            title="Dézoomer"
-          >
-            −
-          </button>
+          <Tooltip label="Dézoomer">
+            <button
+              className="w-7 h-7 rounded border border-slate-300 hover:bg-slate-100"
+              onClick={() => setDayWidth((v) => clampDayWidth(v - 4))}
+            >
+              −
+            </button>
+          </Tooltip>
           <input
             type="range"
             min={MIN_DAY_WIDTH}
@@ -1303,13 +1318,14 @@ export default function App() {
             onChange={(e) => setDayWidth(clampDayWidth(Number(e.target.value)))}
             className="w-24"
           />
-          <button
-            className="w-7 h-7 rounded border border-slate-300 hover:bg-slate-100"
-            onClick={() => setDayWidth((v) => clampDayWidth(v + 4))}
-            title="Zoomer"
-          >
-            +
-          </button>
+          <Tooltip label="Zoomer">
+            <button
+              className="w-7 h-7 rounded border border-slate-300 hover:bg-slate-100"
+              onClick={() => setDayWidth((v) => clampDayWidth(v + 4))}
+            >
+              +
+            </button>
+          </Tooltip>
         </div>
 
         {/* Actions globales — alignées à droite, icônes seules */}
@@ -1319,23 +1335,26 @@ export default function App() {
               cellules). Fond jaune pâle quand actif pour rappeler la palette
               qu'il déclenche. */}
           {view === 'workload' && (
-            <button
-              className={[
-                'w-7 h-7 text-sm rounded border border-slate-300',
-                highlightUnderload
-                  ? 'bg-yellow-200 text-yellow-900 border-yellow-400'
-                  : 'hover:bg-slate-100',
-              ].join(' ')}
-              onClick={toggleHighlightUnderload}
-              title={
+            <Tooltip
+              label={
                 highlightUnderload
                   ? 'Masquer la mise en évidence des sous-charges'
                   : 'Mettre en évidence les sous-charges (< 1 j) en jaune'
               }
-              aria-pressed={highlightUnderload}
             >
-              🟡
-            </button>
+              <button
+                className={[
+                  'w-7 h-7 text-sm rounded border border-slate-300',
+                  highlightUnderload
+                    ? 'bg-yellow-200 text-yellow-900 border-yellow-400'
+                    : 'hover:bg-slate-100',
+                ].join(' ')}
+                onClick={toggleHighlightUnderload}
+                aria-pressed={highlightUnderload}
+              >
+                🟡
+              </button>
+            </Tooltip>
           )}
           {/* v2.0 / F5 — Toggle scope « projet courant / vue globale ».
               Visible uniquement sur l'onglet Plan de charge. En mode global,
@@ -1367,75 +1386,85 @@ export default function App() {
               {/* v1.13 — Toggle d'affichage du nom des tâches dans les barres.
                   ACTIF par défaut : fond bleu pâle quand affiché, neutre quand
                   masqué (T sans fond = "texte masqué"). */}
-              <button
-                className={[
-                  'w-7 h-7 text-xs rounded border border-slate-300',
-                  showBarNames
-                    ? 'bg-blue-100 text-blue-700 border-blue-300'
-                    : 'hover:bg-slate-100',
-                ].join(' ')}
-                onClick={toggleShowBarNames}
-                title={
+              <Tooltip
+                label={
                   showBarNames
                     ? 'Masquer le nom des tâches dans les barres'
                     : 'Afficher le nom des tâches dans les barres'
                 }
-                aria-pressed={showBarNames}
               >
-                T
-              </button>
+                <button
+                  className={[
+                    'w-7 h-7 text-xs rounded border border-slate-300',
+                    showBarNames
+                      ? 'bg-blue-100 text-blue-700 border-blue-300'
+                      : 'hover:bg-slate-100',
+                  ].join(' ')}
+                  onClick={toggleShowBarNames}
+                  aria-pressed={showBarNames}
+                >
+                  T
+                </button>
+              </Tooltip>
               {/* v1.11 — Toggle d'affichage des dates de début/fin sur les barres.
                   État actif (showDates=true) souligné par un fond bleu pâle. */}
-              <button
-                className={[
-                  'w-7 h-7 text-sm rounded border border-slate-300',
-                  showDates
-                    ? 'bg-blue-100 text-blue-700 border-blue-300'
-                    : 'hover:bg-slate-100',
-                ].join(' ')}
-                onClick={toggleShowDates}
-                title={
+              <Tooltip
+                label={
                   showDates
                     ? 'Masquer les dates sur les barres'
                     : 'Afficher les dates de début/fin sur les barres'
                 }
-                aria-pressed={showDates}
               >
-                📅
-              </button>
+                <button
+                  className={[
+                    'w-7 h-7 text-sm rounded border border-slate-300',
+                    showDates
+                      ? 'bg-blue-100 text-blue-700 border-blue-300'
+                      : 'hover:bg-slate-100',
+                  ].join(' ')}
+                  onClick={toggleShowDates}
+                  aria-pressed={showDates}
+                >
+                  📅
+                </button>
+              </Tooltip>
             </>
           )}
-          <button
-            className="h-7 px-2 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700"
-            onClick={() => setCreating(true)}
-            title="Nouvelle tâche / jalon / phase"
-          >
-            + Tâche
-          </button>
+          <Tooltip label="Nouvelle tâche / jalon / phase">
+            <button
+              className="h-7 px-2 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700"
+              onClick={() => setCreating(true)}
+            >
+              + Tâche
+            </button>
+          </Tooltip>
           {/* v1.18 — Replan : analyse les surcharges et propose un aperçu
               des déplacements ; appliqué seulement après confirmation. */}
-          <button
-            className="h-7 px-2 text-sm rounded bg-amber-500 text-white hover:bg-amber-600"
-            onClick={() => handleOpenReplan('full')}
-            title="Replanifier automatiquement les tâches en surcharge"
-            disabled={!state}
-          >
-            🔄 Replan
-          </button>
-          <button
-            className="w-7 h-7 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
-            onClick={handleScreenshot}
-            title="Capture PNG du Gantt (pour PowerPoint)"
-          >
-            📷
-          </button>
-          <button
-            className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
-            onClick={handleReset}
-            title="Restaurer les données de démonstration"
-          >
-            ↺
-          </button>
+          <Tooltip label="Replanifier automatiquement les tâches en surcharge">
+            <button
+              className="h-7 px-2 text-sm rounded bg-amber-500 text-white hover:bg-amber-600"
+              onClick={() => handleOpenReplan('full')}
+              disabled={!state}
+            >
+              🔄 Replan
+            </button>
+          </Tooltip>
+          <Tooltip label="Capture PNG du Gantt (pour PowerPoint)">
+            <button
+              className="w-7 h-7 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
+              onClick={handleScreenshot}
+            >
+              📷
+            </button>
+          </Tooltip>
+          <Tooltip label="Restaurer les données de démonstration" align="end">
+            <button
+              className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
+              onClick={handleReset}
+            >
+              ↺
+            </button>
+          </Tooltip>
           <StatusBadge status={status} />
         </div>
       </header>
@@ -1843,11 +1872,12 @@ function StatusBadge({ status }: { status: NetStatus }) {
     },
   }[status]
   return (
-    <span
-      className={`inline-flex items-center justify-center w-7 h-7 text-sm rounded ${cfg.cls}`}
-      title={cfg.label}
-    >
-      {cfg.text}
-    </span>
+    <Tooltip label={cfg.label} align="end">
+      <span
+        className={`inline-flex items-center justify-center w-7 h-7 text-sm rounded ${cfg.cls}`}
+      >
+        {cfg.text}
+      </span>
+    </Tooltip>
   )
 }

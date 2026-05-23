@@ -10,6 +10,7 @@ import {
   computeAllocationShortfall,
   computeExtensionPlan,
   computeEndFromCharge,
+  rebuildAllocationsForCollab,
   scanReplanShortfalls,
   checkCoherence,
   clampDayWidth,
@@ -2284,5 +2285,135 @@ describe('scanReplanShortfalls (v2.1 / F2.9.C)', () => {
     )
     expect(r).toHaveLength(1)
     expect(r[0].taskId).toBe('ko')
+  })
+})
+
+// =============================================================================
+// v2.1 / F4 — rebuildAllocationsForCollab
+// =============================================================================
+// Vérifie le helper de réécriture des allocations après édition jour-par-jour
+// dans la grille « Affectation » (clic / drag-paint).
+// =============================================================================
+
+describe('rebuildAllocationsForCollab (v2.1 / F4)', () => {
+  const PROJ = 'p'
+  const ALICE = 'alice'
+  const BOB = 'bob'
+
+  /** Helper local : construit une allocation MemberAllocation. */
+  function alloc(
+    id: string,
+    start: string,
+    end: string,
+    pct: number,
+    collab = ALICE,
+    proj = PROJ,
+  ) {
+    return {
+      id,
+      project_id: proj,
+      collaborator_id: collab,
+      start_date: start,
+      end_date: end,
+      allocation_pct: pct,
+    }
+  }
+
+  it('aucun changement, aucune allocation → vide', () => {
+    const r = rebuildAllocationsForCollab({
+      projectId: PROJ,
+      collaboratorId: ALICE,
+      existing: [],
+      changes: new Map(),
+    })
+    expect(r.toDelete).toEqual([])
+    expect(r.toCreate).toEqual([])
+  })
+
+  it("ajoute 1 jour isolé → 1 nouvelle alloc d'1 jour", () => {
+    const r = rebuildAllocationsForCollab({
+      projectId: PROJ,
+      collaboratorId: ALICE,
+      existing: [],
+      changes: new Map([['2026-06-15', 50]]),
+    })
+    expect(r.toDelete).toEqual([])
+    expect(r.toCreate).toHaveLength(1)
+    expect(r.toCreate[0]).toEqual({
+      start_date: '2026-06-15',
+      end_date: '2026-06-15',
+      allocation_pct: 50,
+    })
+  })
+
+  it('compacte plusieurs jours contigus de même pct en 1 seul run', () => {
+    const r = rebuildAllocationsForCollab({
+      projectId: PROJ,
+      collaboratorId: ALICE,
+      existing: [],
+      changes: new Map([
+        ['2026-06-15', 100],
+        ['2026-06-16', 100],
+        ['2026-06-17', 100],
+      ]),
+    })
+    expect(r.toCreate).toHaveLength(1)
+    expect(r.toCreate[0]).toEqual({
+      start_date: '2026-06-15',
+      end_date: '2026-06-17',
+      allocation_pct: 100,
+    })
+  })
+
+  it('change le pct du milieu → split en 3 runs (pct différents)', () => {
+    // 5 jours à 100 % au départ, on bascule le jour central à 50 %.
+    const existing = [alloc('a1', '2026-06-15', '2026-06-19', 100)]
+    const r = rebuildAllocationsForCollab({
+      projectId: PROJ,
+      collaboratorId: ALICE,
+      existing,
+      changes: new Map([['2026-06-17', 50]]),
+    })
+    expect(r.toDelete).toEqual(['a1'])
+    expect(r.toCreate).toEqual([
+      { start_date: '2026-06-15', end_date: '2026-06-16', allocation_pct: 100 },
+      { start_date: '2026-06-17', end_date: '2026-06-17', allocation_pct: 50 },
+      { start_date: '2026-06-18', end_date: '2026-06-19', allocation_pct: 100 },
+    ])
+  })
+
+  it('retire un jour du milieu (pct=0) → split en 2 runs', () => {
+    const existing = [alloc('a1', '2026-06-15', '2026-06-19', 100)]
+    const r = rebuildAllocationsForCollab({
+      projectId: PROJ,
+      collaboratorId: ALICE,
+      existing,
+      changes: new Map([['2026-06-17', 0]]),
+    })
+    expect(r.toDelete).toEqual(['a1'])
+    expect(r.toCreate).toEqual([
+      { start_date: '2026-06-15', end_date: '2026-06-16', allocation_pct: 100 },
+      { start_date: '2026-06-18', end_date: '2026-06-19', allocation_pct: 100 },
+    ])
+  })
+
+  it('ignore les allocations des autres collabs / projets', () => {
+    const existing = [
+      alloc('a1', '2026-06-15', '2026-06-19', 100), // Alice / PROJ
+      alloc('b1', '2026-06-15', '2026-06-19', 75, BOB), // Bob / PROJ
+      alloc('a2', '2026-06-15', '2026-06-19', 100, ALICE, 'autre'), // Alice / autre projet
+    ]
+    const r = rebuildAllocationsForCollab({
+      projectId: PROJ,
+      collaboratorId: ALICE,
+      existing,
+      changes: new Map(),
+    })
+    // toDelete doit contenir UNIQUEMENT a1.
+    expect(r.toDelete).toEqual(['a1'])
+    // toCreate doit reconstruire l'alloc a1 telle quelle (aucun change).
+    expect(r.toCreate).toEqual([
+      { start_date: '2026-06-15', end_date: '2026-06-19', allocation_pct: 100 },
+    ])
   })
 })

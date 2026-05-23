@@ -17,7 +17,7 @@ import GanttChart from './components/GanttChart'
 import TaskEditor from './components/TaskEditor'
 import WorkloadChart from './components/WorkloadChart'
 import CoherenceAlert from './components/CoherenceAlert'
-import ProjectMembers from './components/ProjectMembers'
+import MembersGrid from './components/MembersGrid'
 import Absences from './components/Absences'
 import Dialogs from './components/Dialogs'
 // v2.0 — Remplace window.confirm / window.prompt (qui affichent l'en-tête
@@ -34,6 +34,7 @@ import {
   makeId,
   MAX_DAY_WIDTH,
   MIN_DAY_WIDTH,
+  rebuildAllocationsForCollab,
   replanTasks,
   scanReplanShortfalls,
   sortTasksHierarchically,
@@ -448,15 +449,61 @@ export default function App() {
   )
 
   /**
-   * v2.0 / F2 — Supprime une période d'allocation par son id. 404 silencieux
-   * (l'UI se rafraîchit de toute façon via fetchState).
+   * v2.1 / F4 — Commit du drag-paint / clic dans la grille « Affectation ».
+   * Calcule un `AllocationRebuildPlan` à partir des allocations courantes et
+   * des changements jour-par-jour, puis exécute en série :
+   *   1. DELETE de chaque ancienne allocation (toDelete) ;
+   *   2. POST de chaque nouvelle période compactée (toCreate).
+   * Termine par un seul `fetchState` pour rafraîchir l'UI.
+   *
+   * @param collaboratorId  Collaborateur cible (ligne du drag).
+   * @param changes         Map<dateIso, pct> (pct=0 = jour libre).
    */
-  const handleDeleteMemberAllocation = useCallback(
-    async (allocationId: string) => {
-      if (!(await askConfirm('Supprimer cette période d’allocation ?'))) return
-      mutate('DELETE', `/api/allocations/${encodeURIComponent(allocationId)}`)
+  const handleCommitAllocationGrid = useCallback(
+    async (collaboratorId: string, changes: Map<string, number>) => {
+      if (!state || !currentProjectId) return
+      const plan = rebuildAllocationsForCollab({
+        projectId: currentProjectId,
+        collaboratorId,
+        existing: state.member_allocations,
+        changes,
+      })
+      setStatus('loading')
+      try {
+        // DELETE puis POST en série : on garde la sémantique des invariants
+        // (no-overlap) et la cohérence si une op échoue en cours de route.
+        for (const id of plan.toDelete) {
+          const res = await fetch(
+            `/api/allocations/${encodeURIComponent(id)}`,
+            { method: 'DELETE' },
+          )
+          if (!res.ok && res.status !== 404) {
+            throw new Error(await formatApiError(res))
+          }
+        }
+        for (const period of plan.toCreate) {
+          const res = await fetch(
+            `/api/projects/${encodeURIComponent(currentProjectId)}/members/${encodeURIComponent(collaboratorId)}/allocations`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(period),
+            },
+          )
+          if (!res.ok) {
+            throw new Error(await formatApiError(res))
+          }
+        }
+        await fetchState()
+      } catch (err) {
+        console.error('[commitAllocationGrid]', err)
+        setStatus('error')
+        await askAlert(
+          `Mise à jour de l'allocation impossible : ${(err as Error).message}`,
+        )
+      }
     },
-    [mutate],
+    [state, currentProjectId, fetchState],
   )
 
   /**
@@ -1387,7 +1434,10 @@ export default function App() {
               />
             )}
             {view === 'members' && (
-              <ProjectMembers
+              <MembersGrid
+                windowStart={startIso}
+                windowEnd={endIso}
+                dayWidth={dayWidth}
                 collaborators={state.collaborators}
                 memberIds={state.current_project_members}
                 memberAllocations={state.member_allocations}
@@ -1395,7 +1445,8 @@ export default function App() {
                 projectId={state.current_project_id}
                 onAddMember={handleAddProjectMember}
                 onAddAllocation={handleAddMemberAllocation}
-                onDeleteAllocation={handleDeleteMemberAllocation}
+                onCommitChanges={handleCommitAllocationGrid}
+                onShiftWindow={shiftWindow}
               />
             )}
             {view === 'absences' && (

@@ -840,6 +840,123 @@ function buildExtensionOperations(args: {
 }
 
 /**
+ * v2.1 / F4 — Plan de réécriture des allocations d'un (projet, collab) après
+ * édition jour-par-jour dans la grille « Affectation ».
+ *
+ *   • `toDelete` : ids des allocations existantes à supprimer (toutes celles
+ *                   du couple project+collab — on rebuild from scratch).
+ *   • `toCreate` : périodes contiguës compactées à insérer (mêmes invariants
+ *                   que `addMemberAllocation` côté DAL : pas de chevauchement,
+ *                   start ≤ end, pct ∈ {25,50,75,100}).
+ */
+export interface AllocationRebuildPlan {
+  toDelete: string[]
+  toCreate: { start_date: string; end_date: string; allocation_pct: number }[]
+}
+
+/**
+ * v2.1 / F4 — Reconstruit les allocations d'un couple (project, collab)
+ * après application d'une série de modifications jour-par-jour (issues du
+ * clic ou drag-paint dans la grille).
+ *
+ * Stratégie "rebuild from scratch" :
+ *   1. Indexe les pct effectifs jour par jour à partir des allocations
+ *      existantes (limité à l'enveloppe [min(start), max(end)] pour la
+ *      perf — on ne déplie pas 80 ans calendaires).
+ *   2. Applique les `changes` (overwrite — un pct = 0 = jour libre).
+ *   3. Compacte en runs contigus de même pct (jours calendaires, pas
+ *      seulement ouvrés — l'invariant DAL exige des périodes continues).
+ *   4. Retourne `{toDelete: tous les anciens ids, toCreate: runs}`.
+ *
+ * Note d'optimisation : pour un cas où aucun jour ne change réellement
+ * (clic accidentel sans modification), `toCreate` retombe sur les mêmes
+ * périodes que `toDelete` → l'appelant peut détecter et no-op. Mais c'est
+ * facultatif : le DAL peut absorber un DELETE+POST identique.
+ *
+ * @param args.projectId       Projet courant.
+ * @param args.collaboratorId  Collaborateur ciblé.
+ * @param args.existing        Toutes les allocations connues (toutes paires).
+ * @param args.changes         Map<dateIso, pct> à appliquer (pct=0 → vide).
+ * @returns                    Plan de réécriture (DELETE + CREATE).
+ */
+export function rebuildAllocationsForCollab(args: {
+  projectId: string
+  collaboratorId: string
+  existing: MemberAllocation[]
+  changes: Map<string, number>
+}): AllocationRebuildPlan {
+  const { projectId, collaboratorId, existing, changes } = args
+  const own = existing.filter(
+    (a) => a.project_id === projectId && a.collaborator_id === collaboratorId,
+  )
+  const dayPct = indexAllocationsByDay(own, changes)
+  const runs = compactDayPctRuns(dayPct)
+  return {
+    toDelete: own.map((a) => a.id),
+    toCreate: runs,
+  }
+}
+
+/**
+ * v2.1 / F4 — Indexe les allocations en `Map<dateIso, pct>` puis applique les
+ * changements (pct=0 → supprime). Extrait pour réduire la complexité de
+ * `rebuildAllocationsForCollab` (sonarjs/cognitive-complexity ≤ 15).
+ */
+function indexAllocationsByDay(
+  own: MemberAllocation[],
+  changes: Map<string, number>,
+): Map<string, number> {
+  const dayPct = new Map<string, number>()
+  for (const a of own) {
+    let cur = a.start_date
+    while (cur <= a.end_date) {
+      dayPct.set(cur, a.allocation_pct)
+      cur = addDaysIso(cur, 1)
+    }
+  }
+  for (const [date, pct] of changes) {
+    if (pct <= 0) dayPct.delete(date)
+    else dayPct.set(date, pct)
+  }
+  return dayPct
+}
+
+/**
+ * v2.1 / F4 — Compacte une `Map<dateIso, pct>` en runs contigus de même pct
+ * (jours calendaires). Sortie triée par date croissante.
+ */
+function compactDayPctRuns(
+  dayPct: Map<string, number>,
+): { start_date: string; end_date: string; allocation_pct: number }[] {
+  const dates = Array.from(dayPct.keys()).sort()
+  const runs: {
+    start_date: string
+    end_date: string
+    allocation_pct: number
+  }[] = []
+  let cur: {
+    start_date: string
+    end_date: string
+    allocation_pct: number
+  } | null = null
+  for (const d of dates) {
+    const pct = dayPct.get(d)!
+    if (
+      cur &&
+      cur.allocation_pct === pct &&
+      addDaysIso(cur.end_date, 1) === d
+    ) {
+      cur.end_date = d
+    } else {
+      if (cur) runs.push(cur)
+      cur = { start_date: d, end_date: d, allocation_pct: pct }
+    }
+  }
+  if (cur) runs.push(cur)
+  return runs
+}
+
+/**
  * v2.1 / F2.9.C — Scanne la liste des tâches d'un projet et retourne pour
  * chaque activité (kind='task') ayant des collaborateurs affectés et une
  * charge non nulle, son `AllocationShortfall` calculé. Les entrées avec

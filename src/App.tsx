@@ -145,18 +145,20 @@ function readInitialProjectSelection(): ProjectSelection {
   const stored = lsGet(LS_PROJECT_SELECTION)
   if (stored) {
     try {
-      const parsed = JSON.parse(stored) as ProjectSelection
-      if (
-        parsed.mode === 'all' ||
-        parsed.mode === 'single' ||
-        parsed.mode === 'subset'
-      ) {
-        return parsed
+      const parsed = JSON.parse(stored) as { mode?: string; projectId?: string }
+      // v2.2 / F3 refondu : seuls 'single' et 'all' sont valides.
+      // Le mode 'subset' éventuellement persisté en LS est désormais
+      // normalisé en 'all' (la sémantique la plus proche).
+      if (parsed.mode === 'all') return { mode: 'all' }
+      if (parsed.mode === 'subset') return { mode: 'all' }
+      if (parsed.mode === 'single' && typeof parsed.projectId === 'string') {
+        return { mode: 'single', projectId: parsed.projectId }
       }
     } catch {
       // JSON invalide → fallback vers la migration ci-dessous.
     }
   }
+  // Migration depuis l'ancienne clé LS_WORKLOAD_SCOPE.
   if (lsGet(LS_WORKLOAD_SCOPE) === 'global') return { mode: 'all' }
   return { mode: 'single', projectId: lsGet(LS_CURRENT_PROJECT) ?? '' }
 }
@@ -262,10 +264,11 @@ export default function App() {
     projectSelection.mode === 'single' ? 'current' : 'global'
 
   /**
-   * v2.2 / F3 — Indique si l'on est en multi-projets (édition désactivée pour
-   * éviter les ambiguïtés : sur quel projet créer/renommer/supprimer ?).
+   * v2.2 / F3 (refondu) — Indique si l'on est en mode « Tous les projets ».
+   * Dans cet état, l'édition est désactivée (création/renommage/suppression
+   * de tâche/projet requiert un projet précis, donc le mode single).
    */
-  const isMultiProject = projectSelection.mode !== 'single'
+  const isGlobalView = projectSelection.mode === 'all'
   /**
    * v2.0 / F5 — Tâches cross-projet fetchées depuis /api/workload/global,
    * `null` tant qu'on n'a pas demandé la vue globale. Re-fetchées à chaque
@@ -338,21 +341,37 @@ export default function App() {
   )
 
   /**
-   * v2.2 / F3 — Tâches globales effectivement passées au WorkloadChart.
-   *   • mode 'subset' → filtrage côté client des tâches /api/workload/global
-   *     par les projet_ids sélectionnés.
-   *   • mode 'all'    → on passe le résultat brut.
-   *   • mode 'single' → `undefined` (le chart ignore cette prop en scope='current').
-   * Mémoïsé pour éviter de re-filtrer à chaque render.
+   * v2.2 / F3 (refondu) — Tâches globales passées au WorkloadChart en mode
+   * 'all' (vue agrégée tous projets). En mode 'single', cette prop est
+   * ignorée par le chart (scope='current' utilise state.tasks directement).
    */
-  const effectiveGlobalTasks = useMemo<Task[] | undefined>(() => {
-    if (!globalTasks) return undefined
-    if (projectSelection.mode === 'subset') {
-      const ids = new Set(projectSelection.projectIds)
-      return globalTasks.filter((t) => ids.has(t.project_id))
+  const effectiveGlobalTasks: Task[] | undefined = globalTasks ?? undefined
+
+  /**
+   * v2.2 / F3 refondu — Garde-fou de cohérence : si l'utilisateur arrive sur
+   * l'onglet Gantt alors que le mode est 'all' (cas typique : état persisté
+   * depuis une session Charge/Affectation), on bascule automatiquement en
+   * 'single' sur le projet d'édition actif. Sans ce garde-fou, le Gantt
+   * resterait vide (par design il n'affiche qu'un seul projet).
+   *
+   * On attend que `currentProjectId` soit défini (chargé depuis /api/state)
+   * avant d'agir, pour ne pas créer une sélection avec un id vide.
+   */
+  useEffect(() => {
+    if (
+      view === 'gantt' &&
+      projectSelection.mode === 'all' &&
+      currentProjectId
+    ) {
+      const fallback: ProjectSelection = {
+        mode: 'single',
+        projectId: currentProjectId,
+      }
+      /* eslint-disable-next-line react-hooks/set-state-in-effect */
+      setProjectSelection(fallback)
+      lsSet(LS_PROJECT_SELECTION, JSON.stringify(fallback))
     }
-    return globalTasks
-  }, [globalTasks, projectSelection])
+  }, [view, projectSelection.mode, currentProjectId])
 
   /**
    * v1.20 — Liste des tâches RÉELLEMENT affichées : `orderedTasks` filtrées
@@ -1042,6 +1061,21 @@ export default function App() {
   const selectView = (next: View) => {
     setView(next)
     lsSet(LS_VIEW, next)
+    // v2.2 / F3 refondu — Le Gantt est mono-projet par design. Si l'utilisateur
+    // bascule depuis Charge/Affectation en mode 'all', on retombe automatiquement
+    // sur le projet d'édition actif (currentProjectId) pour éviter une vue vide.
+    if (
+      next === 'gantt' &&
+      projectSelection.mode === 'all' &&
+      currentProjectId
+    ) {
+      const fallback: ProjectSelection = {
+        mode: 'single',
+        projectId: currentProjectId,
+      }
+      setProjectSelection(fallback)
+      lsSet(LS_PROJECT_SELECTION, JSON.stringify(fallback))
+    }
   }
 
   /**
@@ -1274,15 +1308,25 @@ export default function App() {
 
         <ViewTabs view={view} onChange={selectView} />
 
-        {/* v1.8 — Sélecteur de projet + actions CRUD */}
+        {/* v1.8 — Sélecteur de projet + actions CRUD.
+            v2.2 / F3 refondu — Le sélecteur est :
+              • masqué sur l'onglet Congés (les absences sont cross-projet
+                par nature : la notion de projet n'a aucun sens ici) ;
+              • limité à la sélection mono-projet sur l'onglet Gantt
+                (allowAll=false : pas d'option « Tous les projets »).
+            Pour permettre malgré tout les actions CRUD projet (créer,
+            renommer, supprimer) depuis la vue Congés, on garde le bloc
+            visible mais on cache uniquement le <ProjectFilter>. */}
         {state && (
           <div className="flex items-center gap-1 pl-2 border-l border-slate-200 min-w-0">
-            <ProjectFilter
-              projects={state.projects}
-              currentProjectId={state.current_project_id}
-              selection={projectSelection}
-              onChange={handleProjectSelectionChange}
-            />
+            {view !== 'absences' && (
+              <ProjectFilter
+                projects={state.projects}
+                selection={projectSelection}
+                onChange={handleProjectSelectionChange}
+                allowAll={view !== 'gantt'}
+              />
+            )}
             <Tooltip label="Nouveau projet">
               <button
                 className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
@@ -1293,7 +1337,7 @@ export default function App() {
             </Tooltip>
             <Tooltip
               label={
-                isMultiProject
+                isGlobalView
                   ? 'Édition désactivée en multi-projets : sélectionne un projet unique'
                   : 'Renommer le projet'
               }
@@ -1301,7 +1345,7 @@ export default function App() {
               <button
                 className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
                 onClick={handleRenameProject}
-                disabled={!currentProject || isMultiProject}
+                disabled={!currentProject || isGlobalView}
               >
                 ✎
               </button>
@@ -1312,7 +1356,7 @@ export default function App() {
                 multi-projets (v2.2 / F3). */}
             <Tooltip
               label={(() => {
-                if (isMultiProject) {
+                if (isGlobalView) {
                   return 'Édition désactivée en multi-projets : sélectionne un projet unique'
                 }
                 if (state.projects.length <= 1) {
@@ -1324,7 +1368,7 @@ export default function App() {
               <button
                 className="w-7 h-7 text-sm rounded border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                 onClick={handleDeleteProject}
-                disabled={!currentProject || isMultiProject}
+                disabled={!currentProject || isGlobalView}
               >
                 🗑
               </button>
@@ -1491,7 +1535,7 @@ export default function App() {
           )}
           <Tooltip
             label={
-              isMultiProject
+              isGlobalView
                 ? 'Édition désactivée en multi-projets : sélectionne un projet unique'
                 : 'Nouvelle tâche / jalon / phase'
             }
@@ -1499,7 +1543,7 @@ export default function App() {
             <button
               className="h-7 px-2 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed"
               onClick={() => setCreating(true)}
-              disabled={isMultiProject}
+              disabled={isGlobalView}
             >
               + Tâche
             </button>
@@ -1510,7 +1554,7 @@ export default function App() {
               seul projet à la fois). */}
           <Tooltip
             label={
-              isMultiProject
+              isGlobalView
                 ? 'Replan désactivé en multi-projets : sélectionne un projet unique'
                 : 'Replanifier automatiquement les tâches en surcharge'
             }
@@ -1518,7 +1562,7 @@ export default function App() {
             <button
               className="h-7 px-2 text-sm rounded bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed"
               onClick={() => handleOpenReplan('full')}
-              disabled={!state || isMultiProject}
+              disabled={!state || isGlobalView}
             >
               🔄 Replan
             </button>

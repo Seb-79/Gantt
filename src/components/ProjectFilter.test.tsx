@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
 // =============================================================================
-// TESTS — ProjectFilter (Gantt v2.2 / F2-F3)
+// TESTS — ProjectFilter (Gantt v2.2 / F2-F3 refondu)
 // =============================================================================
-// Vérifie le contrat du sélecteur de projet multi-mode :
-//   • Libellé du déclencheur selon le mode (single / all / subset).
+// Vérifie le contrat du sélecteur de projet simplifié (single | all) :
+//   • Libellé du déclencheur selon le mode.
 //   • Ouverture/fermeture du menu (clic, Escape, clic extérieur).
-//   • Toggle « 🌐 Tous les projets ».
-//   • Toggle d'une checkbox individuelle.
-//   • Transitions automatiques single ↔ subset ↔ all selon le nombre cochés.
-//   • Refus de tout décocher (au moins 1 projet sélectionné).
+//   • Sélection d'un projet unique → mode 'single'.
+//   • Sélection « 🌐 Tous les projets » → mode 'all'.
+//   • L'option « Tous » est masquée si `allowAll={false}` (onglet Gantt).
+//   • aria-selected correct selon le mode actif.
 //   • État désactivé.
 // =============================================================================
 
@@ -32,7 +32,6 @@ function mount(
   const utils = render(
     <ProjectFilter
       projects={PROJECTS}
-      currentProjectId="p1"
       selection={selection}
       onChange={onChange}
       {...opts}
@@ -54,16 +53,14 @@ describe('ProjectFilter — libellé du déclencheur', () => {
     )
   })
 
-  it('affiche « N projets sélectionnés » en mode subset', () => {
-    mount({ mode: 'subset', projectIds: ['p1', 'p2'] })
-    expect(screen.getByRole('combobox')).toHaveTextContent(
-      '📁 2 projets sélectionnés',
-    )
+  it("affiche « — aucun projet — » si l'id ne correspond à rien", () => {
+    mount({ mode: 'single', projectId: 'unknown' })
+    expect(screen.getByRole('combobox')).toHaveTextContent('— aucun projet —')
   })
 })
 
 describe('ProjectFilter — ouverture/fermeture du menu', () => {
-  it("n'affiche pas la liste avant ouverture", () => {
+  it("n'affiche pas le menu avant ouverture", () => {
     mount({ mode: 'single', projectId: 'p1' })
     expect(screen.queryByRole('listbox')).toBeNull()
   })
@@ -87,81 +84,62 @@ describe('ProjectFilter — ouverture/fermeture du menu', () => {
     mount({ mode: 'single', projectId: 'p1' }, { projects: [] })
     expect(screen.getByRole('combobox')).toBeDisabled()
   })
-})
 
-describe('ProjectFilter — sélection « Tous les projets »', () => {
-  it("coche « Tous » → mode 'all'", () => {
-    const { onChange } = mount({ mode: 'single', projectId: 'p1' })
-    fireEvent.click(screen.getByRole('combobox'))
-    fireEvent.click(screen.getByLabelText('Tous les projets'))
-    expect(onChange).toHaveBeenCalledWith({ mode: 'all' })
-  })
-
-  it("décoche « Tous » → mode 'single' sur le projet courant", () => {
-    const { onChange } = mount({ mode: 'all' }, { currentProjectId: 'p2' })
-    fireEvent.click(screen.getByRole('combobox'))
-    fireEvent.click(screen.getByLabelText('Tous les projets'))
-    expect(onChange).toHaveBeenCalledWith({
-      mode: 'single',
-      projectId: 'p2',
-    })
+  it('respecte la prop disabled', () => {
+    mount({ mode: 'single', projectId: 'p1' }, { disabled: true })
+    expect(screen.getByRole('combobox')).toBeDisabled()
   })
 })
 
-describe("ProjectFilter — toggle d'un projet individuel", () => {
-  it("cocher un 2e projet depuis single → mode 'subset'", () => {
+describe('ProjectFilter — sélection', () => {
+  it('cliquer sur un projet émet mode single sur ce projet', () => {
     const { onChange } = mount({ mode: 'single', projectId: 'p1' })
     fireEvent.click(screen.getByRole('combobox'))
-    fireEvent.click(screen.getByLabelText('Projet 2'))
-    expect(onChange).toHaveBeenCalledWith({
-      mode: 'subset',
-      projectIds: ['p1', 'p2'],
-    })
-  })
-
-  it("cocher tous les projets restants → mode 'all'", () => {
-    const { onChange } = mount({
-      mode: 'subset',
-      projectIds: ['p1', 'p2'],
-    })
-    fireEvent.click(screen.getByRole('combobox'))
-    fireEvent.click(screen.getByLabelText('Projet 3'))
-    expect(onChange).toHaveBeenCalledWith({ mode: 'all' })
-  })
-
-  it("décocher pour ne laisser qu'un projet → mode 'single' sur celui-là", () => {
-    const { onChange } = mount({
-      mode: 'subset',
-      projectIds: ['p1', 'p2'],
-    })
-    fireEvent.click(screen.getByRole('combobox'))
-    fireEvent.click(screen.getByLabelText('Projet 1'))
+    fireEvent.click(screen.getByRole('option', { name: /Projet 2/ }))
     expect(onChange).toHaveBeenCalledWith({
       mode: 'single',
       projectId: 'p2',
     })
   })
 
-  it('refuse de tout décocher (au moins 1 projet)', () => {
+  it("cliquer sur « Tous les projets » émet mode 'all'", () => {
     const { onChange } = mount({ mode: 'single', projectId: 'p1' })
     fireEvent.click(screen.getByRole('combobox'))
-    fireEvent.click(screen.getByLabelText('Projet 1'))
-    expect(onChange).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('option', { name: /Tous les projets/ }))
+    expect(onChange).toHaveBeenCalledWith({ mode: 'all' })
   })
 
-  it("partir de 'all' et décocher un projet → mode 'subset' sur les restants", () => {
-    const { onChange } = mount({ mode: 'all' })
+  it('le menu se ferme après une sélection', () => {
+    mount({ mode: 'single', projectId: 'p1' })
     fireEvent.click(screen.getByRole('combobox'))
-    fireEvent.click(screen.getByLabelText('Projet 2'))
-    expect(onChange).toHaveBeenCalledWith({
-      mode: 'subset',
-      projectIds: ['p1', 'p3'],
-    })
+    fireEvent.click(screen.getByRole('option', { name: /Projet 2/ }))
+    expect(screen.queryByRole('listbox')).toBeNull()
+  })
+})
+
+describe('ProjectFilter — allowAll', () => {
+  it("masque l'option « Tous les projets » si allowAll=false", () => {
+    mount({ mode: 'single', projectId: 'p1' }, { allowAll: false })
+    fireEvent.click(screen.getByRole('combobox'))
+    // Seuls les 3 projets sont listés (pas d'option « Tous »).
+    const options = screen.getAllByRole('option')
+    expect(options).toHaveLength(3)
+    expect(
+      screen.queryByRole('option', { name: /Tous les projets/ }),
+    ).toBeNull()
+  })
+
+  it("affiche l'option « Tous les projets » par défaut (allowAll=true)", () => {
+    mount({ mode: 'single', projectId: 'p1' })
+    fireEvent.click(screen.getByRole('combobox'))
+    expect(
+      screen.getByRole('option', { name: /Tous les projets/ }),
+    ).toBeInTheDocument()
   })
 })
 
 describe('ProjectFilter — aria-selected', () => {
-  it('marque le projet single comme sélectionné', () => {
+  it('marque le projet actif comme aria-selected=true en mode single', () => {
     mount({ mode: 'single', projectId: 'p2' })
     fireEvent.click(screen.getByRole('combobox'))
     expect(screen.getByRole('option', { name: /Projet 2/ })).toHaveAttribute(
@@ -174,28 +152,11 @@ describe('ProjectFilter — aria-selected', () => {
     )
   })
 
-  it('marque « Tous les projets » comme sélectionné en mode all', () => {
+  it('marque « Tous les projets » comme aria-selected=true en mode all', () => {
     mount({ mode: 'all' })
     fireEvent.click(screen.getByRole('combobox'))
     expect(
       screen.getByRole('option', { name: /Tous les projets/ }),
     ).toHaveAttribute('aria-selected', 'true')
-  })
-
-  it('marque les projets du subset comme sélectionnés', () => {
-    mount({ mode: 'subset', projectIds: ['p1', 'p3'] })
-    fireEvent.click(screen.getByRole('combobox'))
-    expect(screen.getByRole('option', { name: /Projet 1/ })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    )
-    expect(screen.getByRole('option', { name: /Projet 2/ })).toHaveAttribute(
-      'aria-selected',
-      'false',
-    )
-    expect(screen.getByRole('option', { name: /Projet 3/ })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    )
   })
 })

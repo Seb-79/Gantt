@@ -1,113 +1,82 @@
 // =============================================================================
-// ProjectFilter — Sélecteur de projet multi-mode (Gantt v2.2 / F2-F3)
+// ProjectFilter — Sélecteur de projet (Gantt v2.2 / F2-F3 refondu)
 // =============================================================================
-// Composant unique remplaçant le `<select>` natif + le bouton « 🌐 Global /
-// 📁 Courant ». Trois modes possibles, dérivés implicitement de l'état des
-// cases à cocher (voir `ProjectSelection` dans src/lib/types.ts) :
+// Composant unique remplaçant le `<select>` natif + l'ancien bouton « 🌐 Global
+// / 📁 Courant ». Deux modes possibles (cf. `ProjectSelection`) :
 //
-//   • single : exactement 1 projet coché — équivalent du scope « current ».
-//   • all    : tous les projets cochés — équivalent du scope « global ».
-//   • subset : 2 à N-1 projets cochés — filtrage cross-projet.
+//   • single : un projet précis est actif (mode par défaut, dispo partout).
+//   • all    : vue globale (« 🌐 Tous les projets »). Disponible uniquement
+//              sur les onglets « Charge » et « Affectation ». La prop
+//              `allowAll` contrôle l'affichage de cette option.
 //
-// Règles de transition (UX type filtre Excel) :
-//   • Cocher la case spéciale « 🌐 Tous les projets » → mode 'all'.
-//   • Décocher « 🌐 Tous les projets » alors qu'on est en 'all' → ne fait
-//     rien (impossible de tout décocher : il faut au moins 1 projet).
-//   • Cocher / décocher un projet individuel → recalcule le mode :
-//       - 0 coché → on garde le projet d'avant en mode 'single' (no-op).
-//       - 1 coché → mode 'single' avec ce projet.
-//       - 2..N-1 cochés → mode 'subset'.
-//       - N cochés → mode 'all'.
+// Rendu :
+//   • Déclencheur (bouton) affichant le mode courant. Toujours visible.
+//   • Menu déroulant rendu via `createPortal` dans `document.body` pour ne
+//     PAS être tronqué par le `overflow-hidden` du header parent (bug
+//     précédent : le menu existait dans le DOM mais restait invisible).
+//   • Sélection unique de type radio. Pas de cases à cocher.
 //
-// Libellé du déclencheur en fonction du mode :
-//   • single → « 📁 Nom du projet ».
-//   • all    → « 🌐 Tous les projets ».
-//   • subset → « 📁 N projets sélectionnés ».
-//
-// Le composant est purement présenteur : tout le calcul de cohérence est
-// fait dans `computeNextSelection` et le résultat est remonté via `onChange`.
+// Le composant est purement présenteur : l'unique callback `onChange` remonte
+// la nouvelle sélection.
 // =============================================================================
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { Project, ProjectSelection } from '../lib/types'
 
 /** Props du composant ProjectFilter. */
 export interface ProjectFilterProps {
   /** Liste des projets disponibles, dans l'ordre d'affichage. */
   projects: Project[]
-  /** Projet « actif » pour le mode single. `null` si base vide. */
-  currentProjectId: string | null
   /** État courant du filtre. */
   selection: ProjectSelection
   /** Callback unique : nouvelle sélection après une interaction utilisateur. */
   onChange: (next: ProjectSelection) => void
+  /**
+   * Si `true`, l'option « 🌐 Tous les projets » apparaît en tête du menu.
+   * Défaut `true`. Mettre à `false` sur les onglets mono-projet (Gantt).
+   */
+  allowAll?: boolean
   /** Désactive le composant (ex. pendant un chargement). */
   disabled?: boolean
 }
 
 /**
- * Calcule le set d'identifiants de projets cochés à partir d'une sélection
- * et de la liste des projets disponibles. Utilisé pour rendre les cases à
- * cocher du menu.
- */
-function selectedIds(
-  selection: ProjectSelection,
-  projects: Project[],
-): Set<string> {
-  if (selection.mode === 'all') return new Set(projects.map((p) => p.id))
-  if (selection.mode === 'subset') return new Set(selection.projectIds)
-  // mode === 'single' → projet explicite.
-  return new Set([selection.projectId])
-}
-
-/**
- * Calcule la prochaine sélection après un toggle de checkbox individuelle.
- * Garantit toujours qu'au moins 1 projet est sélectionné (retourne null sinon)
- * et normalise vers 'all' / 'single' quand applicable.
- */
-function computeNextSelection(
-  current: Set<string>,
-  toggleId: string,
-  projects: Project[],
-): ProjectSelection | null {
-  const next = new Set(current)
-  if (next.has(toggleId)) {
-    next.delete(toggleId)
-  } else {
-    next.add(toggleId)
-  }
-  if (next.size === 0) return null // refuse : au moins 1 projet sélectionné.
-  if (next.size === projects.length) return { mode: 'all' }
-  if (next.size === 1) {
-    const [only] = next
-    return { mode: 'single', projectId: only }
-  }
-  return { mode: 'subset', projectIds: [...next] }
-}
-
-/**
- * Sélecteur de projet avec menu déroulant custom (filtre type Excel).
+ * Sélecteur de projet avec menu déroulant custom rendu via portail.
  * Voir l'entête du fichier pour le contrat complet.
  */
 export function ProjectFilter({
   projects,
-  currentProjectId,
   selection,
   onChange,
+  allowAll = true,
   disabled = false,
 }: ProjectFilterProps) {
   // État local : menu ouvert / fermé.
   const [open, setOpen] = useState(false)
-  // Référence du conteneur racine pour détecter les clics extérieurs.
-  const rootRef = useRef<HTMLDivElement>(null)
+  // Référence du déclencheur (pour calculer la position du menu en portail).
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  // Référence du menu (pour la détection de clic extérieur).
+  const menuRef = useRef<HTMLDivElement>(null)
+  // Position absolue du menu, calculée à l'ouverture depuis le déclencheur.
+  const [menuPos, setMenuPos] = useState<{
+    top: number
+    left: number
+    width: number
+  } | null>(null)
 
   // Ferme le menu sur clic extérieur OU touche Escape.
   useEffect(() => {
     if (!open) return
     const handleClickOutside = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false)
+      const target = e.target as Node
+      if (
+        triggerRef.current?.contains(target) ||
+        menuRef.current?.contains(target)
+      ) {
+        return
       }
+      setOpen(false)
     }
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setOpen(false)
@@ -120,44 +89,45 @@ export function ProjectFilter({
     }
   }, [open])
 
-  // Calcule l'ensemble des ids actuellement cochés pour le rendu des cases.
-  const checked = selectedIds(selection, projects)
+  // Calcule la position du menu sous le déclencheur à chaque ouverture.
+  // useLayoutEffect pour avoir la position avant le 1er paint (pas de flash).
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current) return
+    const rect = triggerRef.current.getBoundingClientRect()
+    setMenuPos({
+      top: rect.bottom + 4,
+      left: rect.left,
+      width: Math.max(rect.width, 240),
+    })
+  }, [open])
 
-  // Calcule le libellé du déclencheur en fonction du mode.
+  // Calcule le libellé affiché sur le déclencheur.
   const triggerLabel = (() => {
     if (selection.mode === 'all') return '🌐 Tous les projets'
-    if (selection.mode === 'subset') {
-      return `📁 ${selection.projectIds.length} projets sélectionnés`
-    }
-    // mode === 'single' : on cherche le projet par son id explicite.
     const proj = projects.find((p) => p.id === selection.projectId)
     if (proj) return `📁 ${proj.name}`
     return '— aucun projet —'
   })()
 
-  // Sélection « Tous les projets » via la case à cocher de tête.
-  const handleToggleAll = () => {
-    if (selection.mode === 'all') {
-      // Décocher « Tous » alors qu'on est en 'all' : on retombe sur le projet
-      // courant (au moins un projet doit rester sélectionné).
-      if (currentProjectId) {
-        onChange({ mode: 'single', projectId: currentProjectId })
-      }
-      return
-    }
+  // Sélectionne une option (single ou all) et ferme le menu.
+  const pickSingle = (id: string) => {
+    onChange({ mode: 'single', projectId: id })
+    setOpen(false)
+  }
+  const pickAll = () => {
     onChange({ mode: 'all' })
+    setOpen(false)
   }
 
-  // Toggle d'une checkbox de projet individuel.
-  const handleToggleProject = (id: string) => {
-    const next = computeNextSelection(checked, id, projects)
-    if (next === null) return // refus : tentative de tout décocher.
-    onChange(next)
-  }
+  // Indique si une option donnée est l'active (pour aria-selected + style).
+  const isAllActive = selection.mode === 'all'
+  const isSingleActive = (id: string) =>
+    selection.mode === 'single' && selection.projectId === id
 
   return (
-    <div ref={rootRef} className="relative">
+    <>
       <button
+        ref={triggerRef}
         type="button"
         // Sémantique WAI-ARIA : un bouton qui ouvre une listbox est un
         // combobox. Le rôle explicite préserve aussi la compat de l'ancienne
@@ -171,60 +141,64 @@ export function ProjectFilter({
       >
         {triggerLabel}
       </button>
-      {open && (
-        <div
-          role="listbox"
-          aria-label="Sélection de projet"
-          aria-multiselectable="true"
-          className="absolute z-50 mt-1 left-0 min-w-[16rem] max-h-80 overflow-auto bg-white border border-slate-300 rounded shadow-lg py-1"
-        >
-          {/* Option spéciale : « 🌐 Tous les projets » (toggle all). */}
-          <label
-            role="option"
-            aria-selected={selection.mode === 'all'}
-            className={[
-              'w-full text-left text-sm px-3 py-1.5 flex items-center gap-2 cursor-pointer',
-              selection.mode === 'all'
-                ? 'bg-blue-100 text-blue-700 font-medium'
-                : 'hover:bg-slate-100',
-            ].join(' ')}
+      {open &&
+        menuPos &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="listbox"
+            aria-label="Sélection de projet"
+            className="fixed z-50 max-h-80 overflow-auto bg-white border border-slate-300 rounded shadow-lg py-1"
+            style={{
+              top: menuPos.top,
+              left: menuPos.left,
+              minWidth: menuPos.width,
+            }}
           >
-            <input
-              type="checkbox"
-              checked={selection.mode === 'all'}
-              onChange={handleToggleAll}
-              className="w-4 h-4"
-              aria-label="Tous les projets"
-            />
-            <span>🌐 Tous les projets</span>
-          </label>
-          <div className="border-t border-slate-200 my-1" />
-          {/* Liste des projets — chacun avec sa propre case à cocher. */}
-          {projects.map((p) => {
-            const isChecked = checked.has(p.id)
-            return (
-              <label
-                key={p.id}
+            {/* Option spéciale « 🌐 Tous les projets » — uniquement si autorisée. */}
+            {allowAll && (
+              <button
+                type="button"
                 role="option"
-                aria-selected={isChecked}
+                aria-selected={isAllActive}
+                onClick={pickAll}
                 className={[
-                  'w-full text-left text-sm px-3 py-1.5 flex items-center gap-2 truncate cursor-pointer',
-                  isChecked ? 'bg-blue-50 text-blue-700' : 'hover:bg-slate-100',
+                  'w-full text-left text-sm px-3 py-1.5 flex items-center gap-2',
+                  isAllActive
+                    ? 'bg-blue-100 text-blue-700 font-medium'
+                    : 'hover:bg-slate-100',
                 ].join(' ')}
               >
-                <input
-                  type="checkbox"
-                  checked={isChecked}
-                  onChange={() => handleToggleProject(p.id)}
-                  className="w-4 h-4"
-                  aria-label={p.name}
-                />
-                <span className="truncate">📁 {p.name}</span>
-              </label>
-            )
-          })}
-        </div>
-      )}
-    </div>
+                <span className="w-4">{isAllActive ? '✓' : ''}</span>
+                <span>🌐 Tous les projets</span>
+              </button>
+            )}
+            {allowAll && <div className="border-t border-slate-200 my-1" />}
+            {/* Liste des projets en sélection unique. */}
+            {projects.map((p) => {
+              const active = isSingleActive(p.id)
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  onClick={() => pickSingle(p.id)}
+                  className={[
+                    'w-full text-left text-sm px-3 py-1.5 flex items-center gap-2 truncate',
+                    active
+                      ? 'bg-blue-100 text-blue-700 font-medium'
+                      : 'hover:bg-slate-100',
+                  ].join(' ')}
+                >
+                  <span className="w-4">{active ? '✓' : ''}</span>
+                  <span className="truncate">📁 {p.name}</span>
+                </button>
+              )
+            })}
+          </div>,
+          document.body,
+        )}
+    </>
   )
 }

@@ -429,7 +429,7 @@ describe('addWorkingDays (v1.9)', () => {
 // vérité). En F0 le calcul est identique à `addWorkingDays` ; les tests
 // servent de filet pour les évolutions F2 (allocations) et F3 (congés)
 // qui changeront l'algo SANS toucher au contrat.
-describe('computeEndFromCharge (v2.0)', () => {
+describe('computeEndFromCharge (v2.0 / v2.1 / RG-GANTT-1905)', () => {
   it('alias d`addWorkingDays en F0 : charge=5 lundi → vendredi', () => {
     expect(computeEndFromCharge('2026-05-18', 5)).toBe('2026-05-22')
   })

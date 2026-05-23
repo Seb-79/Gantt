@@ -94,33 +94,68 @@ export function useDragPaint<V>(
   opts: UseDragPaintOptions<V>,
 ): UseDragPaintReturn<V> {
   const { setLocal, onCommit } = opts
-  /** Vrai pendant un drag actif. */
-  const [isDragging, setIsDragging] = useState(false)
-  /** Ligne verrouillée pour le drag (null hors drag). */
-  const [paintingRowId, setPaintingRowId] = useState<string | null>(null)
-  /** Valeur du pinceau capturée au mousedown. */
-  const [paintingValue, setPaintingValue] = useState<V | null>(null)
   /**
-   * Buffer des changements appliqués pendant le drag. On utilise une ref
-   * (pas du state) parce qu'on doit lire la dernière version dans le
-   * mouseup global sans relancer la subscription.
+   * Source de vérité = refs (lues dans les callbacks et le listener
+   * mouseup global). Le state React n'est que le miroir des refs : il sert
+   * uniquement à exposer aux callers `isDragging` / `paintingRowId` /
+   * `paintingValue` pour adapter le rendu (curseur, désactivations…).
+   *
+   * Pourquoi ne pas se contenter du state ? Les callbacks (useCallback)
+   * capturent leurs deps via closure : si `onCellEnter` lisait
+   * `isDragging` depuis le state, il verrait l'ANCIENNE valeur tant que
+   * React n'a pas re-rendu (cas d'un mousedown immédiatement suivi d'un
+   * mousemove dans le même tick — typique d'un drag rapide). Les refs
+   * sont mises à jour SYNCHRONIQUEMENT dans `onCellMouseDown`, ce qui
+   * rend le hook correct quelles que soient les fréquences d'événements.
    */
-  const changesRef = useRef<Map<string, V>>(new Map())
-  /** Garde une ref vers la dernière ligne peinte pour le commit. */
+  const draggingRef = useRef(false)
   const rowIdRef = useRef<string | null>(null)
+  const valueRef = useRef<V | null>(null)
+  const changesRef = useRef<Map<string, V>>(new Map())
+
+  // Miroir state pour les consommateurs UI.
+  const [isDragging, setIsDragging] = useState(false)
+  const [paintingRowId, setPaintingRowId] = useState<string | null>(null)
+  const [paintingValue, setPaintingValue] = useState<V | null>(null)
 
   /**
-   * Démarrage du drag : capture la ligne, la valeur et applique
-   * immédiatement à la cellule cliquée (sinon un clic sans déplacement
-   * ne ferait rien).
+   * Démarrage du drag : met à jour SYNCHRONIQUEMENT les refs, applique
+   * la cellule cliquée immédiatement, puis met à jour le state miroir.
    */
   const onCellMouseDown = useCallback(
     (rowId: string, dateIso: string, value: V) => {
+      draggingRef.current = true
+      rowIdRef.current = rowId
+      valueRef.current = value
+      changesRef.current = new Map()
+      changesRef.current.set(dateIso, value)
+      setLocal(rowId, dateIso, value)
+      // Miroir state (asynchrone, mais sans impact sur les callbacks
+      // puisqu'ils lisent les refs).
       setIsDragging(true)
       setPaintingRowId(rowId)
       setPaintingValue(value)
-      rowIdRef.current = rowId
-      changesRef.current = new Map()
+    },
+    [setLocal],
+  )
+
+  /**
+   * Mouvement sur une cellule pendant le drag. Lit les refs (synchrones)
+   * pour être correct même au sein d'un seul tick après un mousedown.
+   *   • Verrouillage horizontal : si la cellule n'est pas sur la ligne
+   *     d'origine, no-op (RG-GANTT-2006).
+   *   • Idempotence : si la cellule a déjà été peinte par CE drag, no-op.
+   *   • Q2 écrasement : pas de check sur la valeur précédente — la valeur
+   *     du pinceau est appliquée systématiquement (sauf les 2 cas
+   *     ci-dessus).
+   */
+  const onCellEnter = useCallback(
+    (rowId: string, dateIso: string) => {
+      if (!draggingRef.current) return
+      if (rowIdRef.current !== rowId) return
+      const value = valueRef.current
+      if (value === null) return
+      if (changesRef.current.has(dateIso)) return
       changesRef.current.set(dateIso, value)
       setLocal(rowId, dateIso, value)
     },
@@ -128,48 +163,34 @@ export function useDragPaint<V>(
   )
 
   /**
-   * Mouvement sur une cellule pendant le drag. Verrouillage horizontal :
-   * on n'agit que si la cellule appartient à la ligne d'origine. Q2 =
-   * écrasement silencieux (on appelle setLocal même si la valeur précédente
-   * était différente).
-   */
-  const onCellEnter = useCallback(
-    (rowId: string, dateIso: string) => {
-      if (!isDragging) return
-      if (paintingRowId !== rowId) return
-      if (paintingValue === null) return
-      // Skip si la cellule a déjà été peinte par ce drag (idempotent).
-      if (changesRef.current.has(dateIso)) return
-      changesRef.current.set(dateIso, paintingValue)
-      setLocal(rowId, dateIso, paintingValue)
-    },
-    [isDragging, paintingRowId, paintingValue, setLocal],
-  )
-
-  /**
-   * Listener mouseup global : termine le drag et commit. Branché tant que
-   * `isDragging` est vrai. On utilise `window` plutôt que `document` pour
-   * absorber les relâches hors de la grille (drag sortant).
+   * Listener mouseup global : monté UNE FOIS au mount, lit les refs pour
+   * savoir s'il y a un drag actif. On ne dépend pas de `isDragging` (state)
+   * pour ne pas remonter/démonter le listener à chaque cycle.
    */
   useEffect(() => {
-    if (!isDragging) return
     function onUp() {
+      if (!draggingRef.current) return
       const rowId = rowIdRef.current
       const changes = changesRef.current
-      // Reset interne AVANT d'appeler onCommit pour que le caller puisse
-      // déclencher un setState qui ne re-rentre pas dans le drag.
+      // Reset refs AVANT le callback (le caller peut déclencher un
+      // setState qui re-render — il doit voir un drag fini).
+      draggingRef.current = false
+      rowIdRef.current = null
+      valueRef.current = null
+      changesRef.current = new Map()
+      // Miroir state (le linter ne flag pas ici car on est dans un
+      // listener déclenché de manière externe, pas directement dans le body
+      // du useEffect).
       setIsDragging(false)
       setPaintingRowId(null)
       setPaintingValue(null)
-      rowIdRef.current = null
-      changesRef.current = new Map()
       if (rowId && changes.size > 0) {
         onCommit(rowId, changes)
       }
     }
     window.addEventListener('mouseup', onUp)
     return () => window.removeEventListener('mouseup', onUp)
-  }, [isDragging, onCommit])
+  }, [onCommit])
 
   return {
     isDragging,

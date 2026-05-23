@@ -26,6 +26,23 @@ export interface Collaborator {
   position: number
 }
 
+/**
+ * v2.2 / F3 — État de filtre projet : pilote ce qui est affiché dans le Plan
+ * de charge (et plus tard dans le Gantt + Affectations en F4/F5).
+ *
+ *   • 'single'  : un seul projet visible — équivalent du scope « current ».
+ *                 Le projet visé est le `currentProjectId` global de l'app.
+ *   • 'all'     : tous les projets agrégés — équivalent du scope « global ».
+ *   • 'subset'  : un sous-ensemble explicite de projets (≥ 2 ids).
+ *                 Filtrage côté client à partir des tâches « global ».
+ *
+ * Persisté en localStorage sous la clé `gantt.projectSelection`.
+ */
+export type ProjectSelection =
+  | { mode: 'single'; projectId: string }
+  | { mode: 'all' }
+  | { mode: 'subset'; projectIds: string[] }
+
 /** Un projet (v1.8) — regroupe phases, jalons et activités. */
 export interface Project {
   /** Identifiant unique. */

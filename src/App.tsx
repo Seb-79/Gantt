@@ -24,6 +24,10 @@ import Dialogs from './components/Dialogs'
 // toolbar dont le délai d'apparition (~700-1500 ms) et le comportement de
 // disparition au moindre mouvement rendaient l'usage frustrant.
 import { Tooltip } from './components/Tooltip'
+// v2.2 / F2 — Sélecteur de projet enrichi (un projet OU « Tous les projets »).
+// Remplace le <select> natif + le bouton « 🌐 Global / 📁 Courant » en un seul
+// menu déroulant custom. F3 ajoutera la multi-sélection.
+import { ProjectFilter } from './components/ProjectFilter'
 // v2.0 — Remplace window.confirm / window.prompt (qui affichent l'en-tête
 // « localhost:5174 indique ») par des modales custom alignées sur le style
 // de l'app. Voir src/lib/dialogs.ts pour le détail.
@@ -48,7 +52,12 @@ import {
 import type { ExtensionPlan, ReplanMove } from './lib/utils'
 import type { ReplanShortfallItem } from './components/ReplanAllocationFixDialog'
 import ReplanAllocationFixDialog from './components/ReplanAllocationFixDialog'
-import type { Collaborator, GanttState, Task } from './lib/types'
+import type {
+  Collaborator,
+  GanttState,
+  ProjectSelection,
+  Task,
+} from './lib/types'
 
 /** Intervalle (ms) du polling de synchronisation. */
 const POLL_INTERVAL = 5000
@@ -74,8 +83,14 @@ const LS_HIGHLIGHT_UNDERLOAD = 'gantt.highlightUnderload'
 /** v1.20 — Clé localStorage pour mémoriser les phases repliées (JSON: string[]). */
 const LS_COLLAPSED_PHASES = 'gantt.collapsedPhases'
 
-/** v2.0 / F5 — Clé localStorage pour mémoriser le scope du plan de charge. */
+/** v2.0 / F5 — Clé localStorage pour mémoriser le scope du plan de charge.
+ *  Conservée pour la migration depuis les versions antérieures à v2.2/F3. */
 const LS_WORKLOAD_SCOPE = 'gantt.workloadScope'
+
+/** v2.2 / F3 — Clé localStorage pour mémoriser la sélection projet (single /
+ *  all / subset). Sérialisée en JSON via `lsSet`. Remplace `LS_WORKLOAD_SCOPE`
+ *  en source de vérité. */
+const LS_PROJECT_SELECTION = 'gantt.projectSelection'
 
 /** v1.16 / v2.0 — Vues disponibles dans l'app :
  *    • 'gantt'    → planning (par défaut)
@@ -116,6 +131,34 @@ function lsSet(key: string, value: string): void {
   } catch {
     // localStorage indisponible — on continue, l'état reste en mémoire.
   }
+}
+
+/**
+ * v2.2 / F3 — Initialise `projectSelection` au démarrage de l'app :
+ *   1. Si LS_PROJECT_SELECTION contient un JSON valide → on l'utilise.
+ *   2. Sinon migration depuis LS_WORKLOAD_SCOPE ('global' → mode 'all').
+ *   3. Défaut : mode 'single' sur le projet sauvegardé (ou '' si base vide).
+ *
+ * Extrait pour limiter la complexité cognitive du composant `App`.
+ */
+function readInitialProjectSelection(): ProjectSelection {
+  const stored = lsGet(LS_PROJECT_SELECTION)
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored) as ProjectSelection
+      if (
+        parsed.mode === 'all' ||
+        parsed.mode === 'single' ||
+        parsed.mode === 'subset'
+      ) {
+        return parsed
+      }
+    } catch {
+      // JSON invalide → fallback vers la migration ci-dessous.
+    }
+  }
+  if (lsGet(LS_WORKLOAD_SCOPE) === 'global') return { mode: 'all' }
+  return { mode: 'single', projectId: lsGet(LS_CURRENT_PROJECT) ?? '' }
 }
 
 export default function App() {
@@ -200,14 +243,29 @@ export default function App() {
     () => lsGet(LS_HIGHLIGHT_UNDERLOAD) === '1',
   )
   /**
-   * v2.0 / F5 — Périmètre du plan de charge :
-   *   • 'current' (défaut) → workload restreint au projet courant.
-   *   • 'global'           → workload agrégé cross-projet (fetché à la demande).
-   * Persisté en localStorage pour retrouver la même vue à l'ouverture.
+   * v2.2 / F3 — Sélection projet : pilote le périmètre du Plan de charge.
+   * Trois modes (cf. `ProjectSelection` dans types.ts) : single / all / subset.
+   * Persisté en localStorage. Migration automatique depuis l'ancienne clé
+   * LS_WORKLOAD_SCOPE pour les utilisateurs venant de v2.1 ou antérieur.
    */
-  const [workloadScope, setWorkloadScope] = useState<'current' | 'global'>(
-    () => (lsGet(LS_WORKLOAD_SCOPE) === 'global' ? 'global' : 'current'),
+  const [projectSelection, setProjectSelection] = useState<ProjectSelection>(
+    readInitialProjectSelection,
   )
+
+  /**
+   * v2.2 / F3 — Scope dérivé pour le Plan de charge :
+   *   • mode 'single' → scope 'current' (utilise state.tasks).
+   *   • mode 'all' ou 'subset' → scope 'global' (utilise globalTasks).
+   * Préservé comme `workloadScope` pour minimiser le delta avec le code v2.1.
+   */
+  const workloadScope: 'current' | 'global' =
+    projectSelection.mode === 'single' ? 'current' : 'global'
+
+  /**
+   * v2.2 / F3 — Indique si l'on est en multi-projets (édition désactivée pour
+   * éviter les ambiguïtés : sur quel projet créer/renommer/supprimer ?).
+   */
+  const isMultiProject = projectSelection.mode !== 'single'
   /**
    * v2.0 / F5 — Tâches cross-projet fetchées depuis /api/workload/global,
    * `null` tant qu'on n'a pas demandé la vue globale. Re-fetchées à chaque
@@ -278,6 +336,23 @@ export default function App() {
     () => (state ? sortTasksHierarchically(state.tasks) : []),
     [state],
   )
+
+  /**
+   * v2.2 / F3 — Tâches globales effectivement passées au WorkloadChart.
+   *   • mode 'subset' → filtrage côté client des tâches /api/workload/global
+   *     par les projet_ids sélectionnés.
+   *   • mode 'all'    → on passe le résultat brut.
+   *   • mode 'single' → `undefined` (le chart ignore cette prop en scope='current').
+   * Mémoïsé pour éviter de re-filtrer à chaque render.
+   */
+  const effectiveGlobalTasks = useMemo<Task[] | undefined>(() => {
+    if (!globalTasks) return undefined
+    if (projectSelection.mode === 'subset') {
+      const ids = new Set(projectSelection.projectIds)
+      return globalTasks.filter((t) => ids.has(t.project_id))
+    }
+    return globalTasks
+  }, [globalTasks, projectSelection])
 
   /**
    * v1.20 — Liste des tâches RÉELLEMENT affichées : `orderedTasks` filtrées
@@ -982,16 +1057,20 @@ export default function App() {
   }
 
   /**
-   * v2.0 / F5 — Bascule entre vue plan de charge « projet courant » et
-   * « globale ». Persisté en localStorage. Le fetch des global tasks est
-   * piloté par un `useEffect` séparé (cf. plus bas).
+   * v2.2 / F3 — Callback unique de `<ProjectFilter>` : applique la nouvelle
+   * sélection (single / all / subset), persiste en localStorage, et synchronise
+   * `currentProjectId` quand on passe en mode single sur un nouveau projet
+   * (déclenche le re-fetch de /api/state via le useEffect dédié).
    */
-  const toggleWorkloadScope = () => {
-    setWorkloadScope((s) => {
-      const next: 'current' | 'global' = s === 'global' ? 'current' : 'global'
-      lsSet(LS_WORKLOAD_SCOPE, next)
-      return next
-    })
+  const handleProjectSelectionChange = (next: ProjectSelection) => {
+    setProjectSelection(next)
+    lsSet(LS_PROJECT_SELECTION, JSON.stringify(next))
+    // Synchronise le « projet d'édition actif » uniquement en mode single :
+    // en multi (all / subset), on conserve le dernier projet single pour ne
+    // pas perdre le contexte d'édition au retour en single.
+    if (next.mode === 'single' && next.projectId !== currentProjectId) {
+      handleSelectProject(next.projectId)
+    }
   }
 
   /**
@@ -1198,23 +1277,12 @@ export default function App() {
         {/* v1.8 — Sélecteur de projet + actions CRUD */}
         {state && (
           <div className="flex items-center gap-1 pl-2 border-l border-slate-200 min-w-0">
-            <select
-              className="text-sm border border-slate-300 rounded px-2 py-1 bg-white hover:bg-slate-50 max-w-[10rem] truncate"
-              value={state.current_project_id ?? ''}
-              onChange={(e) => handleSelectProject(e.target.value)}
-              disabled={state.projects.length === 0}
-              title="Changer de projet"
-            >
-              {state.projects.length === 0 ? (
-                <option value="">— aucun projet —</option>
-              ) : (
-                state.projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))
-              )}
-            </select>
+            <ProjectFilter
+              projects={state.projects}
+              currentProjectId={state.current_project_id}
+              selection={projectSelection}
+              onChange={handleProjectSelectionChange}
+            />
             <Tooltip label="Nouveau projet">
               <button
                 className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
@@ -1223,29 +1291,40 @@ export default function App() {
                 +
               </button>
             </Tooltip>
-            <Tooltip label="Renommer le projet">
+            <Tooltip
+              label={
+                isMultiProject
+                  ? 'Édition désactivée en multi-projets : sélectionne un projet unique'
+                  : 'Renommer le projet'
+              }
+            >
               <button
                 className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
                 onClick={handleRenameProject}
-                disabled={!currentProject}
+                disabled={!currentProject || isMultiProject}
               >
                 ✎
               </button>
             </Tooltip>
             {/* v1.24 — Règle RG-GANTT-1106 : la suppression est autorisée
                 même pour le dernier projet. Le bouton n'est désactivé que
-                lorsqu'il n'y a aucun projet courant (cas "base vide"). */}
+                lorsqu'il n'y a aucun projet courant (cas "base vide") ou en
+                multi-projets (v2.2 / F3). */}
             <Tooltip
-              label={
-                state.projects.length <= 1
-                  ? 'Supprimer le projet (base vide après suppression)'
-                  : 'Supprimer le projet'
-              }
+              label={(() => {
+                if (isMultiProject) {
+                  return 'Édition désactivée en multi-projets : sélectionne un projet unique'
+                }
+                if (state.projects.length <= 1) {
+                  return 'Supprimer le projet (base vide après suppression)'
+                }
+                return 'Supprimer le projet'
+              })()}
             >
               <button
                 className="w-7 h-7 text-sm rounded border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                 onClick={handleDeleteProject}
-                disabled={!currentProject}
+                disabled={!currentProject || isMultiProject}
               >
                 🗑
               </button>
@@ -1356,29 +1435,9 @@ export default function App() {
               </button>
             </Tooltip>
           )}
-          {/* v2.0 / F5 — Toggle scope « projet courant / vue globale ».
-              Visible uniquement sur l'onglet Plan de charge. En mode global,
-              le bouton affiche un fond bleu pour rappeler que la vue agrège
-              toutes les tâches de tous les projets de la base. */}
-          {view === 'workload' && (
-            <button
-              className={[
-                'h-7 px-2 text-xs rounded border border-slate-300',
-                workloadScope === 'global'
-                  ? 'bg-blue-100 text-blue-700 border-blue-300'
-                  : 'hover:bg-slate-100',
-              ].join(' ')}
-              onClick={toggleWorkloadScope}
-              title={
-                workloadScope === 'global'
-                  ? 'Revenir à la vue restreinte au projet courant'
-                  : 'Voir la charge agrégée sur TOUS les projets'
-              }
-              aria-pressed={workloadScope === 'global'}
-            >
-              {workloadScope === 'global' ? '🌐 Global' : '📁 Courant'}
-            </button>
-          )}
+          {/* v2.2 / F2 — Le bouton « 🌐 Global / 📁 Courant » a été retiré :
+              sa fonction est désormais intégrée au <ProjectFilter> via l'option
+              « 🌐 Tous les projets ». */}
           {/* v1.16 — Les toggles "nom" et "dates" ne concernent que la vue
               Gantt (rendu des barres). On les masque sur la vue Charge. */}
           {view === 'gantt' && (
@@ -1430,21 +1489,36 @@ export default function App() {
               </Tooltip>
             </>
           )}
-          <Tooltip label="Nouvelle tâche / jalon / phase">
+          <Tooltip
+            label={
+              isMultiProject
+                ? 'Édition désactivée en multi-projets : sélectionne un projet unique'
+                : 'Nouvelle tâche / jalon / phase'
+            }
+          >
             <button
-              className="h-7 px-2 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700"
+              className="h-7 px-2 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed"
               onClick={() => setCreating(true)}
+              disabled={isMultiProject}
             >
               + Tâche
             </button>
           </Tooltip>
           {/* v1.18 — Replan : analyse les surcharges et propose un aperçu
-              des déplacements ; appliqué seulement après confirmation. */}
-          <Tooltip label="Replanifier automatiquement les tâches en surcharge">
+              des déplacements ; appliqué seulement après confirmation.
+              v2.2 / F3 — Désactivé en multi-projets (le solveur opère sur un
+              seul projet à la fois). */}
+          <Tooltip
+            label={
+              isMultiProject
+                ? 'Replan désactivé en multi-projets : sélectionne un projet unique'
+                : 'Replanifier automatiquement les tâches en surcharge'
+            }
+          >
             <button
-              className="h-7 px-2 text-sm rounded bg-amber-500 text-white hover:bg-amber-600"
+              className="h-7 px-2 text-sm rounded bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed"
               onClick={() => handleOpenReplan('full')}
-              disabled={!state}
+              disabled={!state || isMultiProject}
             >
               🔄 Replan
             </button>
@@ -1522,7 +1596,10 @@ export default function App() {
                 allMemberAllocations={state.all_member_allocations}
                 absences={state.collaborator_absences}
                 scope={workloadScope}
-                globalTasks={globalTasks ?? undefined}
+                // v2.2 / F3 — Tâches globales effectivement affichées :
+                // filtrées par sous-ensemble en mode 'subset', sinon brutes.
+                // Calcul mémoïsé : voir `effectiveGlobalTasks`.
+                globalTasks={effectiveGlobalTasks}
                 highlightUnderload={highlightUnderload}
                 onShiftWindow={shiftWindow}
               />

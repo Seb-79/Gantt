@@ -157,19 +157,36 @@ describe('App — smoke', () => {
   it("peuple le sélecteur de projet à partir de l'API", async () => {
     setupFetchMock()
     render(<App />)
-    await waitFor(() => {
-      // Le select affiche les 2 projets renvoyés par le mock.
-      const opts = screen.getAllByRole('option')
-      expect(opts.map((o) => o.textContent)).toEqual(['Projet 1', 'Projet 2'])
-    })
+    // v2.2 / F2 — Le sélecteur natif <select> a été remplacé par
+    // <ProjectFilter> : on ouvre le menu pour vérifier que les 2 projets
+    // renvoyés par le mock y figurent (en plus de « Tous les projets »).
+    const trigger = await screen.findByRole('combobox')
+    fireEvent.click(trigger)
+    const opts = screen.getAllByRole('option')
+    // Ordre attendu : « 🌐 Tous les projets » en tête, puis les 2 projets.
+    expect(opts.map((o) => o.textContent?.trim())).toEqual([
+      expect.stringContaining('Tous les projets'),
+      expect.stringContaining('Projet 1'),
+      expect.stringContaining('Projet 2'),
+    ])
   })
 
   it('changer de projet provoque un GET /api/state?project_id=…', async () => {
     const { calls } = setupFetchMock()
     render(<App />)
-    await waitFor(() => screen.getByRole('combobox'))
-    // Bascule sur Projet 2 → un nouveau GET est émis avec le bon param.
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'p2' } })
+    const trigger = await screen.findByRole('combobox')
+    // v2.2 / F2 — Sélection via le nouveau menu déroulant : on ouvre puis on
+    // clique l'option « Projet 2 ». Le GET avec project_id=p2 doit suivre.
+    fireEvent.click(trigger)
+    // v2.2 / F3 — Le menu utilise des cases à cocher : on coche « Projet 2 »
+    // (équivalent à passer de single→subset, puis le test ci-dessous se
+    // termine quand le GET ?project_id=p2 a été émis — déclenché par la
+    // transition single).
+    fireEvent.click(screen.getByLabelText('Projet 2'))
+    // En F3, cocher un 2e projet passe en subset ; pour observer
+    // ?project_id=p2 dans les calls, on décoche d'abord Projet 1 pour
+    // revenir en mode single sur Projet 2.
+    fireEvent.click(screen.getByLabelText('Projet 1'))
     await waitFor(() => {
       expect(
         calls.some(

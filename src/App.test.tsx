@@ -239,7 +239,7 @@ describe("App — barre d'outils", () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
-    fireEvent.click(screen.getByTitle(/Restaurer les données/))
+    fireEvent.click(screen.getByLabelText(/Restaurer les données/))
     fireEvent.click(await screen.findByRole('button', { name: 'OK' }))
     await waitFor(() =>
       expect(
@@ -252,7 +252,7 @@ describe("App — barre d'outils", () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
-    fireEvent.click(screen.getByTitle(/Restaurer les données/))
+    fireEvent.click(screen.getByLabelText(/Restaurer les données/))
     fireEvent.click(await screen.findByRole('button', { name: 'Annuler' }))
     expect(calls.find((c) => c.url === '/api/reset')).toBeUndefined()
   })
@@ -264,19 +264,19 @@ describe("App — barre d'outils", () => {
     // On clique sur les 5 boutons de navigation — l'objectif est de
     // couvrir les branches shiftWindow / defaultWindow, pas la cinématique
     // fine (déjà testée dans utils).
-    fireEvent.click(screen.getByTitle(/Reculer d'un mois/))
-    fireEvent.click(screen.getByTitle(/Reculer d'une semaine/))
-    fireEvent.click(screen.getByTitle(/Recentrer sur aujourd'hui/))
-    fireEvent.click(screen.getByTitle(/Avancer d'une semaine/))
-    fireEvent.click(screen.getByTitle(/Avancer d'un mois/))
+    fireEvent.click(screen.getByLabelText(/Reculer d'un mois/))
+    fireEvent.click(screen.getByLabelText(/Reculer d'une semaine/))
+    fireEvent.click(screen.getByLabelText(/Recentrer sur aujourd'hui/))
+    fireEvent.click(screen.getByLabelText(/Avancer d'une semaine/))
+    fireEvent.click(screen.getByLabelText(/Avancer d'un mois/))
   })
 
   it('boutons de zoom modifient dayWidth (− et +)', async () => {
     setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
-    fireEvent.click(screen.getByTitle('Dézoomer'))
-    fireEvent.click(screen.getByTitle('Zoomer'))
+    fireEvent.click(screen.getByLabelText('Dézoomer'))
+    fireEvent.click(screen.getByLabelText('Zoomer'))
     // Le slider doit aussi être pilotable.
     const slider = screen.getByRole('slider') as HTMLInputElement
     fireEvent.change(slider, { target: { value: '30' } })
@@ -293,7 +293,7 @@ describe('App — gestion des projets', () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
-    fireEvent.click(screen.getByTitle('Nouveau projet'))
+    fireEvent.click(screen.getByLabelText('Nouveau projet'))
     const input = await screen.findByRole('textbox')
     fireEvent.change(input, { target: { value: 'Mon projet' } })
     fireEvent.click(screen.getByRole('button', { name: 'OK' }))
@@ -310,7 +310,7 @@ describe('App — gestion des projets', () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
-    fireEvent.click(screen.getByTitle('Nouveau projet'))
+    fireEvent.click(screen.getByLabelText('Nouveau projet'))
     const input = await screen.findByRole('textbox')
     fireEvent.change(input, { target: { value: '' } })
     fireEvent.click(screen.getByRole('button', { name: 'OK' }))
@@ -321,7 +321,7 @@ describe('App — gestion des projets', () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
-    fireEvent.click(screen.getByTitle('Renommer le projet'))
+    fireEvent.click(screen.getByLabelText('Renommer le projet'))
     const input = await screen.findByRole('textbox')
     fireEvent.change(input, { target: { value: 'Projet renommé' } })
     fireEvent.click(screen.getByRole('button', { name: 'OK' }))
@@ -338,7 +338,7 @@ describe('App — gestion des projets', () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
-    fireEvent.click(screen.getByTitle('Renommer le projet'))
+    fireEvent.click(screen.getByLabelText('Renommer le projet'))
     // La modale s'ouvre avec le nom courant pré-rempli — on valide directement.
     fireEvent.click(await screen.findByRole('button', { name: 'OK' }))
     expect(
@@ -352,7 +352,7 @@ describe('App — gestion des projets', () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
-    fireEvent.click(screen.getByTitle('Supprimer le projet'))
+    fireEvent.click(screen.getByLabelText('Supprimer le projet'))
     fireEvent.click(await screen.findByRole('button', { name: 'OK' }))
     await waitFor(() => {
       const del = calls.find(
@@ -371,7 +371,7 @@ describe('App — gestion des projets', () => {
     )
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
-    const del = screen.getByTitle(/base vide après suppression/i)
+    const del = screen.getByLabelText(/base vide après suppression/i)
     expect(del).not.toBeDisabled()
   })
 })
@@ -1032,7 +1032,7 @@ describe('App — robustesse réseau', () => {
     render(<App />)
     // Le composant ne crashe pas ; le badge passe en mode erreur (✕).
     await waitFor(() => {
-      expect(screen.getByTitle('Erreur réseau')).toBeInTheDocument()
+      expect(screen.getByLabelText('Erreur réseau')).toBeInTheDocument()
     })
     // Vérifie que l'erreur a bien été loguée (preuve que le chemin
     // d'erreur a été emprunté), tout en l'isolant du flux stderr.

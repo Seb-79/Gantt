@@ -113,17 +113,30 @@ export function Tooltip({
     return `${side} ${VERT_ALIGN[align]}`
   })()
 
-  // Propage `title={label}` sur le child DOM élément pour :
-  //   • garder un fallback d'accessibilité (lecteurs d'écran),
-  //   • préserver les tests qui interrogent par `getByTitle(...)`.
-  // On n'ajoute PAS aria-label : il écraserait le nom accessible naturel des
-  // boutons avec texte (ex. "+ Tâche") et casserait getByRole('button', { name }).
-  // Le tooltip natif HTML n'apparaît jamais visuellement en pratique : notre
-  // custom s'affiche à 150 ms alors que le natif n'arrive qu'à ~700 ms.
+  // Stratégie d'accessibilité (v2.2 — fix double tooltip) :
+  //   • On NE propage PLUS `title={label}` : c'était la cause d'un double
+  //     tooltip (le natif du navigateur apparaissait en plus du custom).
+  //   • On propage `aria-label={label}` UNIQUEMENT pour les boutons icône
+  //     (textContent ≤ 3 caractères). Pour les boutons avec texte
+  //     ("+ Tâche", "🔄 Replan"), on laisse le textContent jouer le rôle
+  //     de nom accessible — sinon `aria-label` l'écraserait et casserait
+  //     les tests getByRole('button', { name: '+ Tâche' }).
+  //   • Les tests `getByTitle(...)` migrent vers `getByLabelText(...)`.
+  const isIconOnly = (() => {
+    if (!isValidElement(children)) return false
+    const inner = (children as ReactElement<{ children?: ReactNode }>).props
+      .children
+    if (typeof inner !== 'string') return false
+    return inner.trim().length <= 3
+  })()
+  const extraProps: Record<string, unknown> = isIconOnly
+    ? { 'aria-label': label }
+    : {}
   const enhancedChild = isValidElement(children)
-    ? cloneElement(children as ReactElement<Record<string, unknown>>, {
-        title: label,
-      })
+    ? cloneElement(
+        children as ReactElement<Record<string, unknown>>,
+        extraProps,
+      )
     : children
 
   return (

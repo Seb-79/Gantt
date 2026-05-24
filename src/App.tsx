@@ -1005,14 +1005,23 @@ export default function App() {
     initialWindowSet.current = false
   }
 
-  /** Crée un nouveau projet (prompt simple). */
+  /**
+   * Crée un nouveau projet (prompt simple) ET bascule l'app dessus.
+   *
+   * v2.2 — On passe par `handleProjectSelectionChange` plutôt que par
+   * `handleSelectProject` directement : sans ça, le `projectSelection`
+   * (source de vérité du <ProjectFilter>) restait sur l'ancien projet
+   * alors que `currentProjectId` pointait sur le nouveau, ce qui faisait
+   * croire à l'utilisateur que la bascule n'avait pas eu lieu. Voir aussi
+   * le garde-fou symétrique dans handleProjectSelectionChange / selectView.
+   */
   const handleCreateProject = async () => {
     const raw = await askPrompt('Nom du nouveau projet :', 'Nouveau projet')
     const name = raw?.trim()
     if (!name) return
     const id = makeId('p')
     await mutate('POST', '/api/projects', { id, name })
-    handleSelectProject(id)
+    handleProjectSelectionChange({ mode: 'single', projectId: id })
   }
 
   /** Renomme le projet courant (prompt). */

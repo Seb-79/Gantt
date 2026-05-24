@@ -1,22 +1,32 @@
 // =============================================================================
-// Tooltip — Composant de tooltip custom (Gantt v2.2 / F1)
+// Tooltip — Composant de tooltip custom (Gantt v2.2 / F1 — refondu)
 // =============================================================================
 // Remplace l'attribut HTML natif `title=` dont le délai d'apparition est
 // contrôlé par le navigateur (souvent 700-1500 ms) et dont le tooltip
 // disparaît au moindre mouvement de souris sans réapparaître avant ~5 s.
 //
-// Comportement attendu (RG-GANTT-2200 / F1) :
+// Comportement (RG-GANTT-2200 / F1) :
 //   • Le tooltip apparaît après un délai court (défaut 150 ms) au survol
 //     OU au focus clavier.
 //   • Il disparaît immédiatement au mouseleave ou au blur.
 //   • Le délai en cours est annulé si la souris quitte avant la fin.
-//   • Le contenu est un libellé textuel court (`label: string`).
-//   • Le wrapper est `inline-flex` pour épouser la taille du bouton enfant
-//     sans casser les flex layouts de la toolbar.
 //
-// Le composant ne gère pas le débordement de viewport en V1 : pour les
-// boutons à l'extrême droite, prévoir `align="end"` pour ancrer le tooltip
-// sur le bord droit du wrapper plutôt que centré.
+// Rendu (refonte 2026-05-23) :
+//   • Le tooltip est rendu via `createPortal` dans `document.body`. Sans
+//     portail, le `overflow-hidden` du header parent tronquait la bulle
+//     côté droit (bouton à l'extrême droite invisible).
+//   • Couleur : fond gris clair (slate-100) + bordure (slate-300) + texte
+//     slate-800, style proche d'un tooltip natif macOS — harmonisé avec le
+//     reste de l'app (l'utilisateur trouvait le fond noir précédent moche).
+//   • Position calculée via `getBoundingClientRect` du wrapper (cohérent
+//     avec ProjectFilter).
+//
+// Accessibilité :
+//   • `aria-label={label}` est propagé sur le child uniquement si son
+//     textContent fait ≤ 3 caractères (= bouton icône). Sur les boutons
+//     avec texte ("+ Tâche", "🔄 Replan"), le textContent suffit.
+//   • Tests : interroger via `getByLabelText(...)` pour les icônes,
+//     `getByRole('button', { name })` pour les boutons texte.
 // =============================================================================
 
 import {
@@ -24,11 +34,13 @@ import {
   isValidElement,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactElement,
   type ReactNode,
 } from 'react'
+import { createPortal } from 'react-dom'
 
 /**
  * Props du composant Tooltip.
@@ -49,6 +61,39 @@ export interface TooltipProps {
   align?: 'start' | 'center' | 'end'
 }
 
+/** Espacement (px) entre le wrapper et la bulle de tooltip. */
+const GAP = 4
+
+/**
+ * Calcule le point d'ancrage (top/left) de la bulle de tooltip dans le
+ * viewport à partir du rectangle du wrapper, du `placement` et de l'`align`.
+ * La bulle elle-même applique ensuite un `transform: translate(...)` (calculé
+ * dans le composant) pour s'aligner correctement par rapport à ce point.
+ */
+function computeTooltipAnchor(
+  rect: DOMRect,
+  placement: 'top' | 'bottom' | 'left' | 'right',
+  align: 'start' | 'center' | 'end',
+): { top: number; left: number } {
+  const isVertical = placement === 'bottom' || placement === 'top'
+  if (isVertical) {
+    const top = placement === 'bottom' ? rect.bottom + GAP : rect.top - GAP
+    const HORIZ = {
+      start: rect.left,
+      center: (rect.left + rect.right) / 2,
+      end: rect.right,
+    } as const
+    return { top, left: HORIZ[align] }
+  }
+  const left = placement === 'right' ? rect.right + GAP : rect.left - GAP
+  const VERT = {
+    start: rect.top,
+    center: (rect.top + rect.bottom) / 2,
+    end: rect.bottom,
+  } as const
+  return { top: VERT[align], left }
+}
+
 /**
  * Wrapper d'élément qui affiche un tooltip custom au survol et au focus.
  * Voir l'entête du fichier pour le contrat complet.
@@ -64,6 +109,10 @@ export function Tooltip({
   const [visible, setVisible] = useState(false)
   // Référence du timer pour pouvoir l'annuler au mouseleave anticipé.
   const timerRef = useRef<number | null>(null)
+  // Référence du wrapper (pour calculer la position du tooltip en portail).
+  const wrapperRef = useRef<HTMLSpanElement>(null)
+  // Position absolue calculée à l'affichage. `null` tant que pas affiché.
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
   // Identifiant unique pour aria-describedby (accessibilité).
   const tooltipId = useId()
 
@@ -83,45 +132,43 @@ export function Tooltip({
       timerRef.current = null
     }
     setVisible(false)
+    setPos(null)
   }
 
-  // Cleanup : annule un éventuel timer si le composant est démonté pendant l'attente.
+  // Cleanup : annule un éventuel timer si démontage pendant l'attente.
   useEffect(() => {
     return () => {
       if (timerRef.current !== null) window.clearTimeout(timerRef.current)
     }
   }, [])
 
-  // Classes Tailwind pour positionner la bulle par rapport au wrapper.
-  // 'start' / 'end' jouent sur l'axe perpendiculaire au placement.
-  const HORIZ_ALIGN = {
-    start: 'left-0',
-    center: 'left-1/2 -translate-x-1/2',
-    end: 'right-0',
-  } as const
-  const VERT_ALIGN = {
-    start: 'top-0',
-    center: 'top-1/2 -translate-y-1/2',
-    end: 'bottom-0',
-  } as const
-  const positionClass = (() => {
-    if (placement === 'top' || placement === 'bottom') {
-      const side = placement === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'
-      return `${side} ${HORIZ_ALIGN[align]}`
+  // Calcule la position du tooltip à chaque affichage. useLayoutEffect pour
+  // avoir la position avant le 1er paint (pas de flash).
+  useLayoutEffect(() => {
+    if (!visible || !wrapperRef.current) return
+    const rect = wrapperRef.current.getBoundingClientRect()
+    setPos(computeTooltipAnchor(rect, placement, align))
+  }, [visible, placement, align])
+
+  // Transform CSS pour aligner correctement la bulle par rapport au point
+  // d'ancrage `pos`. La bulle est positionnée par son coin/centre approprié.
+  const transformOrigin = (() => {
+    // Calculs en fonction de placement × align.
+    let tx = '0'
+    let ty = '0'
+    if (placement === 'bottom' || placement === 'top') {
+      if (align === 'center') tx = '-50%'
+      else if (align === 'end') tx = '-100%'
+      if (placement === 'top') ty = '-100%'
+    } else {
+      if (align === 'center') ty = '-50%'
+      else if (align === 'end') ty = '-100%'
+      if (placement === 'left') tx = '-100%'
     }
-    const side = placement === 'left' ? 'right-full mr-1' : 'left-full ml-1'
-    return `${side} ${VERT_ALIGN[align]}`
+    return `translate(${tx}, ${ty})`
   })()
 
-  // Stratégie d'accessibilité (v2.2 — fix double tooltip) :
-  //   • On NE propage PLUS `title={label}` : c'était la cause d'un double
-  //     tooltip (le natif du navigateur apparaissait en plus du custom).
-  //   • On propage `aria-label={label}` UNIQUEMENT pour les boutons icône
-  //     (textContent ≤ 3 caractères). Pour les boutons avec texte
-  //     ("+ Tâche", "🔄 Replan"), on laisse le textContent jouer le rôle
-  //     de nom accessible — sinon `aria-label` l'écraserait et casserait
-  //     les tests getByRole('button', { name: '+ Tâche' }).
-  //   • Les tests `getByTitle(...)` migrent vers `getByLabelText(...)`.
+  // Propage `aria-label={label}` sur les boutons icône uniquement.
   const isIconOnly = (() => {
     if (!isValidElement(children)) return false
     const inner = (children as ReactElement<{ children?: ReactNode }>).props
@@ -141,7 +188,8 @@ export function Tooltip({
 
   return (
     <span
-      className="relative inline-flex"
+      ref={wrapperRef}
+      className="inline-flex"
       onMouseEnter={show}
       onMouseLeave={hide}
       onFocus={show}
@@ -149,15 +197,26 @@ export function Tooltip({
       aria-describedby={visible ? tooltipId : undefined}
     >
       {enhancedChild}
-      {visible && (
-        <span
-          id={tooltipId}
-          role="tooltip"
-          className={`absolute z-50 px-2 py-1 text-xs text-white bg-slate-800 rounded shadow-lg whitespace-nowrap pointer-events-none ${positionClass}`}
-        >
-          {label}
-        </span>
-      )}
+      {visible &&
+        pos &&
+        createPortal(
+          <span
+            id={tooltipId}
+            role="tooltip"
+            // Couleur native-like : fond clair, texte sombre, bordure
+            // discrète + petite ombre. Harmonisé avec les tooltips natifs
+            // des navigateurs/OS — plus discret que le fond noir précédent.
+            className="fixed z-[1000] px-2 py-1 text-xs text-slate-800 bg-slate-100 border border-slate-300 rounded shadow-md whitespace-nowrap pointer-events-none"
+            style={{
+              top: pos.top,
+              left: pos.left,
+              transform: transformOrigin,
+            }}
+          >
+            {label}
+          </span>,
+          document.body,
+        )}
     </span>
   )
 }

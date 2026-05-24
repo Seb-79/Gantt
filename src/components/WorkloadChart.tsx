@@ -127,10 +127,19 @@ export default function WorkloadChart({
     scope === 'global'
       ? (allMemberAllocations ?? memberAllocations)
       : memberAllocations
-  // v2.0 / F5 — Capacité totale = Σ allocations TOUS projets. Fallback vers
-  // `memberAllocations` si l'appelant n'a pas fourni les allocations globales
-  // (rétro-compat tests).
-  const allAllocationsForCapacity = allMemberAllocations ?? memberAllocations
+  // v2.0 / F5 — Capacité = dénominateur des seuils de coloration.
+  // v2.2 (fix harmonisation des couleurs current vs global) :
+  //   • En mode 'current' : on prend UNIQUEMENT les allocations du projet
+  //     courant. Sans ça, une cellule à 100 % sur le projet courant pour un
+  //     collab également alloué à d'autres projets apparaissait en bleu
+  //     pâle (ratio < 1) au lieu de vert « plein ».
+  //   • En mode 'global' : Σ allocations tous projets — c'est l'addition
+  //     de toute la charge qu'il faut comparer à la capacité totale.
+  //   • Fallback rétro-compat tests : si allMemberAllocations absent.
+  const allAllocationsForCapacity =
+    scope === 'global'
+      ? (allMemberAllocations ?? memberAllocations)
+      : memberAllocations
   // v1.19 — Pan horizontal à la souris (cf. useHorizontalPan).
   const { onMouseDown: handlePanMouseDown, isPanning } = useHorizontalPan(
     dayWidth,

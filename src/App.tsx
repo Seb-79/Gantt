@@ -1929,73 +1929,80 @@ function ViewTabs({
   view: View
   onChange: (v: View) => void
 }) {
+  // v2.2 — Les tooltips des onglets utilisent désormais <Tooltip> custom
+  // (et non plus l'attribut HTML `title=`) pour un rendu cohérent avec le
+  // reste de la toolbar (couleur, délai, position).
   return (
     <div
       className="flex items-center rounded border border-slate-300 overflow-hidden shrink-0"
       role="tablist"
       aria-label="Vue"
     >
-      <button
-        className={[
-          'h-7 px-2 text-xs font-medium',
-          view === 'gantt'
-            ? 'bg-blue-100 text-blue-700'
-            : 'bg-white text-slate-700 hover:bg-slate-100',
-        ].join(' ')}
-        onClick={() => onChange('gantt')}
-        role="tab"
-        aria-selected={view === 'gantt'}
-        title="Vue planning Gantt"
-      >
-        Gantt
-      </button>
-      <button
-        className={[
-          'h-7 px-2 text-xs font-medium border-l border-slate-300',
-          view === 'workload'
-            ? 'bg-blue-100 text-blue-700'
-            : 'bg-white text-slate-700 hover:bg-slate-100',
-        ].join(' ')}
-        onClick={() => onChange('workload')}
-        role="tab"
-        aria-selected={view === 'workload'}
-        title="Vue plan de charge par collaborateur"
-      >
-        Charge
-      </button>
+      <Tooltip label="Vue planning Gantt">
+        <button
+          className={[
+            'h-7 px-2 text-xs font-medium',
+            view === 'gantt'
+              ? 'bg-blue-100 text-blue-700'
+              : 'bg-white text-slate-700 hover:bg-slate-100',
+          ].join(' ')}
+          onClick={() => onChange('gantt')}
+          role="tab"
+          aria-selected={view === 'gantt'}
+        >
+          Gantt
+        </button>
+      </Tooltip>
+      <Tooltip label="Vue plan de charge par collaborateur">
+        <button
+          className={[
+            'h-7 px-2 text-xs font-medium border-l border-slate-300',
+            view === 'workload'
+              ? 'bg-blue-100 text-blue-700'
+              : 'bg-white text-slate-700 hover:bg-slate-100',
+          ].join(' ')}
+          onClick={() => onChange('workload')}
+          role="tab"
+          aria-selected={view === 'workload'}
+        >
+          Charge
+        </button>
+      </Tooltip>
       {/* v2.0 / F1 — Onglet « Affectation projet » : liste les collaborateurs
           membres du projet courant et permet d'en ajouter. */}
-      <button
-        className={[
-          'h-7 px-2 text-xs font-medium border-l border-slate-300',
-          view === 'members'
-            ? 'bg-blue-100 text-blue-700'
-            : 'bg-white text-slate-700 hover:bg-slate-100',
-        ].join(' ')}
-        onClick={() => onChange('members')}
-        role="tab"
-        aria-selected={view === 'members'}
-        title="Affecter les collaborateurs au projet"
-      >
-        Affectation
-      </button>
+      <Tooltip label="Affecter les collaborateurs au projet">
+        <button
+          className={[
+            'h-7 px-2 text-xs font-medium border-l border-slate-300',
+            view === 'members'
+              ? 'bg-blue-100 text-blue-700'
+              : 'bg-white text-slate-700 hover:bg-slate-100',
+          ].join(' ')}
+          onClick={() => onChange('members')}
+          role="tab"
+          aria-selected={view === 'members'}
+        >
+          Affectation
+        </button>
+      </Tooltip>
       {/* v2.0 / F3 — Onglet « Congés » (cross-projet) : saisie des absences
           de chaque collab. L'absence diminue multiplicativement la capacité
           du collab sur tous ses projets simultanément. */}
-      <button
-        className={[
-          'h-7 px-2 text-xs font-medium border-l border-slate-300',
-          view === 'absences'
-            ? 'bg-blue-100 text-blue-700'
-            : 'bg-white text-slate-700 hover:bg-slate-100',
-        ].join(' ')}
-        onClick={() => onChange('absences')}
-        role="tab"
-        aria-selected={view === 'absences'}
-        title="Gérer les absences (congés) — cross-projet"
-      >
-        Congés
-      </button>
+      <Tooltip label="Gérer les absences (congés) — cross-projet">
+        <button
+          className={[
+            'h-7 px-2 text-xs font-medium border-l border-slate-300',
+            view === 'absences'
+              ? 'bg-blue-100 text-blue-700'
+              : 'bg-white text-slate-700 hover:bg-slate-100',
+          ].join(' ')}
+          onClick={() => onChange('absences')}
+          role="tab"
+          aria-selected={view === 'absences'}
+        >
+          Congés
+        </button>
+      </Tooltip>
     </div>
   )
 }

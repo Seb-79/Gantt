@@ -588,13 +588,14 @@ export default function MembersGrid({
 
 /**
  * v2.1 / F4 — Classe Tailwind du fond d'une cellule selon le % d'allocation.
- * Palette bleue cohérente avec la sous-charge du Plan de charge (mais plus
- * marquée pour distinguer les paliers).
+ * v2.2 — Palette assouplie (preference utilisateur) : on remonte d'un cran
+ * tous les paliers (blue-500 max au lieu de blue-700) pour un rendu plus
+ * doux, harmonise avec la vue Affectation x Tous les projets.
  */
 function pctCellBg(pct: number): string {
-  if (pct >= 100) return 'bg-blue-700'
-  if (pct >= 75) return 'bg-blue-500'
+  if (pct >= 100) return 'bg-blue-500'
+  if (pct >= 75) return 'bg-blue-400'
   if (pct >= 50) return 'bg-blue-300'
-  if (pct >= 25) return 'bg-blue-100'
+  if (pct >= 25) return 'bg-blue-200'
   return ''
 }

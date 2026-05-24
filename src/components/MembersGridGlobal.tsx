@@ -378,16 +378,15 @@ export default function MembersGridGlobal({
                       )
                       // Style : fond gris pour weekend/férié, sinon dégradé
                       // d'intensité bleu selon pct. Palette ALIGNÉE sur celle
-                      // de MembersGrid (pctCellBg) pour que l'utilisateur ait
-                      // exactement le même bleu en vue "par projet" qu'en vue
-                      // "Tous les projets" à pct identique.
+                      // de MembersGrid (pctCellBg) — palette douce (blue-500
+                      // max) preferee par l'utilisateur.
                       const bg = (() => {
                         if (isWeekend || isHoliday) return '#f1f5f9' // slate-100
                         if (pct === 0) return 'transparent'
-                        if (pct >= 100) return '#1d4ed8' // blue-700
-                        if (pct >= 75) return '#3b82f6' // blue-500
+                        if (pct >= 100) return '#3b82f6' // blue-500
+                        if (pct >= 75) return '#60a5fa' // blue-400
                         if (pct >= 50) return '#93c5fd' // blue-300
-                        return '#dbeafe' // blue-100 (25 %)
+                        return '#bfdbfe' // blue-200 (25 %)
                       })()
                       const handleClick = () => {
                         if (isWeekend || isHoliday) return

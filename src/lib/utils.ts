@@ -1833,6 +1833,7 @@ function computeReplanEarliestStart(
   t: Task,
   tasksById: Map<string, Task>,
   proposed: Map<string, { start: string; end: string }>,
+  options: { ignoreToday?: boolean } = {},
 ): string {
   let earliest = t.start_date
   if (t.predecessor_id) {
@@ -1850,6 +1851,16 @@ function computeReplanEarliestStart(
   if (t.not_before_date) {
     const snet = snapForwardToWorkingDay(t.not_before_date)
     if (snet > earliest) earliest = snet
+  }
+  // v2.2 / RG-B (RG-GANTT-1903) — Pour une activité en cours (progress > 0),
+  // la date de début proposée ne peut être antérieure à today. La portion
+  // déjà réalisée reste figée à sa date historique ; seul le reste à faire
+  // (RG-C) est placé à partir de today si la start_date est dans le passé.
+  // v2.2 / RG-V (RG-GANTT-1910) — Le mode "Planification anticipée" suspend
+  // cette règle via `options.ignoreToday=true`.
+  if (!options.ignoreToday && (t.progress ?? 0) > 0) {
+    const today = todayIso()
+    if (today > earliest) earliest = today
   }
   return snapForwardToWorkingDay(earliest)
 }

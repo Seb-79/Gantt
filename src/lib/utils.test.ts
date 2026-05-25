@@ -2,7 +2,7 @@
 // TESTS — fonctions utilitaires Gantt (Vitest)
 // =============================================================================
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   addDaysIso,
   addWorkingDays,
@@ -2411,5 +2411,75 @@ describe('v2.2 / RG-A — progress=100 lockée par le Replan', () => {
     expect(m2).toBeDefined()
     // t1 termine le 05/06 → t2 doit démarrer ≥ 08/06 (lundi suivant).
     expect(m2!.newStart >= '2026-06-08').toBe(true)
+  })
+})
+
+// =============================================================================
+// v2.2 / RG-B (RG-GANTT-1903) — borne basse `today` pour progress > 0
+// =============================================================================
+
+describe('v2.2 / RG-B — borne basse today pour progress > 0', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-10T12:00:00Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('tâche progress=30 avec start_date dans le passé : Replan propose start >= today', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 30,
+        start_date: '2026-06-01', // dans le passé par rapport à today (10/06)
+        end_date: '2026-06-05',
+        charge_jours: 5,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, [], [])
+    expect(moves.length).toBe(1)
+    expect(moves[0].newStart >= '2026-06-10').toBe(true)
+  })
+
+  it('tâche progress=30 avec start_date dans le futur : start_date respectée (RG-L)', () => {
+    // 2026-06-22 = lundi futur par rapport à today=2026-06-10.
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 30,
+        start_date: '2026-06-22',
+        end_date: '2026-06-26',
+        charge_jours: 5,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, [], [])
+    // start_date reste 2026-06-22 puisque > today (RG-L absorbe).
+    if (moves.length > 0) {
+      expect(moves[0].newStart).toBe('2026-06-22')
+    } else {
+      expect(tasks[0].start_date).toBe('2026-06-22')
+    }
+  })
+
+  it('progress=0 : borne basse inchangée (RG-B ne s’applique pas)', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 0,
+        start_date: '2026-06-01', // dans le passé
+        end_date: '2026-06-05',
+        charge_jours: 5,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, [], [])
+    // Sans progress, RG-GANTT-0903 garde start_date dans le passé.
+    expect(moves.length).toBe(0)
   })
 })

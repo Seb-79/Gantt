@@ -1192,7 +1192,10 @@ export function workingDaysBetween(startIso: string, endIso: string): number {
  * @returns Date ISO du jour.
  */
 export function todayIso(): string {
-  return dateToIso(new Date())
+  // v2.3 — Passe par `Date.now()` (et pas `new Date()`) pour permettre aux
+  // tests de mocker la date courante via `vi.spyOn(Date, 'now')` sans avoir
+  // recours à `vi.useFakeTimers()` qui casse les timers de Testing Library.
+  return dateToIso(new Date(Date.now()))
 }
 
 /**

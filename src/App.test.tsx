@@ -30,8 +30,22 @@ function mkState(overrides: Partial<GanttState> = {}): GanttState {
     version: 1,
     current_project_id: 'p1',
     projects: [
-      { id: 'p1', name: 'Projet 1', position: 0 },
-      { id: 'p2', name: 'Projet 2', position: 1 },
+      // v2.3 / RG-GANTT-2100 — project_start_date alignée sur la start_date
+      // de la tâche par défaut (2026-06-01) pour que la borne basse globale
+      // du Replan n'altère pas les scénarios historiques (= aucun move
+      // proposé tant que la tâche démarre à sa date d'origine).
+      {
+        id: 'p1',
+        name: 'Projet 1',
+        position: 0,
+        project_start_date: '2026-06-01',
+      },
+      {
+        id: 'p2',
+        name: 'Projet 2',
+        position: 1,
+        project_start_date: '2026-06-01',
+      },
     ],
     collaborators: [{ id: 'c1', name: 'Alice', color: '#3b82f6', position: 0 }],
     tasks: [
@@ -346,7 +360,16 @@ describe('App — gestion des projets', () => {
   // simplement que la base sera vide après l'opération.
   it('v1.24 / RG-GANTT-1106 — suppression : dernier projet → bouton actif (base vide après)', async () => {
     setupFetchMock(
-      mkState({ projects: [{ id: 'p1', name: 'Seul', position: 0 }] }),
+      mkState({
+        projects: [
+          {
+            id: 'p1',
+            name: 'Seul',
+            position: 0,
+            project_start_date: '2026-05-01',
+          },
+        ],
+      }),
     )
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
@@ -373,6 +396,22 @@ describe('App — gestion des projets', () => {
 /** Helper : état avec une surcharge Alice exactement comme dans le brief. */
 function mkOverloadedState(): GanttState {
   return mkState({
+    // v2.3 — projectStartDate aligné sur t1a.start_date pour ne pas que la
+    // borne basse globale du Replan tire t1a en arrière.
+    projects: [
+      {
+        id: 'p1',
+        name: 'Projet 1',
+        position: 0,
+        project_start_date: '2026-05-15',
+      },
+      {
+        id: 'p2',
+        name: 'Projet 2',
+        position: 1,
+        project_start_date: '2026-05-15',
+      },
+    ],
     collaborators: [
       { id: 'alice', name: 'Alice', color: '#3b82f6', position: 0 },
     ],
@@ -436,6 +475,22 @@ function mkOverloadedState(): GanttState {
 }
 
 describe('App — Replan (non-régression métier)', () => {
+  // v2.3 — Fige today à 2026-05-01 pour que la borne basse globale du Replan
+  // (MAX(projectStartDate, today, ...)) ne tire pas les fixtures historiques
+  // de mai-juin 2026 vers une date plus précoce.
+  let dateNowSpy: ReturnType<typeof vi.spyOn> | null = null
+  beforeEach(() => {
+    // v2.3 — Mocke `Date.now()` SEUL (sans toucher aux timers de Testing
+    // Library) pour figer `todayIso()` à mai 2026. La borne basse globale du
+    // Replan (RG-GANTT-1903 redéfinie) utilise today : sans ce mock, les
+    // fixtures de mai-juin 2026 seraient tirées au today système réel.
+    const fixedNow = new Date('2026-05-15T00:00:00.000Z').getTime()
+    dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(fixedNow)
+  })
+  afterEach(() => {
+    dateNowSpy?.mockRestore()
+  })
+
   it("sans surcharge : alerte 'Aucune surcharge' et aucune modal n'apparaît", async () => {
     // L'état mkState() ne contient qu'une tâche sans collaborateur → aucune
     // surcharge possible → l'algorithme n'a rien à proposer.
@@ -745,6 +800,21 @@ describe("App — bandeau d'incohérence (v1.21)", () => {
 // =============================================================================
 
 describe("App — auto-replan après modification d'une tâche (v1.22)", () => {
+  // v2.3 — Fige today à 2026-05-01 pour que les fixtures de mai 2026 ne soient
+  // pas tirées par la borne basse globale `today` (RG-GANTT-1903 redéfinie).
+  let dateNowSpy: ReturnType<typeof vi.spyOn> | null = null
+  beforeEach(() => {
+    // v2.3 — Mocke `Date.now()` SEUL (sans toucher aux timers de Testing
+    // Library) pour figer `todayIso()` à mai 2026. La borne basse globale du
+    // Replan (RG-GANTT-1903 redéfinie) utilise today : sans ce mock, les
+    // fixtures de mai-juin 2026 seraient tirées au today système réel.
+    const fixedNow = new Date('2026-05-15T00:00:00.000Z').getTime()
+    dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(fixedNow)
+  })
+  afterEach(() => {
+    dateNowSpy?.mockRestore()
+  })
+
   // Réutilise le scénario de surcharge Alice (`mkOverloadedState` plus haut)
   // : 2 tâches qui se chevauchent sur le même collab → le PATCH d'édition
   // est suivi d'un PATCH sur la tâche poussée par le Replan automatique.

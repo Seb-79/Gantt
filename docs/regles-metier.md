@@ -1653,6 +1653,22 @@ et modifiable ultérieurement via la modal Paramètres (RG-GANTT-2101).
 
 **Tests :** `db/index.test.js` → 2 tests `initDb` (colonne NOT NULL + migration ancienne base) ; `server/app.test.js` → « POST accepte project_start_date » + « POST sans → défaut today » + « PATCH modifie project_start_date ».
 
+### RG-GANTT-2103
+
+**(v2.3 — Option γ : `start_date` figée si `progress > 0`)** Une activité
+en cours (`0 < progress < 100`) conserve sa `start_date` historique : le
+Replan ne la recalcule jamais, il ne touche qu'à `end_date`.
+
+`end_date` est calculée comme la consommation du reste à faire
+(`charge_jours × (1 − progress/100)`, RG-GANTT-1904) sur les créneaux
+libres du collaborateur à partir de `MAX(today, start_date)`.
+
+Pour les activités jamais démarrées (`progress = 0`), `start_date` est
+recalculée à la borne basse globale (RG-GANTT-1903). Pour les activités
+terminées (`progress = 100`), tout est figé (RG-GANTT-1902).
+
+**Tests :** `utils.test.ts` → bloc `v2.3 / RG-1903` (4 cas couvrant progress=0/30 × passé/futur).
+
 ### RG-GANTT-2102
 
 **(v2.3 — suppression du concept de démo)** Le code initialisant la base

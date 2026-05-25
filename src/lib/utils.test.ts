@@ -2352,3 +2352,64 @@ describe('v2.2 / RG-INV — invariance de la charge sous Replan (Bug B1)', () =>
     expect(moves2).toEqual([])
   })
 })
+
+// =============================================================================
+// v2.2 / RG-A (RG-GANTT-1902) — progress=100 lockée par le Replan
+// =============================================================================
+
+describe('v2.2 / RG-A — progress=100 lockée par le Replan', () => {
+  it('ne propose aucun move pour une tâche à progress=100', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 100,
+        start_date: '2026-06-01',
+        end_date: '2026-06-05',
+        charge_jours: 5,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+      mkTask('t2', {
+        progress: 0,
+        start_date: '2026-06-08',
+        end_date: '2026-06-12',
+        charge_jours: 5,
+        collaborator_id: 'c2',
+        collaborator_ids: ['c2'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, [], [])
+    // t1 (progress=100) ne doit jamais apparaître dans les moves.
+    expect(moves.find((m) => m.id === 't1')).toBeUndefined()
+  })
+
+  it("bloque l'intervalle de t1 comme obstacle pour les autres tâches du même collab", () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 100,
+        start_date: '2026-06-01',
+        end_date: '2026-06-05', // lundi → vendredi, 5 j ouvrés
+        charge_jours: 5,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+      mkTask('t2', {
+        progress: 0,
+        // Chevauche t1 → la timeline doit pousser t2 APRÈS la fin de t1.
+        start_date: '2026-06-01',
+        end_date: '2026-06-05',
+        charge_jours: 5,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, [], [])
+    const m2 = moves.find((m) => m.id === 't2')
+    expect(m2).toBeDefined()
+    // t1 termine le 05/06 → t2 doit démarrer ≥ 08/06 (lundi suivant).
+    expect(m2!.newStart >= '2026-06-08').toBe(true)
+  })
+})

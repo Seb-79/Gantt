@@ -1772,6 +1772,29 @@ function buildReplanOrder(tasks: Task[]): Task[] {
 }
 
 /**
+ * v2.2 / RG-A (RG-GANTT-1902) — Pré-remplit la timeline des collaborateurs
+ * avec les tâches TERMINÉES (`progress = 100`). Ces tâches sont des obstacles
+ * que le Replan doit contourner mais ne déplace JAMAIS.
+ *
+ * Reprend le rôle structurel de l'ancienne `prefillLockedIntervals` du mode
+ * partial abandonné (RG-GANTT-0906), avec un filtre différent : `progress = 100`
+ * au lieu de `!concernedIds.has(id)`.
+ */
+function prefillCompletedIntervals(
+  tasks: Task[],
+  timeline: Map<string, Array<[string, string]>>,
+): void {
+  for (const t of tasks) {
+    if (t.kind !== 'task') continue
+    if (t.progress !== 100) continue
+    const collabIds = taskCollabIds(t)
+    for (const cId of collabIds) {
+      pushTimelineInterval(timeline, cId, t.start_date, t.end_date)
+    }
+  }
+}
+
+/**
  * v1.18 — Replanifie les tâches d'un projet pour résoudre toute surcharge
  * collaborateur. Fonction PURE : ne mute rien, retourne la liste des
  * déplacements à appliquer (à `PATCH /api/tasks/:id` ensuite).
@@ -1975,9 +1998,15 @@ export function replanTasks(
 
   // Timeline (intervalles fixés) par collaborateur — bornes INCLUSIVES en
   // jours ouvrés (compatibles avec `findFreeSlot`).
+  // v2.2 / RG-A — Pré-remplissage des tâches terminées (progress=100) comme
+  // obstacles : elles bloquent leur créneau mais ne sont JAMAIS déplacées.
   const timeline = new Map<string, Array<[string, string]>>()
+  prefillCompletedIntervals(tasks, timeline)
 
   for (const t of order) {
+    // v2.2 / RG-A — Une tâche à progress=100 est lockée : pas de placement,
+    // pas de move. Elle est déjà dans la timeline via prefillCompletedIntervals.
+    if (t.progress === 100) continue
     placeTaskInTimeline(t, tasksById, proposed, timeline, allocations, absences)
   }
 

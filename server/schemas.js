@@ -79,9 +79,14 @@ const Priority = z
 // PROJETS (v1.8)
 // -----------------------------------------------------------------------------
 
+// v2.3 / RG-GANTT-2000 — `project_start_date` optionnelle au POST (défaut
+// applicatif = today côté DAL). Réutilise le `IsoDate` défini plus haut.
+// La validation RG-2010 ne s'applique qu'au PATCH (à la création, le projet
+// n'a pas encore de tâches).
 export const CreateProjectBody = z.object({
   id: NonEmptyId,
   name: NonEmptyText,
+  project_start_date: IsoDate.optional(),
 })
 
 export const UpdateProjectBody = z

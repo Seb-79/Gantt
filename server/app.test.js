@@ -376,6 +376,29 @@ describe('Projets', () => {
     expect(state.body.projects.length).toBe(2)
   })
 
+  it('v2.3 / RG-GANTT-2000 — POST /api/projects accepte project_start_date', async () => {
+    const created = await request(app)
+      .post('/api/projects')
+      .send({ id: 'p_v23', name: 'V23', project_start_date: '2026-09-01' })
+      .expect(200)
+    expect(created.body.project.project_start_date).toBe('2026-09-01')
+    const state = await request(app)
+      .get('/api/state?project_id=p_v23')
+      .expect(200)
+    expect(
+      state.body.projects.find((p) => p.id === 'p_v23').project_start_date,
+    ).toBe('2026-09-01')
+  })
+
+  it('v2.3 / RG-GANTT-2000 — POST /api/projects sans project_start_date → défaut today', async () => {
+    const created = await request(app)
+      .post('/api/projects')
+      .send({ id: 'p_v23_def', name: 'Def' })
+      .expect(200)
+    const today = new Date().toISOString().slice(0, 10)
+    expect(created.body.project.project_start_date).toBe(today)
+  })
+
   it('PATCH /api/projects/:id renomme', async () => {
     const list = await request(app).get('/api/projects').expect(200)
     const first = list.body.projects[0]

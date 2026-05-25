@@ -445,7 +445,8 @@ function enrichTasksWithAssignments(db, tasks, currentId) {
 export function getFullState(db, projectId) {
   const projects = db
     .prepare(
-      `SELECT id, name, position FROM projects ORDER BY position ASC, id ASC`,
+      `SELECT id, name, position, project_start_date
+         FROM projects ORDER BY position ASC, id ASC`,
     )
     .all()
   const collaborators = db
@@ -559,7 +560,8 @@ function nextProjectPosition(db) {
 export function listProjects(db) {
   return db
     .prepare(
-      `SELECT id, name, position FROM projects ORDER BY position ASC, id ASC`,
+      `SELECT id, name, position, project_start_date
+         FROM projects ORDER BY position ASC, id ASC`,
     )
     .all()
 }
@@ -574,11 +576,15 @@ export function listProjects(db) {
 export function createProject(db, input) {
   const tx = db.transaction(() => {
     const position = nextProjectPosition(db)
-    db.prepare(`INSERT INTO projects(id, name, position) VALUES (?, ?, ?)`).run(
-      input.id,
-      input.name,
-      position,
-    )
+    // v2.3 / RG-GANTT-2000 — Date de démarrage du projet. Si non fournie par
+    // l'appelant, on prend `today` (format ISO YYYY-MM-DD). Toujours stockée
+    // en base — colonne NOT NULL.
+    const startDate =
+      input.project_start_date || new Date().toISOString().slice(0, 10)
+    db.prepare(
+      `INSERT INTO projects(id, name, position, project_start_date)
+         VALUES (?, ?, ?, ?)`,
+    ).run(input.id, input.name, position, startDate)
     const version = bumpVersion(db)
     const project = db
       .prepare(`SELECT * FROM projects WHERE id = ?`)

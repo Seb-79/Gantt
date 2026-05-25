@@ -2376,3 +2376,91 @@ export function descendantIds(taskId: string, tasks: Task[]): Set<string> {
   walk(taskId)
   return out
 }
+
+/**
+ * v2.2 / RG-U (RG-GANTT-1909) — Somme des `charge_jours` des descendants
+ * activités d'un nœud (récursif). Jalons exclus (charge effective = 0).
+ * Helper interne pour `derivePhaseProgress`.
+ */
+function sumDescendantTaskCharges(nodeId: string, tasks: Task[]): number {
+  let total = 0
+  const children = tasks.filter((t) => t.parent_id === nodeId)
+  for (const c of children) {
+    if (c.kind === 'task' && c.charge_jours && c.charge_jours >= 1) {
+      total += c.charge_jours
+    } else if (c.kind === 'phase') {
+      total += sumDescendantTaskCharges(c.id, tasks)
+    }
+  }
+  return total
+}
+
+/**
+ * v2.2 / RG-U (RG-GANTT-1909) — Calcule récursivement le progress dérivé d'une
+ * phase à partir de ses fils (activités, sous-phases ; jalons exclus).
+ *
+ * Formule :
+ *   chargeEffective(c) = charge_jours(c)               si c est une activité
+ *                      | 0                             si c est un jalon
+ *                      | Σ chargeEffective(fils de c) si c est une sous-phase
+ *
+ *   progressEffectif(c) = progress(c)                  si c est une activité
+ *                       | derivePhaseProgress(c)       si c est une sous-phase
+ *                       | (non éligible)               si c est un jalon
+ *
+ *   progress(P) = Σ(chargeEffective(cᵢ) × progressEffectif(cᵢ)) / Σ chargeEffective(cᵢ)
+ *
+ * Cas limites :
+ *   • Σ chargeEffective = 0 → moyenne arithmétique non pondérée des progress
+ *     des fils éligibles.
+ *   • Aucun fils éligible (vide ou que des jalons) → null (affiché vide).
+ *
+ * @param phaseId  Id de la phase racine.
+ * @param tasks    Toutes les tâches du projet.
+ * @returns        Progress dérivé entier 0..100, ou null si non applicable.
+ */
+/**
+ * v2.2 / RG-U — Construit la contribution d'un fils pour le calcul de
+ * progress d'une phase. Extrait pour limiter la complexité cognitive de
+ * `derivePhaseProgress`.
+ */
+function phaseChildContribution(
+  c: Task,
+  tasks: Task[],
+): { charge: number; progress: number } | null {
+  if (c.kind === 'milestone') return null
+  if (c.kind === 'task') {
+    const chg = c.charge_jours && c.charge_jours >= 1 ? c.charge_jours : 0
+    return { charge: chg, progress: c.progress ?? 0 }
+  }
+  // c.kind === 'phase' : récursion.
+  const subProgress = derivePhaseProgress(c.id, tasks)
+  if (subProgress === null) return null
+  return {
+    charge: sumDescendantTaskCharges(c.id, tasks),
+    progress: subProgress,
+  }
+}
+
+export function derivePhaseProgress(
+  phaseId: string,
+  tasks: Task[],
+): number | null {
+  const phase = tasks.find((t) => t.id === phaseId)
+  if (!phase || phase.kind !== 'phase') return null
+  const contributions: Array<{ charge: number; progress: number }> = []
+  for (const c of tasks) {
+    if (c.parent_id !== phaseId) continue
+    const contrib = phaseChildContribution(c, tasks)
+    if (contrib) contributions.push(contrib)
+  }
+  if (contributions.length === 0) return null
+  const totalCharge = contributions.reduce((s, c) => s + c.charge, 0)
+  if (totalCharge === 0) {
+    // Cas limite : moyenne arithmétique non pondérée.
+    const sum = contributions.reduce((s, c) => s + c.progress, 0)
+    return Math.round(sum / contributions.length)
+  }
+  const weighted = contributions.reduce((s, c) => s + c.charge * c.progress, 0)
+  return Math.round(weighted / totalCharge)
+}

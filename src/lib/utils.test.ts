@@ -15,6 +15,7 @@ import {
   checkCoherence,
   clampDayWidth,
   dateToIso,
+  derivePhaseProgress,
   dateToX,
   daysBetweenIso,
   defaultWindow,
@@ -2547,5 +2548,94 @@ describe('v2.2 / RG-C — consommation du reste à faire', () => {
     const moves = replanTasks(tasks, [], [])
     // Lockée par RG-A → aucun move.
     expect(moves.find((m) => m.id === 't1')).toBeUndefined()
+  })
+})
+
+// =============================================================================
+// v2.2 / RG-U (RG-GANTT-1909) — progress phase dérivé (moyenne pondérée)
+// =============================================================================
+
+describe('v2.2 / RG-U — progress phase dérivé', () => {
+  it('phase avec 2 activités (10 à 20 %, 30 à 80 %) → 65 %', () => {
+    const tasks: Task[] = [
+      mkTask('p1', { kind: 'phase', parent_id: null }),
+      mkTask('t1', {
+        kind: 'task',
+        parent_id: 'p1',
+        charge_jours: 10,
+        progress: 20,
+      }),
+      mkTask('t2', {
+        kind: 'task',
+        parent_id: 'p1',
+        charge_jours: 30,
+        progress: 80,
+      }),
+    ]
+    // (10*20 + 30*80) / (10+30) = (200+2400)/40 = 2600/40 = 65.
+    expect(derivePhaseProgress('p1', tasks)).toBe(65)
+  })
+
+  it('phase imbriquée : récursion correcte', () => {
+    const tasks: Task[] = [
+      mkTask('p1', { kind: 'phase', parent_id: null }),
+      mkTask('p2', { kind: 'phase', parent_id: 'p1' }),
+      mkTask('t1', {
+        kind: 'task',
+        parent_id: 'p2',
+        charge_jours: 10,
+        progress: 50,
+      }),
+      mkTask('t2', {
+        kind: 'task',
+        parent_id: 'p1',
+        charge_jours: 10,
+        progress: 100,
+      }),
+    ]
+    // p2 = 50, p1 = (10*50 + 10*100) / 20 = 75.
+    expect(derivePhaseProgress('p2', tasks)).toBe(50)
+    expect(derivePhaseProgress('p1', tasks)).toBe(75)
+  })
+
+  it('phase ne contenant que des jalons → null', () => {
+    const tasks: Task[] = [
+      mkTask('p1', { kind: 'phase' }),
+      mkTask('j1', { kind: 'milestone', parent_id: 'p1' }),
+      mkTask('j2', { kind: 'milestone', parent_id: 'p1' }),
+    ]
+    expect(derivePhaseProgress('p1', tasks)).toBeNull()
+  })
+
+  it('phase vide → null', () => {
+    const tasks: Task[] = [mkTask('p1', { kind: 'phase' })]
+    expect(derivePhaseProgress('p1', tasks)).toBeNull()
+  })
+
+  it('cas limite : Σ charges = 0 → moyenne arithmétique non pondérée', () => {
+    // Théorique : 2 tâches sans charge_jours (= 0 → ignorées dans la pondération).
+    const tasks: Task[] = [
+      mkTask('p1', { kind: 'phase' }),
+      mkTask('t1', {
+        kind: 'task',
+        parent_id: 'p1',
+        charge_jours: 0,
+        progress: 30,
+      }),
+      mkTask('t2', {
+        kind: 'task',
+        parent_id: 'p1',
+        charge_jours: 0,
+        progress: 70,
+      }),
+    ]
+    // Moyenne arithmétique : (30 + 70) / 2 = 50.
+    expect(derivePhaseProgress('p1', tasks)).toBe(50)
+  })
+
+  it('id inconnu ou non-phase → null', () => {
+    const tasks: Task[] = [mkTask('t1', { kind: 'task' })]
+    expect(derivePhaseProgress('inconnu', tasks)).toBeNull()
+    expect(derivePhaseProgress('t1', tasks)).toBeNull()
   })
 })

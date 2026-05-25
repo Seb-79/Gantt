@@ -715,6 +715,54 @@ du bord droit dans le diagramme, où `charge_jours` n'est pas envoyé.
 
 **Tests :** `db/index.test.js` → « v2.2 / RG-W — PATCH avec start+end+charge tous explicites » ; `App.test.tsx` → « v2.2 / RG-W — chaque PATCH de replan inclut charge_jours ».
 
+### RG-GANTT-1902
+
+**(v2.2 — RG-A)** Une activité à `progress = 100` est lockée par le
+Replan : ses dates ne sont jamais modifiées. Elle est ajoutée à la
+timeline des collaborateurs affectés comme obstacle (intervalle
+bloqué `[start_date, end_date]`) pour empêcher d'autres tâches de
+s'y superposer.
+
+**Tests :** `utils.test.ts` → « v2.2 / RG-A — progress=100 lockée par le Replan ».
+
+### RG-GANTT-1903
+
+**(v2.2 — RG-B)** Pour une activité à `progress > 0`, la date de
+début proposée par le Replan ne peut être antérieure à la date du
+jour (`today`). La portion déjà réalisée reste figée à sa date
+historique ; seul le reste à faire est candidat au placement par le
+Replan. La borne basse de placement est donc
+`max(t.start_date, pred.end + lag, SNET, today)`.
+
+**Tests :** `utils.test.ts` → « v2.2 / RG-B — borne basse today pour progress > 0 ».
+
+### RG-GANTT-1904
+
+**(v2.2 — RG-C)** Le Replan consomme `charge_jours × (1 − progress/100)`
+jours-allocation (= reste à faire), arrondi au jour ouvré supérieur
+(minimum 1). La charge totale persistée n'est jamais modifiée (RG-1900).
+
+**Tests :** `utils.test.ts` → « v2.2 / RG-C — consommation du reste à faire ».
+
+### RG-GANTT-1909
+
+**(v2.2 — RG-U)** Le `progress` d'une **phase** est dérivé
+automatiquement de ses fils selon la moyenne pondérée :
+`progress(P) = Σ(chargeEffective(cᵢ) × progressEffectif(cᵢ)) / Σ chargeEffective(cᵢ)`.
+
+Les jalons (`kind='milestone'`) sont exclus du calcul (poids zéro).
+Les sous-phases contribuent récursivement avec leur charge effective
+(= somme des charges de leurs descendants activités) et leur progress
+dérivé. Si `Σ chargeEffective = 0`, on retombe sur la moyenne
+arithmétique non pondérée des progress des fils éligibles. Si aucun
+fils éligible (phase vide ou ne contenant que des jalons),
+`progress(P) = null` (affiché vide).
+
+Le champ `progress` d'une phase n'est plus saisissable dans le
+TaskEditor : c'est une lecture dérivée.
+
+**Tests :** `utils.test.ts` → « v2.2 / RG-U — progress phase dérivé ».
+
 ---
 
 ## Famille 11 — Calendrier et jours ouvrés

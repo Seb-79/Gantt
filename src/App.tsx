@@ -287,21 +287,21 @@ export default function App() {
    * v2.1 / F2.9.C — État de blocage du Replan par manque d'allocation. Null
    * = pas de blocage. Quand non-null, le `ReplanAllocationFixDialog`
    * (F2.9.D) s'ouvre et propose au user d'étendre les allocations en lot
-   * avant de relancer le replan. `scope` mémorise « full » ou « partial »
-   * pour relancer la bonne portée après extension.
+   * avant de relancer le replan.
+   * v2.2 — Le champ `scope` (full|partial) est retiré : RG-GANTT-0905
+   * abandonnée.
    */
   const [replanShortfall, setReplanShortfall] = useState<{
     items: ReplanShortfallItem[]
-    scope: 'full' | 'partial'
   } | null>(null)
   /**
-   * v2.1 / F2.9.C — Scope mémorisé pour re-déclencher `handleOpenReplan`
+   * v2.1 / F2.9.C — Drapeau pour re-déclencher `handleOpenReplan`
    * automatiquement après que les extensions d'allocation ont été appliquées
-   * (le state React a été rafraîchi via fetchState). Null = pas en attente.
+   * (le state React a été rafraîchi via fetchState). v2.2 — devient un
+   * booléen (plus de scope à mémoriser).
    */
-  const [pendingReplanScope, setPendingReplanScope] = useState<
-    'full' | 'partial' | null
-  >(null)
+  const [pendingReplanAfterExtension, setPendingReplanAfterExtension] =
+    useState<boolean>(false)
   /**
    * v1.20 — Set d'ids de phases actuellement repliées. Persisté en
    * localStorage (clé `gantt.collapsedPhases`, JSON string[]). Quand une
@@ -1281,21 +1281,14 @@ export default function App() {
   }, [])
 
   /**
-   * v1.18 / v1.21 — Ouvre la modal d'aperçu de replanification.
-   *
-   *   • `scope='full'`    : toutes les tâches sont candidates au déplacement
-   *                         (comportement historique).
-   *   • `scope='partial'` : seules les tâches concernées par les incohérences
-   *                         actuelles (et leurs successeurs transitifs) sont
-   *                         déplaçables ; les autres restent verrouillées
-   *                         comme obstacles dans le timeline.
+   * v1.18 / v2.2 — Ouvre la modal d'aperçu de replanification (mode unique
+   * « complet », le Replan partiel ayant été abandonné en v2.2 —
+   * RG-GANTT-0905 supprimée).
    *
    * Calcule les déplacements via la fonction pure `replanTasks` ; si aucun
    * déplacement n'est nécessaire, affiche un alert et n'ouvre pas la modal.
-   *
-   * @param scope  Portée du replan (cf. ci-dessus).
    */
-  const handleOpenReplan = async (scope: 'full' | 'partial' = 'full') => {
+  const handleOpenReplan = async () => {
     if (!state) return
     // v2.0 / F2 — Le replan consomme la capacité quotidienne réelle de chaque
     // collab : on lui passe `member_allocations` du projet courant.
@@ -1316,19 +1309,13 @@ export default function App() {
         absences,
       )
       if (shortfallItems.length > 0) {
-        setReplanShortfall({ items: shortfallItems, scope })
+        setReplanShortfall({ items: shortfallItems })
         return
       }
     }
-    // v2.2 — Replan partiel abandonné (RG-GANTT-0905 supprimée) ; toutes les
-    // activités sont candidates au déplacement.
     const moves = replanTasks(orderedTasks, allocs, absences)
     if (moves.length === 0) {
-      await askAlert(
-        scope === 'partial'
-          ? 'Aucun déplacement nécessaire — les incohérences ne peuvent pas être résolues sans déverrouiller d’autres tâches (essayez « Replan complet »).'
-          : 'Aucune surcharge détectée — rien à replanifier.',
-      )
+      await askAlert('Aucune surcharge détectée — rien à replanifier.')
       return
     }
     setReplanPreview(moves)
@@ -1337,8 +1324,8 @@ export default function App() {
   /**
    * v2.1 / F2.9.C — Callback du `ReplanAllocationFixDialog` : exécute en
    * série les plans d'extension validés par l'utilisateur, puis re-déclenche
-   * automatiquement `handleOpenReplan(scope)` via `pendingReplanScope` une
-   * fois le state rafraîchi (cf. useEffect plus bas).
+   * automatiquement `handleOpenReplan` via `pendingReplanAfterExtension`
+   * une fois le state rafraîchi (cf. useEffect plus bas).
    *
    * Si l'extension échoue à mi-chemin, `handleExtendAllocations` affiche déjà
    * un `askAlert` et le dialog reste ouvert (état `replanShortfall` non
@@ -1346,13 +1333,12 @@ export default function App() {
    */
   const handleApplyReplanExtensions = async (plans: ExtensionPlan[]) => {
     if (!replanShortfall) return
-    const scope = replanShortfall.scope
     try {
       for (const plan of plans) {
         await handleExtendAllocations(plan)
       }
       setReplanShortfall(null)
-      setPendingReplanScope(scope)
+      setPendingReplanAfterExtension(true)
     } catch {
       // L'erreur a déjà été affichée par `handleExtendAllocations`.
     }
@@ -1361,22 +1347,21 @@ export default function App() {
   /**
    * v2.1 / F2.9.C — Quand des extensions ont été appliquées en amont d'un
    * replan, on attend que le `state` React soit rafraîchi (changement de
-   * `version`) avant de relancer `handleOpenReplan` avec le scope mémorisé.
-   * Évite la race condition : appeler `handleOpenReplan` juste après
-   * `fetchState()` lirait l'ancien `state` (le setState est asynchrone).
+   * `version`) avant de relancer `handleOpenReplan`. Évite la race condition :
+   * appeler `handleOpenReplan` juste après `fetchState()` lirait l'ancien
+   * `state` (le setState est asynchrone).
    */
   useEffect(() => {
-    if (!pendingReplanScope || !state) return
-    const scope = pendingReplanScope
+    if (!pendingReplanAfterExtension || !state) return
     /* eslint-disable react-hooks/set-state-in-effect */
-    setPendingReplanScope(null)
+    setPendingReplanAfterExtension(false)
     /* eslint-enable react-hooks/set-state-in-effect */
-    void handleOpenReplan(scope)
+    void handleOpenReplan()
     // `handleOpenReplan` n'est pas listé en deps : il dépend de `state` et
     // `orderedTasks` qui sont déjà couverts par le dep `state?.version` via
     // re-création du closure à chaque render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state?.version, pendingReplanScope])
+  }, [state?.version, pendingReplanAfterExtension])
 
   /**
    * v1.18 — Applique les déplacements de l'aperçu (modal Replan). Délègue à
@@ -1674,7 +1659,7 @@ export default function App() {
           >
             <button
               className="h-7 px-2 text-sm rounded bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed"
-              onClick={() => handleOpenReplan('full')}
+              onClick={() => handleOpenReplan()}
               disabled={!state || isGlobalView}
             >
               🔄 Replan
@@ -1715,8 +1700,7 @@ export default function App() {
             {view === 'gantt' && (
               <CoherenceAlert
                 issues={coherenceIssues}
-                onReplanFull={() => handleOpenReplan('full')}
-                onReplanPartial={() => handleOpenReplan('partial')}
+                onReplan={() => handleOpenReplan()}
               />
             )}
             {/* v2.0 / F1 — Trois vues désormais : 'gantt', 'workload' ou
@@ -1827,7 +1811,7 @@ export default function App() {
           insuffisantes (Q4=B : récapitulatif unique, cochable, avec date + %
           par tâche). S'ouvre depuis `handleOpenReplan` et se ferme soit par
           « Annuler le replan », soit après que les extensions choisies ont
-          été appliquées (auto-relance du replan via pendingReplanScope). */}
+          été appliquées (auto-relance du replan via pendingReplanAfterExtension). */}
       {replanShortfall && state && state.current_project_id && (
         <ReplanAllocationFixDialog
           items={replanShortfall.items}

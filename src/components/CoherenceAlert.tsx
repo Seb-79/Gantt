@@ -1,14 +1,11 @@
 // =============================================================================
-// COMPOSANT CoherenceAlert — Gantt v1.21
+// COMPOSANT CoherenceAlert — Gantt v1.21 (v2.2 : Replan partiel abandonné)
 // =============================================================================
 // Bandeau (et non popup) affiché AU-DESSUS du planning quand `checkCoherence`
 // remonte au moins une incohérence (surcharge, prédécesseur, priorité).
 //
-// L'utilisateur a deux actions pour résoudre :
-//   • Replan COMPLET : relance la replanification sur toutes les tâches.
-//   • Replan PARTIEL : ne replanifie que les tâches concernées par les
-//     incohérences (et leurs successeurs transitifs) ; les autres tâches
-//     restent verrouillées à leurs dates actuelles.
+// v2.2 — RG-GANTT-0905 (Replan partiel) abandonnée : un seul bouton « Replan
+// complet » qui replanifie l'intégralité du projet.
 //
 // Le bandeau disparaît automatiquement quand `issues.length === 0`.
 // =============================================================================
@@ -18,27 +15,20 @@ import type { CoherenceIssue } from '../lib/utils'
 interface Props {
   /** Incohérences à afficher (cf. `checkCoherence`). Vide → bandeau caché. */
   issues: CoherenceIssue[]
-  /** Lance un Replan COMPLET (toutes les tâches sont candidates au déplacement). */
-  onReplanFull: () => void
-  /** Lance un Replan PARTIEL (seules les tâches impliquées + successeurs). */
-  onReplanPartial: () => void
+  /** Lance un Replan (toutes les tâches sont candidates au déplacement). */
+  onReplan: () => void
 }
 
 /**
- * v1.21 — Affiche un bandeau d'alerte récapitulant les incohérences du
+ * v1.21 / v2.2 — Affiche un bandeau d'alerte récapitulant les incohérences du
  * projet. Couleur :
  *   • rouge (erreur)   si au moins une issue `severity === 'error'`
  *   • orange (warning) sinon (priorité seule).
  *
- * @param issues          Issues à afficher (Vide → rend `null`).
- * @param onReplanFull    Handler du bouton « Replan complet ».
- * @param onReplanPartial Handler du bouton « Replan partiel ».
+ * @param issues    Issues à afficher (Vide → rend `null`).
+ * @param onReplan  Handler du bouton « Replan complet ».
  */
-export default function CoherenceAlert({
-  issues,
-  onReplanFull,
-  onReplanPartial,
-}: Props) {
+export default function CoherenceAlert({ issues, onReplan }: Props) {
   if (issues.length === 0) return null
   const hasError = issues.some((i) => i.severity === 'error')
   // Palette : rouge si au moins une erreur, orange sinon.
@@ -95,16 +85,8 @@ export default function CoherenceAlert({
         <div className="flex flex-col gap-1 shrink-0">
           <button
             type="button"
-            className="h-7 px-2 text-xs rounded bg-amber-500 text-white hover:bg-amber-600 whitespace-nowrap"
-            onClick={onReplanPartial}
-            title="Replanifier uniquement les tâches en incohérence (et leurs successeurs)"
-          >
-            🔧 Replan partiel
-          </button>
-          <button
-            type="button"
             className="h-7 px-2 text-xs rounded border border-slate-300 bg-white hover:bg-slate-100 whitespace-nowrap"
-            onClick={onReplanFull}
+            onClick={onReplan}
             title="Replanifier l'intégralité du projet"
           >
             🔄 Replan complet

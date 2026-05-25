@@ -130,13 +130,14 @@ Le nouveau Replan est un **GPS qui recalcule en permanence l'itinéraire le plus
 
 #### RG-GANTT-2001 — **Modal « Paramètres du projet »**
 
-> Une modal « ⚙️ Paramètres du projet » accessible depuis le sélecteur de projet regroupe les réglages projet :
+> Une modal « Paramètres du projet » accessible via le bouton crayon ✏️ déjà existant dans la barre du sélecteur de projet (à côté des boutons ➕ créer et 🗑️ supprimer) regroupe les réglages éditables du projet :
 >
-> - Nom du projet (renommage)
-> - Date de démarrage (`project_start_date`)
-> - Toggle « Planification anticipée » (RG-GANTT-1910)
+> - **Nom du projet** (champ texte ; remplace le mécanisme de renommage existant s'il y en avait un autre).
+> - **Date de démarrage** (`project_start_date`, date picker).
 >
-> L'ancien emplacement du toggle (à côté du bouton Replan dans la barre d'action) est retiré au profit de cet emplacement unique.
+> Le toggle « Planification anticipée » (RG-GANTT-1910) **reste à son emplacement actuel** (à côté du bouton Replan dans la barre d'action), il n'est pas déplacé dans la modal. C'est un geste fréquent qui mérite un accès rapide.
+>
+> À la création d'un nouveau projet (bouton ➕), un dialog équivalent demande **nom + date de démarrage** (défaut : `today`).
 
 #### RG-GANTT-2002 — **Suppression du concept de démo**
 
@@ -208,6 +209,20 @@ Le nouveau Replan est un **GPS qui recalcule en permanence l'itinéraire le plus
 >
 > Comportement déjà conforme dans le code actuel (`placeTaskInTimeline` ne consulte aucune timeline si `collabIds.length === 0`).
 
+#### RG-GANTT-2010 — **Validation de la date de démarrage du projet**
+
+> À la modification de la date de démarrage d'un projet (via la modal Paramètres, RG-GANTT-2001), la nouvelle valeur est **rejetée avec une erreur** si elle est postérieure à la `start_date` d'au moins une activité du projet ayant `progress > 0` (en cours ou terminée).
+>
+> Justification : les activités à `progress > 0` ont leur `start_date` **figée** (RG-GANTT-2003). Une date de démarrage projet postérieure créerait une incohérence définitive (la tâche démarre avant le projet).
+>
+> Les activités à `progress = 0` ne sont pas concernées : leur `start_date` est recalculée par le prochain Replan, qui les ramène à la nouvelle date projet.
+>
+> Message d'erreur affiché dans la modal :
+>
+> > _« Impossible de définir la date de démarrage au YYYY-MM-DD : la tâche "X" est déjà démarrée le YYYY-MM-DD. Choisissez une date antérieure ou éditez d'abord les tâches concernées. »_
+>
+> La règle est implémentée **côté serveur** (DAL `updateProject`) pour garantir l'invariant côté base, **et** côté client (validation immédiate dans la modal pour UX) — défense en profondeur.
+
 ### 2.5 Tableau récapitulatif final des RG (après refonte)
 
 | Numéro            | Nom court                                   | Statut                       |
@@ -234,6 +249,7 @@ Le nouveau Replan est un **GPS qui recalcule en permanence l'itinéraire le plus
 | **RG-GANTT-2007** | **Jalon sans pred = project_start**         | **Nouvelle**                 |
 | **RG-GANTT-2008** | **Phase vide = project_start**              | **Nouvelle**                 |
 | **RG-GANTT-2009** | **Activité sans collab = capacité infinie** | **Nouvelle (formalisation)** |
+| **RG-GANTT-2010** | **Validation date démarrage projet**        | **Nouvelle**                 |
 | RG-GANTT-0903     | ~~Jamais vers le passé~~                    | **Supprimée**                |
 | RG-GANTT-1905     | ~~RG-L : sans alerte~~                      | **Supprimée**                |
 
@@ -503,61 +519,57 @@ Aucun wipe automatique. Les données seedées de la démo (projet 1 avec ses tâ
 
 ## 7. Découpage en lots
 
-### Lot R1 — Date de démarrage du projet (fondation)
+Le découpage est en **4 lots** mergeables indépendamment. R1 et R2 sont fusionnés parce que la nouvelle borne basse (R2) a besoin de `project_start_date` (R1) pour exister — pas de valeur l'un sans l'autre.
 
-**Périmètre** : RG-GANTT-2000, RG-GANTT-2001, RG-GANTT-2002.
+### Lot L1 — Fondation projet + refonte borne basse + suppression démo
 
-- Migration DB : nouvelle colonne `project_start_date`.
-- API : POST/PATCH/GET projets enrichis.
-- UI : dialog de création de projet, modal Paramètres du projet.
-- Suppression de la démo.
+**Périmètre** : RG-GANTT-2000, RG-GANTT-2001, RG-GANTT-2002, RG-GANTT-2010, RG-GANTT-1903 (redéfinie), RG-GANTT-1910 (redéfinie), suppression RG-GANTT-0903.
 
-**Critère de succès** : un projet a une `project_start_date` éditable. La démo n'existe plus en code.
+- Migration DB : nouvelle colonne `project_start_date` sur `projects`.
+- API : POST `/api/projects` accepte `project_start_date` ; nouveau PATCH `/api/projects/:id`. Validation RG-2010 côté serveur (refuse si date > MIN start_date des activités à `progress > 0`).
+- UI :
+  - Dialog de création de projet (nom + date démarrage, défaut today).
+  - Modal Paramètres ouverte par le bouton crayon ✏️ existant (nom + date).
+  - Validation client RG-2010 dans la modal.
+- Suppression de `db/demo-state.js` + appel `seedDemo()` au boot.
+- Moteur : `computeReplanEarliestStart` et `replanTasks` reçoivent `project_start_date` ; suppression de la garde `let earliest = t.start_date` (clef de RG-0903). Toggle « Planification anticipée » continue de basculer le `today` dans la borne basse.
+- Catalogue RG mis à jour.
 
-### Lot R2 — Refonte de la borne basse globale du Replan
+**Critère de succès** : un projet a une `project_start_date` éditable ; une tâche à `progress=0` placée loin dans le futur est ramenée à la borne basse globale au prochain Replan ; la modif de date projet est bloquée si elle dépasse une tâche en cours.
 
-**Périmètre** : RG-GANTT-1903 redéfinie, RG-GANTT-1910 redéfinie, suppression de RG-GANTT-0903.
+### Lot L2 — Option γ raffinée : `start_date` figée si `progress > 0`
 
-- Modification de `computeReplanEarliestStart` pour utiliser `project_start_date` comme borne basse.
-- Adaptation de `replanTasks` pour recevoir `project_start_date` en paramètre.
-- Câblage du paramètre dans `App.tsx` (Replan manuel + auto-replan).
-- Suppression de la garde `let earliest = t.start_date` (clef de RG-0903).
-- Mise à jour du catalogue RG.
+**Périmètre** : RG-GANTT-2003, RG-GANTT-1907 (redéfinie).
 
-**Critère de succès** : une tâche à `progress=0` placée loin dans le futur est ramenée à la borne basse globale au prochain Replan.
+- `placeTaskInTimeline` : si `progress > 0`, `newStart = t.start_date` (figée) ; consommation de `reste_à_faire` à partir de `MAX(today, start_date)`.
+- TaskEditor : champ `start_date` grisé en lecture seule si `progress > 0`. Édition autorisée si `progress = 0` OU au passage `progress = 0 → > 0` dans le même save.
+- GanttChart : drag&drop horizontal désactivé pour les barres à `progress > 0`.
+- Tests unitaires RG-GANTT-2003.
+- Catalogue RG mis à jour.
 
-### Lot R3 — Option γ raffinée : `start_date` figée si `progress > 0`
+**Critère de succès** : une tâche en cours conserve sa `start_date` historique au fil des Replans ; seule l'`end_date` glisse selon le reste à faire.
 
-**Périmètre** : RG-GANTT-2003, RG-GANTT-1907 redéfinie.
-
-- Modification de `placeTaskInTimeline` : si `progress > 0`, `newStart = t.start_date` (figée), consommation de `reste_à_faire` à partir de `MAX(today, start_date)`.
-- TaskEditor : champ `start_date` grisé si `progress > 0`.
-- GanttChart : drag&drop horizontal désactivé si `progress > 0`.
-- Cas de passage `progress = 0 → > 0` : édition de `start_date` autorisée dans le même save.
-
-**Critère de succès** : tests unitaires RG-GANTT-2003 verts.
-
-### Lot R4 — Cohérence Replan ↔ Plan de charge ↔ détection de surcharge
+### Lot L3 — Cohérence Replan ↔ Plan de charge ↔ détection de surcharge
 
 **Périmètre** : RG-GANTT-2004, RG-GANTT-2005.
 
 - `replanTasks` retourne désormais `ReplanResult = { moves, timeline }`.
-- `computeWorkload` accepte la timeline en entrée et l'utilise comme source de vérité.
-- `detectOverloads` utilise aussi la timeline (les anciennes plages `[start, end]` ne sont plus consultées pour le calcul de surcharge).
-- App.tsx mémoïse le résultat du Replan pour alimenter `WorkloadChart` et `CoherenceAlert`.
+- `computeWorkload` accepte la timeline en entrée et l'utilise comme source de vérité (plus de lecture naïve des plages `[start_date, end_date]`).
+- `detectOverloads` utilise aussi la timeline.
+- App.tsx : `useMemo` sur `replanTasks(...)` à chaque rendu (stratégie « replan à la volée » de la § 4), résultat partagé à `WorkloadChart` et `CoherenceAlert`.
 
-**Critère de succès** : pas de fausse surcharge dans le Plan de charge en présence de tâches en cours avec chevauchement visuel.
+**Critère de succès** : pas de fausse surcharge dans le Plan de charge lorsque deux tâches en cours ont des plages `[start, end]` qui se chevauchent visuellement mais sont consommées séquentiellement par le moteur.
 
-### Lot R5 — Cas particuliers
+### Lot L4 — Cas particuliers
 
 **Périmètre** : RG-GANTT-2006, RG-GANTT-2007, RG-GANTT-2008, RG-GANTT-2009.
 
-- Prédécesseur terminé dans le futur : ignoré + alerte.
-- Jalon sans prédécesseur : `project_start_date`.
-- Phase vide : `project_start_date`.
-- Activité sans collab : capacité infinie (formalisation, code déjà conforme).
+- `computeReplanEarliestStart` : ignorer la contrainte de prédécesseur si `pred.progress = 100` et `pred.end_date > today` ; remonter une alerte dans le bandeau.
+- Jalon sans prédécesseur : placé à la borne basse globale comme une activité.
+- Phase vide : `start_date = end_date = project_start_date`.
+- Activité sans collab : formalisation (le code est déjà conforme), tests de non-régression.
 
-**Critère de succès** : alertes spécifiques affichées dans les cas limites ; comportement homogène.
+**Critère de succès** : alertes spécifiques affichées dans les cas limites ; comportement homogène et documenté.
 
 ---
 

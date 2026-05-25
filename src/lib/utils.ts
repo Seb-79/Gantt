@@ -1905,15 +1905,24 @@ function placeTaskInTimeline(
   allocations: MemberAllocation[],
   absences: CollaboratorAbsence[],
 ): void {
-  // v2.0 — La charge est désormais lue depuis `task.charge_jours` (source de
+  // v2.0 — La charge totale est lue depuis `task.charge_jours` (source de
   // vérité). Pour les tâches issues de bases anciennes ou de tests qui ne
   // l'auraient pas encore peuplée, on retombe sur l'écart courant pour rester
   // rétro-compatible (filet de sécurité ; la migration `ensureChargeColumn`
   // peuple toujours la colonne au boot).
-  const charge =
+  const totalCharge =
     t.charge_jours && t.charge_jours >= 1
       ? t.charge_jours
       : Math.max(1, workingDaysBetween(t.start_date, t.end_date))
+  // v2.2 / RG-C (RG-GANTT-1904) — Le Replan ne consomme que le RESTE À FAIRE :
+  //   effectiveCharge = totalCharge × (1 − progress/100), arrondi au sup, min 1.
+  // RG-INV (RG-GANTT-1900) — La charge totale persistée reste inchangée ;
+  // effectiveCharge est uniquement utilisée pour le placement.
+  const progressFrac = Math.max(0, Math.min(100, t.progress ?? 0)) / 100
+  const effectiveCharge = Math.max(
+    1,
+    Math.ceil(totalCharge * (1 - progressFrac)),
+  )
   const earliest = computeReplanEarliestStart(t, tasksById, proposed)
   // v2.0 / F6 — Liste multi-collab : on lit `collaborators[]` (source de
   // vérité depuis F6) avec fallback sur l'alias `collaborator_id`. La timeline
@@ -1926,7 +1935,7 @@ function placeTaskInTimeline(
   let newStart = earliest
   for (const cId of collabIds) {
     const intervals = timeline.get(cId) || []
-    const candidate = findFreeSlot(intervals, earliest, charge)
+    const candidate = findFreeSlot(intervals, earliest, effectiveCharge)
     if (candidate > newStart) newStart = candidate
   }
   // v2.0 / F2 — La fin est calculée en consommant la capacité quotidienne
@@ -1935,7 +1944,8 @@ function placeTaskInTimeline(
   // jour (lecture multiplicative).
   // v2.0 / F6 — En multi-collab, la capacité du jour est la SOMME des
   // contributions de tous les affectés (Q12a additif uniforme).
-  const newEnd = computeEndFromCharge(newStart, charge, {
+  // v2.2 / RG-C — La consommation porte sur `effectiveCharge` (reste à faire).
+  const newEnd = computeEndFromCharge(newStart, effectiveCharge, {
     projectId: t.project_id,
     collaboratorId: t.collaborator_id,
     collaboratorIds: collabIds.length > 0 ? collabIds : undefined,

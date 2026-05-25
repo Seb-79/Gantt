@@ -2483,3 +2483,69 @@ describe('v2.2 / RG-B — borne basse today pour progress > 0', () => {
     expect(moves.length).toBe(0)
   })
 })
+
+// =============================================================================
+// v2.2 / RG-C (RG-GANTT-1904) — consomme uniquement le reste à faire
+// =============================================================================
+
+describe('v2.2 / RG-C — consommation du reste à faire', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-01T12:00:00Z'))
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it('tâche progress=50 charge=10 : Replan place 5 jours ouvrés (la moitié)', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 50,
+        start_date: '2026-06-01', // lundi
+        end_date: '2026-06-12', // ancien end basé sur 10 j ouvrés
+        charge_jours: 10,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, [], [])
+    expect(moves.length).toBe(1)
+    const m = moves[0]
+    // newStart = 2026-06-01 (today). newEnd = start + 5 j ouvrés = vendredi 05/06.
+    expect(m.newStart).toBe('2026-06-01')
+    expect(m.newEnd).toBe('2026-06-05')
+    expect(m.charge_jours).toBe(10) // charge totale préservée (RG-INV).
+  })
+
+  it('progress=0 (par défaut) : comportement identique à v2.1 (charge complète)', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 0,
+        start_date: '2026-06-01',
+        end_date: '2026-06-12', // 10 j ouvrés
+        charge_jours: 10,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, [], [])
+    // Pour progress=0 sans surcharge, le moteur ne propose un move que si
+    // l'end calculé diffère. Sans allocation %, end = start + 10 j ouvrés = 12/06.
+    expect(moves.length).toBe(0)
+  })
+
+  it('progress=100 : pas dans les moves (RG-A), pas concerné par RG-C', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 100,
+        start_date: '2026-06-01',
+        end_date: '2026-06-12',
+        charge_jours: 10,
+        collaborator_id: 'c1',
+      }),
+    ]
+    const moves = replanTasks(tasks, [], [])
+    // Lockée par RG-A → aucun move.
+    expect(moves.find((m) => m.id === 't1')).toBeUndefined()
+  })
+})

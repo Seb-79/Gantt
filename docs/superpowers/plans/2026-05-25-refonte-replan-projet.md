@@ -82,7 +82,7 @@ Repérer où sont déclarées les colonnes de `projects` et où sont gérées le
 Dans `db/index.test.js`, ajouter dans le `describe` du schéma projets :
 
 ```js
-it('v2.3 / RG-GANTT-2000 — la colonne projects.project_start_date existe avec un défaut', () => {
+it('v2.3 / RG-GANTT-2100 — la colonne projects.project_start_date existe avec un défaut', () => {
   const cols = db.prepare('PRAGMA table_info(projects)').all()
   const col = cols.find((c) => c.name === 'project_start_date')
   expect(col).toBeDefined()
@@ -97,7 +97,7 @@ Lancer : `npm test -- --run db/index.test.js -t "project_start_date"`. Attendu :
 Localiser la fonction d'init (souvent une longue fonction qui crée toutes les tables si absentes + lance des `ALTER TABLE ... ADD COLUMN` idempotents). Ajouter, dans le bloc de migrations idempotentes :
 
 ```js
-// v2.3 / RG-GANTT-2000 — Ajout de project_start_date sur projects.
+// v2.3 / RG-GANTT-2100 — Ajout de project_start_date sur projects.
 // Par défaut : '2026-01-01' pour les bases existantes (le code applicatif
 // proposera de la modifier via la modal Paramètres). Pour les nouveaux
 // projets créés via l'API, le défaut applicatif est `today` (cf. serveur).
@@ -140,7 +140,7 @@ git commit -m "2026-05-25 — v2.3/RG-2000 : migration projects.project_start_da
 Dans `server/app.test.js` :
 
 ```js
-it('v2.3 / RG-GANTT-2000 — POST /api/projects accepte project_start_date', async () => {
+it('v2.3 / RG-GANTT-2100 — POST /api/projects accepte project_start_date', async () => {
   const res = await request(app)
     .post('/api/projects')
     .send({ id: 'p_test', name: 'Test', project_start_date: '2026-09-01' })
@@ -149,7 +149,7 @@ it('v2.3 / RG-GANTT-2000 — POST /api/projects accepte project_start_date', asy
   expect(state.body.project.project_start_date).toBe('2026-09-01')
 })
 
-it('v2.3 / RG-GANTT-2000 — POST /api/projects sans project_start_date : défaut = today', async () => {
+it('v2.3 / RG-GANTT-2100 — POST /api/projects sans project_start_date : défaut = today', async () => {
   const res = await request(app)
     .post('/api/projects')
     .send({ id: 'p_test2', name: 'Test 2' })
@@ -230,7 +230,7 @@ git commit -m "2026-05-25 — v2.3/RG-2000 : POST /api/projects accepte project_
 Dans `server/app.test.js` :
 
 ```js
-it('v2.3 / RG-GANTT-2001 — PATCH /api/projects/:id renomme + modifie date', async () => {
+it('v2.3 / RG-GANTT-2101 — PATCH /api/projects/:id renomme + modifie date', async () => {
   // Prérequis : projet p1 existe avec une seule tâche progress=0.
   const res = await request(app)
     .patch('/api/projects/p1')
@@ -238,7 +238,7 @@ it('v2.3 / RG-GANTT-2001 — PATCH /api/projects/:id renomme + modifie date', as
   expect(res.status).toBe(200)
 })
 
-it("v2.3 / RG-GANTT-2010 — PATCH refusé si date > start d'une tâche progress>0", async () => {
+it("v2.3 / RG-GANTT-2110 — PATCH refusé si date > start d'une tâche progress>0", async () => {
   // Prérequis : projet p2 avec tâche t1 progress=50, start_date=2026-05-15.
   const res = await request(app)
     .patch('/api/projects/p2')
@@ -256,7 +256,7 @@ Dans `db/index.js` :
 
 ```js
 /**
- * v2.3 / RG-GANTT-2001 + RG-GANTT-2010 — Met à jour un projet (nom et/ou
+ * v2.3 / RG-GANTT-2101 + RG-GANTT-2110 — Met à jour un projet (nom et/ou
  * date de démarrage). Valide RG-2010 : refuse une `project_start_date`
  * postérieure à la `start_date` d'au moins une activité avec progress > 0.
  *
@@ -268,7 +268,7 @@ export function updateProject(db, id, patch) {
     if (!cur)
       return { ok: false, code: 'NOT_FOUND', message: 'projet introuvable' }
     const next = { ...cur, ...patch }
-    // RG-GANTT-2010 — Validation : pas de date postérieure aux tâches en cours.
+    // RG-GANTT-2110 — Validation : pas de date postérieure aux tâches en cours.
     if (
       patch.project_start_date &&
       patch.project_start_date !== cur.project_start_date
@@ -311,13 +311,11 @@ app.patch(
     const result = updateProject(db, req.params.id, req.body)
     if (!result.ok) {
       const status = result.code === 'NOT_FOUND' ? 404 : 400
-      return res
-        .status(status)
-        .json({
-          error: result.message,
-          code: result.code,
-          conflictingTask: result.conflictingTask,
-        })
+      return res.status(status).json({
+        error: result.message,
+        code: result.code,
+        conflictingTask: result.conflictingTask,
+      })
     }
     res.json({ version: result.version, changed: true })
   }),
@@ -365,7 +363,7 @@ grep -n "seedDemo\|demo-state" db/ server/ src/ 2>/dev/null
 Dans `db/index.test.js`, dans un `describe` d'init :
 
 ```js
-it("v2.3 / RG-GANTT-2002 — boot sur base vide n'insère plus la démo", () => {
+it("v2.3 / RG-GANTT-2102 — boot sur base vide n'insère plus la démo", () => {
   const freshDb = initDb(':memory:')
   const projects = freshDb.prepare('SELECT * FROM projects').all()
   expect(projects.length).toBe(0)
@@ -465,7 +463,7 @@ Dans `src/lib/utils.ts`, à la déclaration de `replanTasks` (ligne ~1971) :
 ```ts
 export interface ReplanResult {
   moves: ReplanMove[]
-  // v2.3 / RG-GANTT-2004 — Timeline exposée pour cohérence avec Plan de charge.
+  // v2.3 / RG-GANTT-2104 — Timeline exposée pour cohérence avec Plan de charge.
   timeline: Map<string, Array<{ taskId: string; start: string; end: string }>>
 }
 
@@ -505,7 +503,7 @@ function computeReplanEarliestStart(
     const pred = tasksById.get(t.predecessor_id)
     if (pred) {
       const predEnd = proposed.get(pred.id)?.end ?? pred.end_date
-      // RG-GANTT-2006 — Si pred terminé mais end dans le futur, on ignorera
+      // RG-GANTT-2106 — Si pred terminé mais end dans le futur, on ignorera
       // la contrainte. Sera implémenté en L4 avec l'alerte associée.
       // Ici on garde le comportement actuel pour rester focalisé sur L1.
       const lagStart = computeSuccessorStart(predEnd, t.predecessor_lag || 0)
@@ -602,7 +600,7 @@ Dans `src/lib/types.ts`, repérer le type `Project` (ou interface) :
 export interface Project {
   id: string
   name: string
-  project_start_date: string // v2.3 / RG-GANTT-2000
+  project_start_date: string // v2.3 / RG-GANTT-2100
 }
 ```
 
@@ -669,7 +667,7 @@ describe('ProjectSettingsModal', () => {
     },
   ] as Task[]
 
-  it('v2.3 / RG-GANTT-2001 — affiche nom + date, modifiable', async () => {
+  it('v2.3 / RG-GANTT-2101 — affiche nom + date, modifiable', async () => {
     render(
       <ProjectSettingsModal
         project={project}
@@ -686,7 +684,7 @@ describe('ProjectSettingsModal', () => {
     ).toBe('2026-05-01')
   })
 
-  it("v2.3 / RG-GANTT-2010 — bloque la date si > start d'une tâche en cours", async () => {
+  it("v2.3 / RG-GANTT-2110 — bloque la date si > start d'une tâche en cours", async () => {
     render(
       <ProjectSettingsModal
         project={project}
@@ -703,7 +701,7 @@ describe('ProjectSettingsModal', () => {
     expect(screen.getByText(/déjà démarrée/i)).toBeInTheDocument()
   })
 
-  it('v2.3 / RG-GANTT-2010 — accepte si date <= start des tâches en cours', async () => {
+  it('v2.3 / RG-GANTT-2110 — accepte si date <= start des tâches en cours', async () => {
     const onSave = vi.fn()
     render(
       <ProjectSettingsModal
@@ -740,10 +738,10 @@ type Props = {
 }
 
 /**
- * v2.3 / RG-GANTT-2001 — Modal "Paramètres du projet" (ouverte via ✏️).
+ * v2.3 / RG-GANTT-2101 — Modal "Paramètres du projet" (ouverte via ✏️).
  * Édite : nom + date de démarrage.
  *
- * v2.3 / RG-GANTT-2010 — Validation client : la nouvelle date démarrage
+ * v2.3 / RG-GANTT-2110 — Validation client : la nouvelle date démarrage
  * ne doit pas être postérieure à la start_date d'une tâche en cours
  * (progress > 0). Même validation côté serveur (DAL updateProject) en
  * défense en profondeur.
@@ -866,7 +864,7 @@ type Props = {
 }
 
 /**
- * v2.3 / RG-GANTT-2000 — Dialog de création d'un projet.
+ * v2.3 / RG-GANTT-2100 — Dialog de création d'un projet.
  * Demande nom + date de démarrage (défaut today).
  */
 export default function CreateProjectDialog({ onCreate, onClose }: Props) {
@@ -930,7 +928,7 @@ git commit -m "2026-05-25 — v2.3/RG-2000 : dialog création projet (nom + date
 
 - [ ] **Step 1** — Ajouter les nouvelles RG
 
-À la fin de la Famille 10 (Replanification) ou dans une nouvelle Famille « v2.3 — Projet et planification globale » : insérer les RG-GANTT-2000, 2001, 2002, 2010 avec leur libellé (copier depuis la spec § 2.4).
+À la fin de la Famille 10 (Replanification) ou dans une nouvelle Famille « v2.3 — Projet et planification globale » : insérer les RG-GANTT-2100, 2001, 2002, 2010 avec leur libellé (copier depuis la spec § 2.4).
 
 - [ ] **Step 2** — Réécrire RG-GANTT-1903 et RG-GANTT-1910
 
@@ -956,7 +954,7 @@ Attendu : PASS (les nouvelles RG renvoient vers des tests qui existent désormai
 
 ```bash
 git add docs/regles-metier.md
-git commit -m "docs(regles): v2.3 — ajout RG-GANTT-2000/2001/2002/2010 + refonte 1903/1910 + suppression 0903 (2026-05-25)"
+git commit -m "docs(regles): v2.3 — ajout RG-GANTT-2100/2001/2002/2010 + refonte 1903/1910 + suppression 0903 (2026-05-25)"
 ```
 
 ---
@@ -983,7 +981,7 @@ git commit -m "docs(regles): v2.3 — ajout RG-GANTT-2000/2001/2002/2010 + refon
 - [ ] **Step 1** — Tests rouges RG-2003
 
 ```ts
-describe('v2.3 / RG-GANTT-2003 — start_date figée si progress > 0', () => {
+describe('v2.3 / RG-GANTT-2103 — start_date figée si progress > 0', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-05-25T12:00:00Z'))
@@ -1050,7 +1048,7 @@ function placeTaskInTimeline(
   const effectiveCharge = Math.max(1, Math.ceil(totalCharge * (1 - progress)))
   const collabIds = taskCollabIds(t)
 
-  // v2.3 / RG-GANTT-2003 — Si progress > 0, start_date est figée.
+  // v2.3 / RG-GANTT-2103 — Si progress > 0, start_date est figée.
   let newStart: string
   if (progress > 0) {
     newStart = t.start_date
@@ -1136,7 +1134,7 @@ function pushTimelineInterval(
 - [ ] **Step 3** — Test → PASS
 
 ```
-npm test -- --run src/lib/utils.test.ts -t "RG-GANTT-2003"
+npm test -- --run src/lib/utils.test.ts -t "RG-GANTT-2103"
 ```
 
 - [ ] **Step 4** — Suite complète
@@ -1164,13 +1162,13 @@ git commit -m "2026-05-25 — v2.3/RG-2003 : start_date figée si progress>0 + c
 - [ ] **Step 1** — Test rouge
 
 ```tsx
-it("v2.3 / RG-GANTT-2003 — champ start_date grisé si progress > 0", () => {
+it("v2.3 / RG-GANTT-2103 — champ start_date grisé si progress > 0", () => {
   const task = makeMockTask({ progress: 50 })
   render(<TaskEditor mode="edit" initial={task} ... />)
   expect(screen.getByLabelText(/date de début/i)).toBeDisabled()
 })
 
-it("v2.3 / RG-GANTT-2003 — champ start_date éditable si progress = 0", () => {
+it("v2.3 / RG-GANTT-2103 — champ start_date éditable si progress = 0", () => {
   const task = makeMockTask({ progress: 0 })
   render(<TaskEditor mode="edit" initial={task} ... />)
   expect(screen.getByLabelText(/date de début/i)).not.toBeDisabled()
@@ -1220,7 +1218,7 @@ Dans le handler du drag horizontal (le « move », pas le « resize edge » qui 
 
 ```ts
 if ((task.progress ?? 0) > 0) {
-  // v2.3 / RG-GANTT-2003 — start_date figée pour les tâches en cours,
+  // v2.3 / RG-GANTT-2103 — start_date figée pour les tâches en cours,
   // donc le drag horizontal qui déplacerait la barre est désactivé.
   // Le resize du bord droit (édition charge) reste autorisé.
   return
@@ -1230,7 +1228,7 @@ if ((task.progress ?? 0) > 0) {
 Pas de test unitaire dédié (le comportement est piloté par l'interaction souris), mais ajouter un test e2e ou intégration simple :
 
 ```tsx
-it("v2.3 / RG-GANTT-2003 — drag horizontal d'une tâche progress>0 n'a aucun effet", () => {
+it("v2.3 / RG-GANTT-2103 — drag horizontal d'une tâche progress>0 n'a aucun effet", () => {
   // Simulation : déclencher mousedown puis mousemove sur la barre, vérifier que onTaskMove n'est PAS appelé.
   // (Implémentation dépendante du framework de test ; à adapter)
 })
@@ -1315,7 +1313,7 @@ npx vitest run docs/regles-metier.coverage.test.js
 
 ```bash
 git add docs/regles-metier.md
-git commit -m "docs(regles): v2.3 — ajout RG-GANTT-2003 + redéfinition 1907 (2026-05-25)"
+git commit -m "docs(regles): v2.3 — ajout RG-GANTT-2103 + redéfinition 1907 (2026-05-25)"
 ```
 
 ---
@@ -1342,7 +1340,7 @@ git commit -m "docs(regles): v2.3 — ajout RG-GANTT-2003 + redéfinition 1907 (
 - [ ] **Step 1** — Test rouge
 
 ```ts
-describe('v2.3 / RG-GANTT-2004 — Plan de charge utilise timeline du moteur', () => {
+describe('v2.3 / RG-GANTT-2104 — Plan de charge utilise timeline du moteur', () => {
   it('ne peint pas la charge sur les jours antérieurs à la portion consommée', () => {
     // Tâche en cours : start_historique = 2026-05-01, today = 2026-05-25,
     // reste à faire consommé du 25 au 29.
@@ -1401,7 +1399,7 @@ export function computeWorkload(
     result.set(c.id, new Array(dates.length).fill(0))
   }
   if (timeline) {
-    // v2.3 / RG-GANTT-2004 — Source de vérité : timeline du moteur.
+    // v2.3 / RG-GANTT-2104 — Source de vérité : timeline du moteur.
     for (const [collabId, intervals] of timeline.entries()) {
       const arr = result.get(collabId)
       if (!arr) continue
@@ -1489,7 +1487,7 @@ git commit -m "2026-05-25 — v2.3/RG-2004 : computeWorkload consomme la timelin
 - [ ] **Step 1** — Test rouge
 
 ```ts
-describe('v2.3 / RG-GANTT-2005 — detectOverloads utilise timeline moteur', () => {
+describe('v2.3 / RG-GANTT-2105 — detectOverloads utilise timeline moteur', () => {
   it('deux tâches en cours dont les plages chevauchent visuellement mais consommées séquentiellement : pas de surcharge', () => {
     const tasks = [
       mkTask('t1', {
@@ -1535,7 +1533,7 @@ export function detectOverloads(
     // Fallback ancien comportement.
     return detectOverloadsLegacy(tasks)
   }
-  // v2.3 / RG-GANTT-2005 — Détection sur intervalles du moteur.
+  // v2.3 / RG-GANTT-2105 — Détection sur intervalles du moteur.
   const issues: CoherenceIssue[] = []
   for (const [collabId, intervals] of timeline.entries()) {
     const sorted = [...intervals].sort((a, b) => a.start.localeCompare(b.start))
@@ -1583,7 +1581,7 @@ git commit -m "2026-05-25 — v2.3/RG-2005 : detectOverloads sur timeline du mot
 Localiser où sont consommés `coherenceIssues` et où est rendu `WorkloadChart`. Ajouter en amont :
 
 ```ts
-// v2.3 / RG-GANTT-2004 / 2005 — Replan à la volée pour cohérence
+// v2.3 / RG-GANTT-2104 / 2005 — Replan à la volée pour cohérence
 // Plan de charge ↔ détection surcharge ↔ moteur. Mémoïsé par React :
 // recalcul uniquement quand les inputs changent.
 const replanLiveResult = useMemo(() => {
@@ -1667,7 +1665,7 @@ git commit -m "2026-05-25 — v2.3/RG-2004/2005 : useMemo replan à la volée + 
 
 ```bash
 git add docs/regles-metier.md
-git commit -m "docs(regles): v2.3 — ajout RG-GANTT-2004 et 2005 (cohérence timeline moteur) (2026-05-25)"
+git commit -m "docs(regles): v2.3 — ajout RG-GANTT-2104 et 2005 (cohérence timeline moteur) (2026-05-25)"
 ```
 
 ---
@@ -1684,7 +1682,7 @@ git commit -m "docs(regles): v2.3 — ajout RG-GANTT-2004 et 2005 (cohérence ti
 
 ---
 
-### Task L4.1 — RG-GANTT-2006 : prédécesseur terminé dans le futur
+### Task L4.1 — RG-GANTT-2106 : prédécesseur terminé dans le futur
 
 **Files** :
 
@@ -1694,7 +1692,7 @@ git commit -m "docs(regles): v2.3 — ajout RG-GANTT-2004 et 2005 (cohérence ti
 - [ ] **Step 1** — Test rouge
 
 ```ts
-describe('v2.3 / RG-GANTT-2006 — prédécesseur terminé dans le futur', () => {
+describe('v2.3 / RG-GANTT-2106 — prédécesseur terminé dans le futur', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-05-25T12:00:00Z'))
@@ -1758,7 +1756,7 @@ if (t.predecessor_id) {
   if (pred) {
     const today = todayIso()
     const predEnd = proposed.get(pred.id)?.end ?? pred.end_date
-    // v2.3 / RG-GANTT-2006 — Si pred terminé mais end dans le futur, ignorer.
+    // v2.3 / RG-GANTT-2106 — Si pred terminé mais end dans le futur, ignorer.
     const ignorePred = pred.progress === 100 && predEnd > today
     if (!ignorePred) {
       const lagStart = computeSuccessorStart(predEnd, t.predecessor_lag || 0)
@@ -1815,7 +1813,7 @@ git commit -m "2026-05-25 — v2.3/RG-2006 : pred terminé dans le futur ignoré
 - [ ] **Step 1** — Tests rouges
 
 ```ts
-describe('v2.3 / RG-GANTT-2007 — jalon sans pred', () => {
+describe('v2.3 / RG-GANTT-2107 — jalon sans pred', () => {
   it('placé à project_start_date (mode anticipé)', () => {
     const tasks = [
       mkTask('j1', {
@@ -1831,7 +1829,7 @@ describe('v2.3 / RG-GANTT-2007 — jalon sans pred', () => {
   })
 })
 
-describe('v2.3 / RG-GANTT-2008 — phase vide', () => {
+describe('v2.3 / RG-GANTT-2108 — phase vide', () => {
   it('a start_date = end_date = project_start_date', () => {
     const tasks = [
       mkTask('p1', {
@@ -1849,7 +1847,7 @@ describe('v2.3 / RG-GANTT-2008 — phase vide', () => {
   })
 })
 
-describe('v2.3 / RG-GANTT-2009 — activité sans collab', () => {
+describe('v2.3 / RG-GANTT-2109 — activité sans collab', () => {
   it('traitée comme capacité infinie, pas de surcharge possible', () => {
     const tasks = [
       mkTask('t1', {
@@ -1909,7 +1907,7 @@ git commit -m "2026-05-25 — v2.3/RG-2007/2008/2009 : jalon/phase vide/sans col
 
 ```bash
 git add docs/regles-metier.md
-git commit -m "docs(regles): v2.3 — ajout RG-GANTT-2006/2007/2008/2009 (cas limites) (2026-05-25)"
+git commit -m "docs(regles): v2.3 — ajout RG-GANTT-2106/2007/2008/2009 (cas limites) (2026-05-25)"
 ```
 
 ---

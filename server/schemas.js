@@ -79,7 +79,7 @@ const Priority = z
 // PROJETS (v1.8)
 // -----------------------------------------------------------------------------
 
-// v2.3 / RG-GANTT-2000 — `project_start_date` optionnelle au POST (défaut
+// v2.3 / RG-GANTT-2100 — `project_start_date` optionnelle au POST (défaut
 // applicatif = today côté DAL). Réutilise le `IsoDate` défini plus haut.
 // La validation RG-2010 ne s'applique qu'au PATCH (à la création, le projet
 // n'a pas encore de tâches).
@@ -89,12 +89,15 @@ export const CreateProjectBody = z.object({
   project_start_date: IsoDate.optional(),
 })
 
+// v2.3 / RG-GANTT-2101 — PATCH projet accepte aussi `project_start_date`.
+// Au moins un des deux champs doit être fourni.
 export const UpdateProjectBody = z
   .object({
     name: NonEmptyText.optional(),
+    project_start_date: IsoDate.optional(),
   })
-  .refine((v) => v.name !== undefined, {
-    message: 'au moins un champ requis (name)',
+  .refine((v) => v.name !== undefined || v.project_start_date !== undefined, {
+    message: 'au moins un champ requis (name, project_start_date)',
   })
 
 export const ProjectIdParams = z.object({ id: NonEmptyId })

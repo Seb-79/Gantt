@@ -543,11 +543,11 @@ export function ensureTaskAssignmentsTable(db) {
 }
 
 /**
- * v2.3 / RG-GANTT-2000 — Ajoute la colonne `project_start_date` sur `projects`
+ * v2.3 / RG-GANTT-2100 — Ajoute la colonne `project_start_date` sur `projects`
  * si elle manque (base d'avant la v2.3), puis initialise sa valeur pour les
  * projets existants à `MIN(start_date)` de leurs tâches (ou `today` si le
  * projet est vide). Cette stratégie garantit qu'aucune `project_start_date`
- * n'est postérieure à une tâche existante — RG-GANTT-2010 ne peut pas être
+ * n'est postérieure à une tâche existante — RG-GANTT-2110 ne peut pas être
  * violée par la migration elle-même.
  *
  * Idempotente : si la colonne existe déjà, aucune écriture n'est faite (le
@@ -585,7 +585,7 @@ export function ensureProjectStartDateColumn(db) {
   }
   if (migrated > 0) {
     console.log(
-      `[INIT] Migration v2.3 (RG-GANTT-2000) : ${migrated} projet(s) → project_start_date initialisée depuis MIN(tasks.start_date) (ou today si vide).`,
+      `[INIT] Migration v2.3 (RG-GANTT-2100) : ${migrated} projet(s) → project_start_date initialisée depuis MIN(tasks.start_date) (ou today si vide).`,
     )
   }
 }

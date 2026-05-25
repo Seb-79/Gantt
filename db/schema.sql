@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS projects (
   id                 TEXT PRIMARY KEY,
   name               TEXT NOT NULL,
   position           INTEGER NOT NULL,
-  -- v2.3 / RG-GANTT-2000 — Date de démarrage du projet. Sert de borne basse
+  -- v2.3 / RG-GANTT-2100 — Date de démarrage du projet. Sert de borne basse
   -- globale par défaut pour le Replan. Peut être dans le passé ou le futur.
   -- Valeur par défaut '2026-01-01' pour les bases ré-initialisées ; pour les
   -- nouveaux projets créés via l'API, le défaut applicatif est `today`.

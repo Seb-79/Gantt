@@ -37,7 +37,7 @@ describe('initDb', () => {
     expect(isDatabaseEmpty(db)).toBe(true)
   })
 
-  it('v2.3 / RG-GANTT-2000 — la colonne projects.project_start_date existe (NOT NULL)', () => {
+  it('v2.3 / RG-GANTT-2100 — la colonne projects.project_start_date existe (NOT NULL)', () => {
     const db = initDb(':memory:')
     const cols = db.prepare('PRAGMA table_info(projects)').all()
     const col = cols.find((c) => c.name === 'project_start_date')
@@ -45,7 +45,7 @@ describe('initDb', () => {
     expect(col.notnull).toBe(1)
   })
 
-  it('v2.3 / RG-GANTT-2000 — migration : ancienne base sans la colonne reçoit MIN(tasks.start_date) ou today', async () => {
+  it('v2.3 / RG-GANTT-2100 — migration : ancienne base sans la colonne reçoit MIN(tasks.start_date) ou today', async () => {
     const Database = (await import('better-sqlite3')).default
     const tmpFile = `/tmp/gantt-pstart-migration-${Date.now()}.db`
     const old = new Database(tmpFile)

@@ -202,6 +202,15 @@ export function createApp(db, { requestLog = true } = {}) {
     validate({ params: ProjectIdParams, body: UpdateProjectBody }),
     safeRoute((req, res) => {
       const result = updateProject(db, req.params.id, req.body)
+      // v2.3 / RG-GANTT-2110 — Violation de la règle de validation date.
+      if (result.code === 'PROJECT_START_AFTER_TASK') {
+        return res.status(400).json({
+          error: result.message,
+          code: result.code,
+          conflictingTask: result.conflictingTask,
+          version: result.version,
+        })
+      }
       if (!result.changed) {
         return res.status(404).json({
           error: 'projet introuvable',

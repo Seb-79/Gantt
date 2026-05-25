@@ -376,7 +376,7 @@ describe('Projets', () => {
     expect(state.body.projects.length).toBe(2)
   })
 
-  it('v2.3 / RG-GANTT-2000 — POST /api/projects accepte project_start_date', async () => {
+  it('v2.3 / RG-GANTT-2100 — POST /api/projects accepte project_start_date', async () => {
     const created = await request(app)
       .post('/api/projects')
       .send({ id: 'p_v23', name: 'V23', project_start_date: '2026-09-01' })
@@ -390,13 +390,42 @@ describe('Projets', () => {
     ).toBe('2026-09-01')
   })
 
-  it('v2.3 / RG-GANTT-2000 — POST /api/projects sans project_start_date → défaut today', async () => {
+  it('v2.3 / RG-GANTT-2100 — POST /api/projects sans project_start_date → défaut today', async () => {
     const created = await request(app)
       .post('/api/projects')
       .send({ id: 'p_v23_def', name: 'Def' })
       .expect(200)
     const today = new Date().toISOString().slice(0, 10)
     expect(created.body.project.project_start_date).toBe(today)
+  })
+
+  it('v2.3 / RG-GANTT-2101 — PATCH /api/projects/:id modifie aussi project_start_date', async () => {
+    const list = await request(app).get('/api/projects').expect(200)
+    const first = list.body.projects[0]
+    // On choisit une date antérieure à toutes les tâches en cours du projet
+    // pour éviter de buter sur la validation RG-2010 (les tâches démo ont
+    // start_date >= 2026-05-15).
+    await request(app)
+      .patch(`/api/projects/${first.id}`)
+      .send({ project_start_date: '2026-01-01' })
+      .expect(200)
+    const after = await request(app).get('/api/state').expect(200)
+    expect(
+      after.body.projects.find((p) => p.id === first.id).project_start_date,
+    ).toBe('2026-01-01')
+  })
+
+  it("v2.3 / RG-GANTT-2110 — PATCH refusé si date > start d'une tâche progress>0", async () => {
+    // Dans la démo, t1a a progress=100, start_date=2026-05-15.
+    const list = await request(app).get('/api/projects').expect(200)
+    const first = list.body.projects[0]
+    const res = await request(app)
+      .patch(`/api/projects/${first.id}`)
+      .send({ project_start_date: '2026-09-01' })
+      .expect(400)
+    expect(res.body.code).toBe('PROJECT_START_AFTER_TASK')
+    expect(res.body.error).toMatch(/déjà démarrée/i)
+    expect(res.body.conflictingTask).toBeDefined()
   })
 
   it('PATCH /api/projects/:id renomme', async () => {

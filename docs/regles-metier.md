@@ -1633,6 +1633,46 @@ pas par test automatisé (souris).
 
 ---
 
+## Famille 21 — Refonte Replan v2.3 (date démarrage projet + dates au plus tôt)
+
+Refonte du modèle de planification autour d'une idée centrale : la
+`start_date` d'une activité est CALCULÉE par le Replan (au plus tôt
+possible compte tenu des contraintes), elle n'est plus une donnée saisie.
+Un nouveau concept central, la **date de démarrage du projet**
+(`project_start_date`), sert de borne basse globale par défaut.
+
+Cf. [docs/superpowers/specs/2026-05-25-refonte-replan-projet.md](./superpowers/specs/2026-05-25-refonte-replan-projet.md).
+
+### RG-GANTT-2100
+
+**(v2.3 — date démarrage projet)** Chaque projet a une date de démarrage
+persistée (colonne `projects.project_start_date`, NOT NULL). Sert de
+borne basse globale par défaut dans le Replan. Peut être dans le passé
+ou dans le futur, sans restriction. Saisie à la création (défaut `today`)
+et modifiable ultérieurement via la modal Paramètres (RG-GANTT-2101).
+
+**Tests :** `db/index.test.js` → 2 tests `initDb` (colonne NOT NULL + migration ancienne base) ; `server/app.test.js` → « POST accepte project_start_date » + « POST sans → défaut today » + « PATCH modifie project_start_date ».
+
+### RG-GANTT-2110
+
+**(v2.3 — validation date démarrage)** À la modification de la date de
+démarrage d'un projet, la nouvelle valeur est **rejetée avec une erreur**
+si elle est postérieure à la `start_date` d'au moins une activité du
+projet ayant `progress > 0` (en cours ou terminée).
+
+Les activités à `progress = 0` ne sont pas concernées : leur `start_date`
+est recalculée par le prochain Replan, qui les ramène à la nouvelle date
+projet.
+
+Implémentée côté serveur (DAL `updateProject`) — défense en profondeur
+côté client à venir dans la modal Paramètres.
+
+**Tests :** `server/app.test.js` → « PATCH refusé si date > start d'une tâche progress>0 ».
+
+> _Les RG 2101 à 2109 seront ajoutées au fil de l'implémentation des tâches L1.7 à L4 de la refonte v2.3 (cf. spec § 2.4)._
+
+---
+
 ## Synthèse de couverture
 
 | Famille                       |  Règles |           Couverture |

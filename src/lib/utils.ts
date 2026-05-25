@@ -1820,22 +1820,43 @@ function prefillCompletedIntervals(
  * @returns      Tableau (potentiellement vide) des déplacements proposés.
  */
 /**
- * v1.18 — Calcule la borne basse de début pour une tâche en replanification :
- * on prend le maximum entre sa date de début actuelle (= on ne recule jamais)
- * et la contrainte de prédécesseur (= fin proposée du prédécesseur + lag).
+ * v2.3 / RG-GANTT-1903 (redéfinie) — Calcule la borne basse globale de
+ * placement pour une tâche en replanification, indépendamment de `progress` :
  *
- * @param t          Tâche à placer.
- * @param tasksById  Index des tâches.
- * @param proposed   Dates déjà proposées (pour récupérer la fin du prédécesseur).
- * @returns          Date ISO YYYY-MM-DD (déjà snappée jour ouvré).
+ *   borne_basse = MAX(
+ *     projectStartDate,             // date démarrage projet (RG-GANTT-2100)
+ *     today,                        // si mode normal (sinon RG-GANTT-1910 / mode anticipé)
+ *     predecessor.end + lag,        // contrainte de prédécesseur (PERT)
+ *     not_before_date (SNET),       // forçage utilisateur
+ *   )
+ *
+ * v2.3 — RG-GANTT-0903 (« jamais vers le passé ») est SUPPRIMÉE : on ne lit
+ * plus `t.start_date` comme borne basse. Le moteur cherche TOUJOURS la date
+ * au plus tôt compatible avec les contraintes. Exception : les activités en
+ * cours (`0 < progress < 100`) ont leur `start_date` figée — c'est géré
+ * dans `placeTaskInTimeline` (RG-GANTT-2103), pas ici.
+ *
+ * @param t                 Tâche à placer.
+ * @param tasksById         Index des tâches.
+ * @param proposed          Dates déjà proposées (pour récupérer la fin du prédécesseur).
+ * @param projectStartDate  Date de démarrage du projet (RG-GANTT-2100).
+ * @param options           ignoreToday : si true, suspend la borne basse `today` (RG-V).
+ * @returns                 Date ISO YYYY-MM-DD (déjà snappée jour ouvré).
  */
 function computeReplanEarliestStart(
   t: Task,
   tasksById: Map<string, Task>,
   proposed: Map<string, { start: string; end: string }>,
+  projectStartDate: string,
   options: { ignoreToday?: boolean } = {},
 ): string {
-  let earliest = t.start_date
+  // v2.3 / RG-GANTT-1903 — Borne basse = projectStartDate par défaut.
+  let earliest = projectStartDate
+  // v2.3 / RG-V — En mode normal, today entre aussi dans le MAX.
+  if (!options.ignoreToday) {
+    const today = todayIso()
+    if (today > earliest) earliest = today
+  }
   if (t.predecessor_id) {
     const pred = tasksById.get(t.predecessor_id)
     if (pred) {
@@ -1844,23 +1865,10 @@ function computeReplanEarliestStart(
       if (lagStart > earliest) earliest = lagStart
     }
   }
-  // v1.24 — Borne basse supplémentaire : la contrainte SNET « Ne doit pas
-  // démarrer avant le », snappée au prochain jour ouvré. La règle « plus
-  // tardif gagne » est portée par ce max successif (current_start, pred.end
-  // + lag, SNET).
+  // v1.24 — SNET « Ne doit pas démarrer avant le » : le plus tardif gagne.
   if (t.not_before_date) {
     const snet = snapForwardToWorkingDay(t.not_before_date)
     if (snet > earliest) earliest = snet
-  }
-  // v2.2 / RG-B (RG-GANTT-1903) — Pour une activité en cours (progress > 0),
-  // la date de début proposée ne peut être antérieure à today. La portion
-  // déjà réalisée reste figée à sa date historique ; seul le reste à faire
-  // (RG-C) est placé à partir de today si la start_date est dans le passé.
-  // v2.2 / RG-V (RG-GANTT-1910) — Le mode "Planification anticipée" suspend
-  // cette règle via `options.ignoreToday=true`.
-  if (!options.ignoreToday && (t.progress ?? 0) > 0) {
-    const today = todayIso()
-    if (today > earliest) earliest = today
   }
   return snapForwardToWorkingDay(earliest)
 }
@@ -1904,40 +1912,57 @@ function placeTaskInTimeline(
   timeline: Map<string, Array<[string, string]>>,
   allocations: MemberAllocation[],
   absences: CollaboratorAbsence[],
+  projectStartDate: string,
   options: { ignoreToday?: boolean } = {},
 ): void {
-  // v2.0 — La charge totale est lue depuis `task.charge_jours` (source de
-  // vérité). Pour les tâches issues de bases anciennes ou de tests qui ne
-  // l'auraient pas encore peuplée, on retombe sur l'écart courant pour rester
-  // rétro-compatible (filet de sécurité ; la migration `ensureChargeColumn`
-  // peuple toujours la colonne au boot).
+  // v2.0 — Charge totale lue depuis `task.charge_jours` (source de vérité).
   const totalCharge =
     t.charge_jours && t.charge_jours >= 1
       ? t.charge_jours
       : Math.max(1, workingDaysBetween(t.start_date, t.end_date))
-  // v2.2 / RG-C (RG-GANTT-1904) — Le Replan ne consomme que le RESTE À FAIRE :
-  //   effectiveCharge = totalCharge × (1 − progress/100), arrondi au sup, min 1.
-  // RG-INV (RG-GANTT-1900) — La charge totale persistée reste inchangée ;
-  // effectiveCharge est uniquement utilisée pour le placement.
+  // v2.2 / RG-C (RG-GANTT-1904) — Reste à faire = charge × (1 − progress/100).
   const progressFrac = Math.max(0, Math.min(100, t.progress ?? 0)) / 100
   const effectiveCharge = Math.max(
     1,
     Math.ceil(totalCharge * (1 - progressFrac)),
   )
-  const earliest = computeReplanEarliestStart(t, tasksById, proposed, options)
-  // v2.0 / F6 — Liste multi-collab : on lit `collaborators[]` (source de
-  // vérité depuis F6) avec fallback sur l'alias `collaborator_id`. La timeline
-  // de chaque collab impacté est consultée et mise à jour pour bloquer
-  // tous les créneaux simultanément.
+  // v2.3 / RG-GANTT-2103 (Option γ) — Pour une activité en cours
+  // (0 < progress < 100), `start_date` est FIGÉE à sa valeur historique :
+  // le Replan ne la recalcule pas, il ne touche qu'à `end_date`. La
+  // consommation du reste à faire démarre à `MAX(today, start_date)` —
+  // on ne consomme jamais dans le passé.
+  //
+  // Pour une activité jamais démarrée (progress = 0), `start_date` est
+  // recalculée à la borne basse globale (RG-GANTT-1903).
+  let earliest: string
+  if (progressFrac > 0) {
+    // Activité en cours : start figée. Consommation à partir de MAX(today, start_date).
+    const today = todayIso()
+    earliest = t.start_date > today ? t.start_date : today
+  } else {
+    // Activité jamais démarrée : start au plus tôt selon la borne basse globale.
+    earliest = computeReplanEarliestStart(
+      t,
+      tasksById,
+      proposed,
+      projectStartDate,
+      options,
+    )
+  }
   const collabIds = taskCollabIds(t)
-  // v2.0 / F6 — Recherche d'un créneau libre simultanément pour TOUS les
-  // collabs affectés : on prend le MAX des findFreeSlot individuels (chaque
-  // collab impose sa propre contrainte).
   let newStart = earliest
   for (const cId of collabIds) {
     const intervals = timeline.get(cId) || []
     const candidate = findFreeSlot(intervals, earliest, effectiveCharge)
     if (candidate > newStart) newStart = candidate
+  }
+  // v2.3 / RG-GANTT-2103 — Si la tâche est en cours, on contraint newStart
+  // à rester égal à la start_date figée (le moteur peut avoir trouvé un
+  // créneau plus tardif à cause d'obstacles, mais la barre démarre toujours
+  // historiquement). Dans ce cas, on accepte que la consommation effective
+  // démarre plus tard (la timeline reflétera cela).
+  if (progressFrac > 0) {
+    newStart = t.start_date
   }
   // v2.0 / F2 — La fin est calculée en consommant la capacité quotidienne
   // (allocation %) du collab sur le projet.
@@ -1996,6 +2021,7 @@ function buildReplanMoves(
 
 export function replanTasks(
   tasks: Task[],
+  projectStartDate: string,
   allocations: MemberAllocation[] = [],
   absences: CollaboratorAbsence[] = [],
   options: { ignoreToday?: boolean } = {},
@@ -2041,9 +2067,8 @@ export function replanTasks(
       timeline,
       allocations,
       absences,
-      {
-        ignoreToday,
-      },
+      projectStartDate,
+      { ignoreToday },
     )
   }
 

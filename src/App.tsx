@@ -983,8 +983,15 @@ export default function App() {
         // par projet (un seul mode pour toutes les sources de Replan).
         const projectId = data.current_project_id
         const ignoreToday = projectId ? getAdvancePlanning(projectId) : false
+        // v2.3 / RG-GANTT-2100 — Borne basse globale = date de démarrage du
+        // projet courant. Fallback `today` si projet introuvable (cas dégénéré).
+        const currentProj = data.projects.find(
+          (p: { id: string }) => p.id === projectId,
+        )
+        const projectStartDate = currentProj?.project_start_date || todayIso()
         const moves = replanTasks(
           sortTasksHierarchically(data.tasks),
+          projectStartDate,
           data.member_allocations,
           data.collaborator_absences,
           { ignoreToday },
@@ -1319,7 +1326,13 @@ export default function App() {
         return
       }
     }
-    const moves = replanTasks(orderedTasks, allocs, absences, { ignoreToday })
+    // v2.3 / RG-GANTT-2100 — Le Replan utilise la date de démarrage du projet
+    // comme borne basse globale. Fallback `today` si projet sans date (cas dégénéré).
+    const projectStartDate =
+      currentProject?.project_start_date || todayIso()
+    const moves = replanTasks(orderedTasks, projectStartDate, allocs, absences, {
+      ignoreToday,
+    })
     if (moves.length === 0) {
       await askAlert('Aucune surcharge détectée — rien à replanifier.')
       return

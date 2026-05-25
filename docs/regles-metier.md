@@ -744,6 +744,19 @@ jours-allocation (= reste à faire), arrondi au jour ouvré supérieur
 
 **Tests :** `utils.test.ts` → « v2.2 / RG-C — consommation du reste à faire ».
 
+### RG-GANTT-1907
+
+**(v2.2 — RG-N)** Un PATCH d'édition d'une activité qui ne modifie que
+`progress` (sans `charge_jours` ni `end_date`) ne recalcule pas
+`end_date` côté serveur de façon visible. Le cas 3c de
+`resolveChargeAndEnd` préserve `charge_jours` et recalcule `end_date`
+depuis `start + charge` ; tant que les allocations n'ont pas changé,
+le résultat est identique à l'ancienne `end_date`. C'est le Replan
+automatique (RG-GANTT-0909) qui produit la nouvelle date de fin si
+la case « Replanifier après enregistrement » est cochée.
+
+**Tests :** `db/index.test.js` → « v2.2 / RG-N — PATCH avec progress seul : end_date et charge_jours inchangés ».
+
 ### RG-GANTT-1909
 
 **(v2.2 — RG-U)** Le `progress` d'une **phase** est dérivé

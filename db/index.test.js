@@ -582,6 +582,23 @@ describe('updateTask', () => {
     expect(t.end_date).toBe('2026-06-19') // honorée telle quelle, pas recalculée
     expect(t.charge_jours).toBe(5) // honorée telle quelle, pas back-dérivée
   })
+
+  it('v2.2 / RG-N — PATCH avec progress seul : end_date et charge_jours inchangés', () => {
+    // RG-GANTT-1907 : un PATCH d'édition qui ne modifie que `progress`
+    // (sans `charge_jours` ni `end_date`) ne doit pas recalculer end_date
+    // côté serveur. Le cas 3c de resolveChargeAndEnd préserve charge_jours
+    // et recalcule end depuis start + charge ; tant que les allocations
+    // n'ont pas changé, end reste stable.
+    updateTask(db, 't1', { start_date: '2026-06-01', charge_jours: 5 })
+    const before = getFullState(db).tasks.find((x) => x.id === 't1')
+    // PATCH ne contenant que progress.
+    updateTask(db, 't1', { progress: 50 })
+    const after = getFullState(db).tasks.find((x) => x.id === 't1')
+    expect(after.progress).toBe(50)
+    expect(after.charge_jours).toBe(before.charge_jours)
+    expect(after.end_date).toBe(before.end_date)
+    expect(after.start_date).toBe(before.start_date)
+  })
 })
 
 describe('v1.9 — cascade aux successeurs', () => {

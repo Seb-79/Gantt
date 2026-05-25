@@ -1904,6 +1904,7 @@ function placeTaskInTimeline(
   timeline: Map<string, Array<[string, string]>>,
   allocations: MemberAllocation[],
   absences: CollaboratorAbsence[],
+  options: { ignoreToday?: boolean } = {},
 ): void {
   // v2.0 — La charge totale est lue depuis `task.charge_jours` (source de
   // vérité). Pour les tâches issues de bases anciennes ou de tests qui ne
@@ -1923,7 +1924,7 @@ function placeTaskInTimeline(
     1,
     Math.ceil(totalCharge * (1 - progressFrac)),
   )
-  const earliest = computeReplanEarliestStart(t, tasksById, proposed)
+  const earliest = computeReplanEarliestStart(t, tasksById, proposed, options)
   // v2.0 / F6 — Liste multi-collab : on lit `collaborators[]` (source de
   // vérité depuis F6) avec fallback sur l'alias `collaborator_id`. La timeline
   // de chaque collab impacté est consultée et mise à jour pour bloquer
@@ -1997,6 +1998,7 @@ export function replanTasks(
   tasks: Task[],
   allocations: MemberAllocation[] = [],
   absences: CollaboratorAbsence[] = [],
+  options: { ignoreToday?: boolean } = {},
 ): ReplanMove[] {
   // v2.2 — Le Replan partiel (RG-GANTT-0905) est abandonné. Toutes les tâches
   // `kind='task'` sont candidates au déplacement. Les obstacles éventuels
@@ -2008,6 +2010,10 @@ export function replanTasks(
   // v2.0 / F3 — `absences` réduit multiplicativement la capacité du collab
   // (lecture cross-projet). Vide → pas d'impact.
   // Tableau vide → comportement F0 (fin = start + charge en jours ouvrés).
+  // v2.2 / RG-V (RG-GANTT-1910) — `options.ignoreToday=true` active le mode
+  // "Planification anticipée" : RG-B est suspendue (today n'est plus borne
+  // basse). RG-A et RG-C continuent de s'appliquer.
+  const ignoreToday = options.ignoreToday === true
   const tasksById = new Map(tasks.map((t) => [t.id, t]))
   const order = buildReplanOrder(tasks)
 
@@ -2028,7 +2034,17 @@ export function replanTasks(
     // v2.2 / RG-A — Une tâche à progress=100 est lockée : pas de placement,
     // pas de move. Elle est déjà dans la timeline via prefillCompletedIntervals.
     if (t.progress === 100) continue
-    placeTaskInTimeline(t, tasksById, proposed, timeline, allocations, absences)
+    placeTaskInTimeline(
+      t,
+      tasksById,
+      proposed,
+      timeline,
+      allocations,
+      absences,
+      {
+        ignoreToday,
+      },
+    )
   }
 
   return buildReplanMoves(order, proposed)

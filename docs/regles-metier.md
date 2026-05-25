@@ -805,6 +805,29 @@ TaskEditor : c'est une lecture dérivée.
 
 **Tests :** `utils.test.ts` → « v2.2 / RG-U — progress phase dérivé ».
 
+### RG-GANTT-1910
+
+**(v2.2 — RG-V)** Le Replan dispose d'un mode optionnel « Planification
+anticipée » activable par un toggle UI à côté du bouton Replan.
+La valeur du toggle est persistée par projet en `localStorage`
+(clé `gantt:advance-planning:{project_id}`, « par navigateur × projet »
+en l'absence d'authentification utilisateur).
+
+Quand le toggle est coché pour un projet :
+
+- **RG-GANTT-1903 (RG-B) est suspendue** : `today` n'est plus
+  pris en compte comme borne basse. La borne basse redevient
+  `max(t.start_date, pred.end + lag, SNET)`.
+- **RG-GANTT-1902 (RG-A) reste appliquée** : les tâches à
+  `progress = 100` restent lockées.
+- **RG-GANTT-1904 (RG-C) reste appliquée** : le moteur consomme
+  toujours le reste à faire pour les tâches à `progress > 0`.
+
+Le toggle pilote **toutes les sources de Replan** d'un projet :
+Replan manuel ET auto-replan post-édition (RG-GANTT-0909).
+
+**Tests :** `utils.test.ts` → « v2.2 / RG-V — mode Planification anticipée » ; `storage.test.ts` → « advance planning toggle ».
+
 ---
 
 ## Famille 11 — Calendrier et jours ouvrés

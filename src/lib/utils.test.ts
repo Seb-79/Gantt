@@ -2639,3 +2639,72 @@ describe('v2.2 / RG-U — progress phase dérivé', () => {
     expect(derivePhaseProgress('t1', tasks)).toBeNull()
   })
 })
+
+// =============================================================================
+// v2.2 / RG-V (RG-GANTT-1910) — Mode "Planification anticipée" : suspend RG-B
+// =============================================================================
+
+describe('v2.2 / RG-V — mode Planification anticipée', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-10T12:00:00Z'))
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it("ignoreToday=true : tâche progress > 0 avec start dans le passé n'est PAS tirée à today", () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 30,
+        start_date: '2026-06-01', // dans le passé, mais on suspend RG-B
+        end_date: '2026-06-05',
+        charge_jours: 5,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, [], [], { ignoreToday: true })
+    // En mode anticipé, RG-B suspendue : borne basse = start_date (01/06).
+    if (moves.length > 0) {
+      // Le moteur peut quand même proposer un move si end change (reste à
+      // faire ≠ écart actuel). On vérifie juste que start est respectée.
+      expect(moves[0].newStart).toBe('2026-06-01')
+    } else {
+      expect(tasks[0].start_date).toBe('2026-06-01')
+    }
+  })
+
+  it('ignoreToday=true : RG-A reste appliquée (progress=100 lockée)', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 100,
+        start_date: '2026-06-01',
+        end_date: '2026-06-05',
+        charge_jours: 5,
+        collaborator_id: 'c1',
+      }),
+    ]
+    const moves = replanTasks(tasks, [], [], { ignoreToday: true })
+    expect(moves.find((m) => m.id === 't1')).toBeUndefined()
+  })
+
+  it('ignoreToday=true : RG-C reste appliquée (consomme reste à faire)', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 50,
+        start_date: '2026-06-01',
+        end_date: '2026-06-12', // ancien end basé sur 10 j ouvrés
+        charge_jours: 10,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, [], [], { ignoreToday: true })
+    expect(moves.length).toBe(1)
+    expect(moves[0].newStart).toBe('2026-06-01')
+    // Reste à faire = 10 * 0.5 = 5 j → end = 01/06 + 5 wd = 05/06.
+    expect(moves[0].newEnd).toBe('2026-06-05')
+    expect(moves[0].charge_jours).toBe(10) // charge totale préservée (RG-INV)
+  })
+})

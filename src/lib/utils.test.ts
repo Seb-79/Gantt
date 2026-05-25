@@ -772,7 +772,7 @@ describe('replanTasks (v1.18)', () => {
         end_date: '2026-06-19',
       }),
     ]
-    expect(replanTasks(tasks)).toEqual([])
+    expect(replanTasks(tasks, '2026-01-01')).toEqual([])
   })
 
   it('pousse la 2e tâche après la 1re quand elles se chevauchent pour le même collab', () => {
@@ -793,7 +793,7 @@ describe('replanTasks (v1.18)', () => {
         end_date: '2026-06-05', // ven 5 juin (10 j ouvrés)
       }),
     ]
-    const moves = replanTasks(tasks)
+    const moves = replanTasks(tasks, '2026-01-01')
     expect(moves).toHaveLength(1)
     expect(moves[0]).toMatchObject({
       id: 'B',
@@ -821,7 +821,7 @@ describe('replanTasks (v1.18)', () => {
         priority: 1,
       }),
     ]
-    const moves = replanTasks(tasks)
+    const moves = replanTasks(tasks, '2026-01-01')
     expect(moves.map((m) => m.id)).toEqual(['A'])
     // A part au lundi suivant la fin de B (mer 20 → jeu 21 = jour ouvré).
     expect(moves[0].newStart).toBe('2026-05-21')
@@ -841,7 +841,7 @@ describe('replanTasks (v1.18)', () => {
         end_date: '2026-05-20',
       }),
     ]
-    const moves = replanTasks(tasks)
+    const moves = replanTasks(tasks, '2026-01-01')
     expect(moves.map((m) => m.id)).toEqual(['BOTTOM'])
   })
 
@@ -862,7 +862,7 @@ describe('replanTasks (v1.18)', () => {
         priority: 1,
       }),
     ]
-    const moves = replanTasks(tasks)
+    const moves = replanTasks(tasks, '2026-01-01')
     // v1.23 — A reste sur place ; B démarre dès la fin de A en sautant les
     // jours non ouvrés : lun 25/05 est désormais férié (Pentecôte), donc B
     // démarre le mardi 26/05.
@@ -883,7 +883,7 @@ describe('replanTasks (v1.18)', () => {
         end_date: '2026-05-22',
       }),
     ]
-    expect(replanTasks(tasks)).toEqual([])
+    expect(replanTasks(tasks, '2026-01-01')).toEqual([])
   })
 
   it('ignore les jalons et les phases', () => {
@@ -906,7 +906,7 @@ describe('replanTasks (v1.18)', () => {
       }),
     ]
     // Aucune surcharge sur tâche réelle → aucun déplacement.
-    expect(replanTasks(tasks)).toEqual([])
+    expect(replanTasks(tasks, '2026-01-01')).toEqual([])
   })
 })
 
@@ -1263,7 +1263,7 @@ describe('v1.24 — RG-GANTT-0903 — Replan ne déplace jamais une activité ve
       start_date: '2026-07-15', // mercredi
       end_date: '2026-07-17',
     })
-    const moves = replanTasks([t])
+    const moves = replanTasks([t], '2026-01-01')
     expect(moves).toEqual([])
   })
 
@@ -1281,7 +1281,7 @@ describe('v1.24 — RG-GANTT-0903 — Replan ne déplace jamais une activité ve
       start_date: '2026-06-10', // chevauche A → surcharge
       end_date: '2026-06-15',
     })
-    const moves = replanTasks([a, b])
+    const moves = replanTasks([a, b], '2026-01-01')
     for (const m of moves) {
       const orig = [a, b].find((t) => t.id === m.id)!
       expect(m.newStart >= orig.start_date).toBe(true)
@@ -1309,7 +1309,7 @@ describe('v1.24 — RG-GANTT-0703 / 0709 — replan respecte la borne basse SNET
       predecessor_lag: 0,
       not_before_date: '2026-06-22', // borne SNET plus tardive
     })
-    const moves = replanTasks([X, Y])
+    const moves = replanTasks([X, Y], '2026-01-01')
     // Y doit être proposé à partir du 22/06 (lundi).
     const moveY = moves.find((m) => m.id === 'Y')
     expect(moveY).toBeDefined()
@@ -1334,7 +1334,7 @@ describe('v1.24 — RG-GANTT-0703 / 0709 — replan respecte la borne basse SNET
       predecessor_lag: 0,
       not_before_date: '2026-06-01', // borne SNET plus ancienne, sans effet
     })
-    const moves = replanTasks([X, Y])
+    const moves = replanTasks([X, Y], '2026-01-01')
     const moveY = moves.find((m) => m.id === 'Y')
     // Y commence APRÈS la fin de X, conformément à la règle prédécesseur.
     expect(moveY?.newStart || Y.start_date >= X.end_date).toBeTruthy()
@@ -2335,7 +2335,7 @@ describe('v2.2 / RG-INV — invariance de la charge sous Replan (Bug B1)', () =>
       },
     ]
     // 1er Replan : doit produire un move (correction de end_date vers 2026-06-12).
-    const moves1 = replanTasks(tasks, allocations, [])
+    const moves1 = replanTasks(tasks, '2026-01-01', allocations, [])
     expect(moves1.length).toBe(1)
     expect(moves1[0].newEnd).toBe('2026-06-12')
     expect(moves1[0].charge_jours).toBe(5) // charge préservée dans le move (RG-W)
@@ -2349,7 +2349,7 @@ describe('v2.2 / RG-INV — invariance de la charge sous Replan (Bug B1)', () =>
       t.charge_jours = m.charge_jours
     }
     // 2e Replan : doit être un no-op (point fixe atteint).
-    const moves2 = replanTasks(tasks, allocations, [])
+    const moves2 = replanTasks(tasks, '2026-01-01', allocations, [])
     expect(moves2).toEqual([])
   })
 })
@@ -2380,7 +2380,7 @@ describe('v2.2 / RG-A — progress=100 lockée par le Replan', () => {
         project_id: 'p1',
       }),
     ]
-    const moves = replanTasks(tasks, [], [])
+    const moves = replanTasks(tasks, '2026-01-01', [], [])
     // t1 (progress=100) ne doit jamais apparaître dans les moves.
     expect(moves.find((m) => m.id === 't1')).toBeUndefined()
   })
@@ -2407,7 +2407,7 @@ describe('v2.2 / RG-A — progress=100 lockée par le Replan', () => {
         project_id: 'p1',
       }),
     ]
-    const moves = replanTasks(tasks, [], [])
+    const moves = replanTasks(tasks, '2026-01-01', [], [])
     const m2 = moves.find((m) => m.id === 't2')
     expect(m2).toBeDefined()
     // t1 termine le 05/06 → t2 doit démarrer ≥ 08/06 (lundi suivant).
@@ -2440,7 +2440,7 @@ describe('v2.2 / RG-B — borne basse today pour progress > 0', () => {
         project_id: 'p1',
       }),
     ]
-    const moves = replanTasks(tasks, [], [])
+    const moves = replanTasks(tasks, '2026-01-01', [], [])
     expect(moves.length).toBe(1)
     expect(moves[0].newStart >= '2026-06-10').toBe(true)
   })
@@ -2458,7 +2458,7 @@ describe('v2.2 / RG-B — borne basse today pour progress > 0', () => {
         project_id: 'p1',
       }),
     ]
-    const moves = replanTasks(tasks, [], [])
+    const moves = replanTasks(tasks, '2026-01-01', [], [])
     // start_date reste 2026-06-22 puisque > today (RG-L absorbe).
     if (moves.length > 0) {
       expect(moves[0].newStart).toBe('2026-06-22')
@@ -2479,7 +2479,7 @@ describe('v2.2 / RG-B — borne basse today pour progress > 0', () => {
         project_id: 'p1',
       }),
     ]
-    const moves = replanTasks(tasks, [], [])
+    const moves = replanTasks(tasks, '2026-01-01', [], [])
     // Sans progress, RG-GANTT-0903 garde start_date dans le passé.
     expect(moves.length).toBe(0)
   })
@@ -2508,7 +2508,7 @@ describe('v2.2 / RG-C — consommation du reste à faire', () => {
         project_id: 'p1',
       }),
     ]
-    const moves = replanTasks(tasks, [], [])
+    const moves = replanTasks(tasks, '2026-01-01', [], [])
     expect(moves.length).toBe(1)
     const m = moves[0]
     // newStart = 2026-06-01 (today). newEnd = start + 5 j ouvrés = vendredi 05/06.
@@ -2529,7 +2529,7 @@ describe('v2.2 / RG-C — consommation du reste à faire', () => {
         project_id: 'p1',
       }),
     ]
-    const moves = replanTasks(tasks, [], [])
+    const moves = replanTasks(tasks, '2026-01-01', [], [])
     // Pour progress=0 sans surcharge, le moteur ne propose un move que si
     // l'end calculé diffère. Sans allocation %, end = start + 10 j ouvrés = 12/06.
     expect(moves.length).toBe(0)
@@ -2545,7 +2545,7 @@ describe('v2.2 / RG-C — consommation du reste à faire', () => {
         collaborator_id: 'c1',
       }),
     ]
-    const moves = replanTasks(tasks, [], [])
+    const moves = replanTasks(tasks, '2026-01-01', [], [])
     // Lockée par RG-A → aucun move.
     expect(moves.find((m) => m.id === 't1')).toBeUndefined()
   })
@@ -2663,7 +2663,7 @@ describe('v2.2 / RG-V — mode Planification anticipée', () => {
         project_id: 'p1',
       }),
     ]
-    const moves = replanTasks(tasks, [], [], { ignoreToday: true })
+    const moves = replanTasks(tasks, '2026-01-01', [], [], { ignoreToday: true })
     // En mode anticipé, RG-B suspendue : borne basse = start_date (01/06).
     if (moves.length > 0) {
       // Le moteur peut quand même proposer un move si end change (reste à
@@ -2684,7 +2684,7 @@ describe('v2.2 / RG-V — mode Planification anticipée', () => {
         collaborator_id: 'c1',
       }),
     ]
-    const moves = replanTasks(tasks, [], [], { ignoreToday: true })
+    const moves = replanTasks(tasks, '2026-01-01', [], [], { ignoreToday: true })
     expect(moves.find((m) => m.id === 't1')).toBeUndefined()
   })
 
@@ -2700,7 +2700,7 @@ describe('v2.2 / RG-V — mode Planification anticipée', () => {
         project_id: 'p1',
       }),
     ]
-    const moves = replanTasks(tasks, [], [], { ignoreToday: true })
+    const moves = replanTasks(tasks, '2026-01-01', [], [], { ignoreToday: true })
     expect(moves.length).toBe(1)
     expect(moves[0].newStart).toBe('2026-06-01')
     // Reste à faire = 10 * 0.5 = 5 j → end = 01/06 + 5 wd = 05/06.

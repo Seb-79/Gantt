@@ -34,6 +34,7 @@ import { ProjectFilter } from './components/ProjectFilter'
 // « localhost:5174 indique ») par des modales custom alignées sur le style
 // de l'app. Voir src/lib/dialogs.ts pour le détail.
 import { askAlert, askConfirm, askPrompt } from './lib/dialogs'
+import { getAdvancePlanning } from './lib/storage'
 import {
   checkCoherence,
   clampDayWidth,
@@ -983,10 +984,15 @@ export default function App() {
         // v2.0 / F2/F3 — Replan automatique post-save : consomme aussi la
         // capacité allouée et les absences pour rester cohérent avec le
         // replan manuel.
+        // v2.2 / RG-V — Respecte le toggle "Planification anticipée" persisté
+        // par projet (un seul mode pour toutes les sources de Replan).
+        const projectId = data.current_project_id
+        const ignoreToday = projectId ? getAdvancePlanning(projectId) : false
         const moves = replanTasks(
           sortTasksHierarchically(data.tasks),
           data.member_allocations,
           data.collaborator_absences,
+          { ignoreToday },
         )
         await submitReplanMoves(moves)
       } catch (err) {
@@ -1297,6 +1303,11 @@ export default function App() {
     // le replan (sinon le replan replacerait des tâches sur des jours en congé).
     const allocs = state.member_allocations
     const absences = state.collaborator_absences
+    // v2.2 / RG-V — Le mode "Planification anticipée" est lu depuis localStorage
+    // (par projet). Il suspend RG-B (today comme borne basse).
+    const ignoreToday = state.current_project_id
+      ? getAdvancePlanning(state.current_project_id)
+      : false
     // v2.1 / F2.9.C — Avant tout calcul de replan, vérifier que TOUTES les
     // activités du projet courant ont une allocation suffisante. Si certaines
     // ne sont pas absorbables, on bloque et on propose une extension en lot
@@ -1313,7 +1324,7 @@ export default function App() {
         return
       }
     }
-    const moves = replanTasks(orderedTasks, allocs, absences)
+    const moves = replanTasks(orderedTasks, allocs, absences, { ignoreToday })
     if (moves.length === 0) {
       await askAlert('Aucune surcharge détectée — rien à replanifier.')
       return

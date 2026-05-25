@@ -370,6 +370,31 @@ describe('TaskEditor — kinds spécifiques', () => {
     expect(patch.end_date).toBe(patch.start_date)
   })
 
+  // v2.2 / RG-U (RG-GANTT-1909) — Pour kind='phase', le champ Avancement est
+  // désactivé : la valeur affichée à l'utilisateur est dérivée des fils via
+  // `derivePhaseProgress` (lecture seule, calculée côté GanttChart).
+  it("v2.2 / RG-U — kind='phase' : champ Avancement désactivé (lecture dérivée)", () => {
+    render(
+      <TaskEditor
+        open
+        mode="create"
+        task={null}
+        defaultStart="2026-06-01"
+        defaultEnd="2026-06-30"
+        collaborators={[]}
+        memberIds={[]}
+        memberAllocations={[]}
+        tasks={[]}
+        onCancel={() => {}}
+        onSave={() => {}}
+      />,
+    )
+    fireEvent.change(screen.getByLabelText(/Type/), {
+      target: { value: 'phase' },
+    })
+    expect(screen.getByLabelText(/Avancement/)).toBeDisabled()
+  })
+
   it("phase : collaborateur et prédécesseur masqués, bandeau d'aide affiché", () => {
     render(
       <TaskEditor

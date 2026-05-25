@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toPng } from 'html-to-image'
+import AdvancePlanningToggle from './components/AdvancePlanningToggle'
 import GanttChart from './components/GanttChart'
 import TaskEditor from './components/TaskEditor'
 import WorkloadChart from './components/WorkloadChart'
@@ -1676,6 +1677,12 @@ export default function App() {
               🔄 Replan
             </button>
           </Tooltip>
+          {/* v2.2 / RG-V — Toggle "Planification anticipée" : suspend RG-B
+              pour le Replan manuel ET l'auto-replan post-édition. Persistance
+              localStorage par projet (cf. RG-GANTT-1910). */}
+          {state?.current_project_id && !isGlobalView && (
+            <AdvancePlanningToggle projectId={state.current_project_id} />
+          )}
           <Tooltip label="Capture PNG du Gantt (pour PowerPoint)">
             <button
               className="w-7 h-7 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"

@@ -695,6 +695,11 @@ Par défaut, après chaque modification d'une tâche via le formulaire,
 un Replan complet est relancé automatiquement. L'utilisateur peut
 décocher cette option pour figer son geste sans replanification.
 
+**(v2.2)** L'auto-replan respecte le toggle « Planification anticipée »
+du projet courant (RG-GANTT-1910) : si le toggle est coché, l'auto-replan
+s'exécute en mode anticipé (suspension de RG-GANTT-1903). Un seul mode
+pilote toutes les sources de Replan.
+
 **Tests :** `App.test.tsx` → « case cochée par défaut : un Replan suit le PATCH d'édition » ; « case décochée : aucun replan, seul le PATCH d'édition part ».
 
 ### RG-GANTT-1900

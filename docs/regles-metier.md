@@ -602,12 +602,14 @@ bandeau d'alertes n'est affiché au-dessus du planning.
 
 ### RG-GANTT-0807
 
-Quand des incohérences sont détectées, le bandeau propose deux
-actions : **Replan complet** (toutes les activités du projet) et
-**Replan partiel** (seules les activités concernées par les
-incohérences).
+Quand des incohérences sont détectées, le bandeau propose une action :
+**Replan complet** (toutes les activités du projet sont candidates au
+déplacement).
 
-**Tests :** `App.test.tsx` → « affiche le bandeau quand une surcharge existe + énumère les 2 boutons » ; « "Replan complet" depuis le bandeau ouvre la modal habituelle » ; « "Replan partiel" ne déplace que les tâches concernées ».
+**(v2.2)** Le bouton « Replan partiel » historique a été retiré
+(RG-GANTT-0906 abandonnée).
+
+**Tests :** `App.test.tsx` → « affiche le bandeau quand une surcharge existe + énumère les boutons » ; « "Replan complet" depuis le bandeau ouvre la modal habituelle ».
 
 ---
 
@@ -661,11 +663,11 @@ démarrage au plus tôt comme borne basse supplémentaire.
 
 ### RG-GANTT-0906
 
-Le **Replan partiel** ne déplace que les activités directement
-impliquées dans une incohérence (et leurs successeurs transitifs).
-Toutes les autres activités bloquent leurs créneaux courants.
-
-**Tests :** `utils.test.ts` → bloc `replanTasks — variante PARTIELLE (concernedIds)` ; `App.test.tsx` → « "Replan partiel" ne déplace que les tâches concernées ».
+**(v2.2 — abandonnée)** Le « Replan partiel » a été retiré.
+Toutes les activités sont désormais candidates au déplacement par
+le Replan complet (= seul mode de Replan). Le paramètre `concernedIds`
+de `replanTasks`, la fonction `concernedTaskIds` et le bouton dédié
+dans `CoherenceAlert` ont été supprimés.
 
 ### RG-GANTT-0907
 

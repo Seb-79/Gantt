@@ -14,6 +14,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toPng } from 'html-to-image'
 import AdvancePlanningToggle from './components/AdvancePlanningToggle'
+import CreateProjectDialog from './components/CreateProjectDialog'
+import ProjectSettingsModal from './components/ProjectSettingsModal'
 import GanttChart from './components/GanttChart'
 import TaskEditor from './components/TaskEditor'
 import WorkloadChart from './components/WorkloadChart'
@@ -285,6 +287,17 @@ export default function App() {
    * par "Annuler" (la modal se ferme sans envoyer de PATCH).
    */
   const [replanPreview, setReplanPreview] = useState<ReplanMove[] | null>(null)
+  /**
+   * v2.3 / RG-GANTT-2100 — Ouverture du dialog de création de projet.
+   * Remplace l'ancien `askPrompt` qui ne demandait que le nom.
+   */
+  const [creatingProject, setCreatingProject] = useState(false)
+  /**
+   * v2.3 / RG-GANTT-2101 — Ouverture de la modal "Paramètres du projet"
+   * (édition du nom + date de démarrage). Garde la référence au projet à
+   * éditer pour fermer la modal en remettant à `null`.
+   */
+  const [editingProject, setEditingProject] = useState<string | null>(null)
   /**
    * v2.1 / F2.9.C — État de blocage du Replan par manque d'allocation. Null
    * = pas de blocage. Quand non-null, le `ReplanAllocationFixDialog`
@@ -1027,22 +1040,59 @@ export default function App() {
    * croire à l'utilisateur que la bascule n'avait pas eu lieu. Voir aussi
    * le garde-fou symétrique dans handleProjectSelectionChange / selectView.
    */
-  const handleCreateProject = async () => {
-    const raw = await askPrompt('Nom du nouveau projet :', 'Nouveau projet')
-    const name = raw?.trim()
-    if (!name) return
+  /**
+   * v2.3 / RG-GANTT-2100 — Ouvre le dialog de création de projet
+   * (nom + date de démarrage). Le POST API est fait via
+   * `handleCreateProjectSubmit` une fois le dialog validé.
+   */
+  const handleCreateProject = () => {
+    setCreatingProject(true)
+  }
+
+  /**
+   * v2.3 / RG-GANTT-2100 — Callback d'enregistrement du
+   * `CreateProjectDialog` : POST /api/projects puis bascule sur le projet
+   * fraîchement créé.
+   */
+  const handleCreateProjectSubmit = async (input: {
+    name: string
+    project_start_date: string
+  }) => {
+    setCreatingProject(false)
     const id = makeId('p')
-    await mutate('POST', '/api/projects', { id, name })
+    await mutate('POST', '/api/projects', { id, ...input })
     handleProjectSelectionChange({ mode: 'single', projectId: id })
   }
 
-  /** Renomme le projet courant (prompt). */
-  const handleRenameProject = async () => {
+  /**
+   * v2.3 / RG-GANTT-2101 — Ouvre la modal "Paramètres du projet"
+   * (remplace l'ancien `askPrompt` qui ne renommait que le nom).
+   */
+  const handleRenameProject = () => {
     if (!currentProject) return
-    const raw = await askPrompt('Nouveau nom :', currentProject.name)
-    const name = raw?.trim()
-    if (!name || name === currentProject.name) return
-    await mutate('PATCH', `/api/projects/${currentProject.id}`, { name })
+    setEditingProject(currentProject.id)
+  }
+
+  /**
+   * v2.3 / RG-GANTT-2101 — Callback d'enregistrement du
+   * `ProjectSettingsModal` : PATCH /api/projects puis (si la date a changé
+   * ET la case "Replanifier après" est cochée) déclenche un Replan.
+   */
+  const handleProjectSettingsSave = async (
+    patch: { name?: string; project_start_date?: string },
+    replanRequested: boolean,
+  ) => {
+    if (!editingProject) return
+    const projectId = editingProject
+    setEditingProject(null)
+    await mutate('PATCH', `/api/projects/${projectId}`, patch)
+    if (replanRequested) {
+      // Laisse React rafraîchir le state avant d'ouvrir le Replan
+      // (sinon `currentProject.project_start_date` lit l'ancienne valeur).
+      setTimeout(() => {
+        void handleOpenReplan()
+      }, 0)
+    }
   }
 
   /** Supprime le projet courant après confirmation.
@@ -1328,11 +1378,16 @@ export default function App() {
     }
     // v2.3 / RG-GANTT-2100 — Le Replan utilise la date de démarrage du projet
     // comme borne basse globale. Fallback `today` si projet sans date (cas dégénéré).
-    const projectStartDate =
-      currentProject?.project_start_date || todayIso()
-    const moves = replanTasks(orderedTasks, projectStartDate, allocs, absences, {
-      ignoreToday,
-    })
+    const projectStartDate = currentProject?.project_start_date || todayIso()
+    const moves = replanTasks(
+      orderedTasks,
+      projectStartDate,
+      allocs,
+      absences,
+      {
+        ignoreToday,
+      },
+    )
     if (moves.length === 0) {
       await askAlert('Aucune surcharge détectée — rien à replanifier.')
       return
@@ -1872,6 +1927,23 @@ export default function App() {
           onExtendAllocations={handleExtendAllocations}
         />
       )}
+      {/* v2.3 / RG-GANTT-2100 — Dialog de création de projet (nom + date). */}
+      <CreateProjectDialog
+        open={creatingProject}
+        onClose={() => setCreatingProject(false)}
+        onCreate={handleCreateProjectSubmit}
+      />
+      {/* v2.3 / RG-GANTT-2101 — Modal "Paramètres du projet" (édition). */}
+      <ProjectSettingsModal
+        project={
+          editingProject
+            ? (state?.projects.find((p) => p.id === editingProject) ?? null)
+            : null
+        }
+        tasks={state?.tasks ?? []}
+        onClose={() => setEditingProject(null)}
+        onSave={handleProjectSettingsSave}
+      />
       {/* Mount unique des modales custom (confirm / prompt). Doit rester
           en bas pour passer au-dessus du reste en z-index. */}
       <Dialogs />

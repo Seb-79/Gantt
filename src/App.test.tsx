@@ -282,42 +282,49 @@ describe('App — gestion des projets', () => {
   // (<Dialogs />). Les tests :
   //   • saisissent le nom dans le champ texte de la modale (pour prompt),
   //   • cliquent sur OK / Annuler (pour les deux types).
-  it('création : prompt() → POST /api/projects + bascule sur le nouveau', async () => {
+  // v2.3 / RG-GANTT-2100 + 2101 — Les modales custom remplacent askPrompt.
+  // Création : <CreateProjectDialog> (nom + date démarrage).
+  // Édition : <ProjectSettingsModal> (nom + date démarrage + checkbox replan).
+  it('v2.3 — création : ouvre CreateProjectDialog → POST /api/projects (nom + date)', async () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
     fireEvent.click(screen.getByLabelText('Nouveau projet'))
-    const input = await screen.findByRole('textbox')
-    fireEvent.change(input, { target: { value: 'Mon projet' } })
-    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    // La modale s'ouvre avec un champ texte "Nom du projet" + un input date.
+    const nameInput = await screen.findByLabelText(/nom du projet/i)
+    fireEvent.change(nameInput, { target: { value: 'Mon projet' } })
+    const dateInput = screen.getByLabelText(/date de démarrage/i)
+    fireEvent.change(dateInput, { target: { value: '2026-09-01' } })
+    fireEvent.click(screen.getByRole('button', { name: /créer/i }))
     await waitFor(() => {
       const post = calls.find(
         (c) => c.method === 'POST' && c.url === '/api/projects',
       )
       expect(post).toBeTruthy()
-      expect(JSON.parse(post!.body!).name).toBe('Mon projet')
+      const body = JSON.parse(post!.body!)
+      expect(body.name).toBe('Mon projet')
+      expect(body.project_start_date).toBe('2026-09-01')
     })
   })
 
-  it('création annulée (prompt vide) → aucun POST', async () => {
+  it('v2.3 — création annulée → aucun POST', async () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
     fireEvent.click(screen.getByLabelText('Nouveau projet'))
-    const input = await screen.findByRole('textbox')
-    fireEvent.change(input, { target: { value: '' } })
-    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    await screen.findByLabelText(/nom du projet/i)
+    fireEvent.click(screen.getByRole('button', { name: /annuler/i }))
     expect(calls.find((c) => c.url === '/api/projects')).toBeUndefined()
   })
 
-  it('renommage : prompt() → PATCH /api/projects/:id', async () => {
+  it('v2.3 — paramètres : ouvre ProjectSettingsModal → PATCH /api/projects/:id (nom)', async () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
     fireEvent.click(screen.getByLabelText('Renommer le projet'))
-    const input = await screen.findByRole('textbox')
-    fireEvent.change(input, { target: { value: 'Projet renommé' } })
-    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    const nameInput = await screen.findByLabelText(/nom du projet/i)
+    fireEvent.change(nameInput, { target: { value: 'Projet renommé' } })
+    fireEvent.click(screen.getByRole('button', { name: /enregistrer/i }))
     await waitFor(() => {
       const patch = calls.find(
         (c) => c.method === 'PATCH' && c.url === '/api/projects/p1',
@@ -327,13 +334,16 @@ describe('App — gestion des projets', () => {
     })
   })
 
-  it('renommage : prompt identique → pas de PATCH', async () => {
+  it('v2.3 — paramètres : aucune modification → bouton Enregistrer désactivé, pas de PATCH', async () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
     fireEvent.click(screen.getByLabelText('Renommer le projet'))
-    // La modale s'ouvre avec le nom courant pré-rempli — on valide directement.
-    fireEvent.click(await screen.findByRole('button', { name: 'OK' }))
+    await screen.findByLabelText(/nom du projet/i)
+    // Le bouton "Enregistrer" est désactivé tant qu'aucun champ n'a changé.
+    const saveBtn = screen.getByRole('button', { name: /enregistrer/i })
+    expect(saveBtn).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: /annuler/i }))
     expect(
       calls.find(
         (c) => c.method === 'PATCH' && c.url.startsWith('/api/projects'),

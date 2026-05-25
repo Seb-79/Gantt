@@ -37,7 +37,6 @@ import { askAlert, askConfirm, askPrompt } from './lib/dialogs'
 import {
   checkCoherence,
   clampDayWidth,
-  concernedTaskIds,
   defaultWindow,
   DEFAULT_DAY_WIDTH,
   filterCollapsed,
@@ -986,7 +985,6 @@ export default function App() {
         // replan manuel.
         const moves = replanTasks(
           sortTasksHierarchically(data.tasks),
-          undefined,
           data.member_allocations,
           data.collaborator_absences,
         )
@@ -1322,15 +1320,9 @@ export default function App() {
         return
       }
     }
-    const moves =
-      scope === 'partial'
-        ? replanTasks(
-            orderedTasks,
-            concernedTaskIds(coherenceIssues, orderedTasks),
-            allocs,
-            absences,
-          )
-        : replanTasks(orderedTasks, undefined, allocs, absences)
+    // v2.2 — Replan partiel abandonné (RG-GANTT-0905 supprimée) ; toutes les
+    // activités sont candidates au déplacement.
+    const moves = replanTasks(orderedTasks, allocs, absences)
     if (moves.length === 0) {
       await askAlert(
         scope === 'partial'

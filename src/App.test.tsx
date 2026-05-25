@@ -731,10 +731,7 @@ describe("App — bandeau d'incohérence (v1.21)", () => {
     expect(
       within(alert).getByText(/Surcharge.*Recherche audience.*Définir/),
     ).toBeInTheDocument()
-    // Deux boutons d'action distincts.
-    expect(
-      within(alert).getByRole('button', { name: /Replan partiel/ }),
-    ).toBeInTheDocument()
+    // v2.2 — Un seul bouton « Replan complet » (Replan partiel abandonné, RG-GANTT-0905 supprimée).
     expect(
       within(alert).getByRole('button', { name: /Replan complet/ }),
     ).toBeInTheDocument()
@@ -755,104 +752,7 @@ describe("App — bandeau d'incohérence (v1.21)", () => {
     ).toBeInTheDocument()
   })
 
-  it('"Replan partiel" ne déplace que les tâches concernées', async () => {
-    // Scénario : 3 tâches sur c1.
-    //   • A : 15→29 mai (référence, lockée)
-    //   • B : 25 mai → 5 juin (concernée par la surcharge avec A)
-    //   • C : 8→12 juin (lockée, sans conflit)
-    // « Replan partiel » ne doit déplacer QUE B, et la nouvelle date doit
-    // contourner A (= 1er juin), sans toucher à A ni à C.
-    const state = mkState({
-      collaborators: [
-        { id: 'c1', name: 'Alice', color: '#3b82f6', position: 0 },
-      ],
-      tasks: [
-        {
-          id: 'A',
-          name: 'A',
-          kind: 'task',
-          start_date: '2026-05-15',
-          end_date: '2026-05-29',
-          progress: 0,
-          collaborator_id: 'c1',
-          color: null,
-          parent_id: null,
-          predecessor_id: null,
-          predecessor_lag: 0,
-          priority: null,
-          not_before_date: null,
-          not_later_than_date: null,
-          charge_jours: null,
-          position: 0,
-          project_id: 'p1',
-        },
-        {
-          id: 'B',
-          name: 'B',
-          kind: 'task',
-          start_date: '2026-05-25',
-          end_date: '2026-06-05',
-          progress: 0,
-          collaborator_id: 'c1',
-          color: null,
-          parent_id: null,
-          predecessor_id: null,
-          predecessor_lag: 0,
-          priority: null,
-          not_before_date: null,
-          not_later_than_date: null,
-          charge_jours: null,
-          position: 1,
-          project_id: 'p1',
-        },
-        {
-          id: 'C',
-          name: 'C',
-          kind: 'task',
-          start_date: '2026-06-08',
-          end_date: '2026-06-12',
-          progress: 0,
-          collaborator_id: 'c1',
-          color: null,
-          parent_id: null,
-          predecessor_id: null,
-          predecessor_lag: 0,
-          priority: null,
-          not_before_date: null,
-          not_later_than_date: null,
-          charge_jours: null,
-          position: 2,
-          project_id: 'p1',
-        },
-      ],
-    })
-    const { calls } = setupFetchMock(state)
-    render(<App />)
-    await waitFor(() => screen.getByTestId('coherence-alert'))
-    fireEvent.click(
-      within(screen.getByTestId('coherence-alert')).getByRole('button', {
-        name: /Replan partiel/,
-      }),
-    )
-    const dialog = await screen.findByRole('dialog', {
-      name: /replanification/i,
-    })
-    // SEULE la tâche B doit apparaître dans la modal d'aperçu.
-    expect(
-      within(dialog).getByText('B', { selector: 'td' }),
-    ).toBeInTheDocument()
-    expect(within(dialog).queryByText('A', { selector: 'td' })).toBeNull()
-    expect(within(dialog).queryByText('C', { selector: 'td' })).toBeNull()
-    // Application → un seul PATCH (sur B).
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Appliquer' }))
-    await waitFor(() => {
-      const patches = calls.filter(
-        (c) => c.method === 'PATCH' && c.url.startsWith('/api/tasks/'),
-      )
-      expect(patches).toHaveLength(1)
-      expect(patches[0].url).toBe('/api/tasks/B')
-    })
-  })
+  // v2.2 — Test "Replan partiel" supprimé : RG-GANTT-0905 abandonnée.
 })
 
 // =============================================================================

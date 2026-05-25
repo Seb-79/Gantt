@@ -1916,28 +1916,6 @@ function placeTaskInTimeline(
 }
 
 /**
- * v1.21 — Pré-remplit la timeline des collaborateurs avec les tâches LOCKÉES
- * (= non concernées en mode partiel). Ces tâches gardent leurs dates et
- * bloquent les créneaux correspondants. Extrait de `replanTasks` pour
- * limiter la complexité cognitive.
- */
-function prefillLockedIntervals(
-  tasks: Task[],
-  concernedIds: Set<string>,
-  timeline: Map<string, Array<[string, string]>>,
-): void {
-  for (const t of tasks) {
-    if (t.kind !== 'task') continue
-    if (concernedIds.has(t.id)) continue
-    // v2.0 / F6 — Lit la liste multi-collab (avec fallback legacy).
-    const collabIds = taskCollabIds(t)
-    for (const cId of collabIds) {
-      pushTimelineInterval(timeline, cId, t.start_date, t.end_date)
-    }
-  }
-}
-
-/**
  * v1.21 — Construit la liste finale des `ReplanMove` en ne gardant QUE les
  * tâches dont les dates proposées diffèrent des dates d'origine. Extrait
  * pour limiter la complexité cognitive de `replanTasks`.
@@ -1973,26 +1951,19 @@ function buildReplanMoves(
 
 export function replanTasks(
   tasks: Task[],
-  concernedIds?: Set<string>,
   allocations: MemberAllocation[] = [],
   absences: CollaboratorAbsence[] = [],
 ): ReplanMove[] {
-  // v1.21 — `concernedIds` actif → replan PARTIEL : seules les tâches
-  // listées peuvent voir leurs dates modifiées. Les autres sont LOCKÉES à
-  // leurs dates actuelles ET ajoutées au timeline du collaborateur (=
-  // obstacles à contourner). Si `concernedIds` est `undefined`, le replan
-  // est COMPLET (comportement historique : toutes les tâches `task` sont
-  // candidates au déplacement).
+  // v2.2 — Le Replan partiel (RG-GANTT-0905) est abandonné. Toutes les tâches
+  // `kind='task'` sont candidates au déplacement. Les obstacles éventuels
+  // (tâches lockées par RG-A à venir en L3) seront gérés par un
+  // pré-remplissage dédié (cf. prefillCompletedIntervals).
   // v2.0 / F2 — `allocations` est la liste des périodes d'allocation du
   // projet : le moteur consomme la capacité quotidienne (allocation %) pour
   // calculer la fin de chaque tâche, au lieu de simples jours ouvrés bruts.
   // v2.0 / F3 — `absences` réduit multiplicativement la capacité du collab
   // (lecture cross-projet). Vide → pas d'impact.
   // Tableau vide → comportement F0 (fin = start + charge en jours ouvrés).
-  const isPartial = !!concernedIds
-  const isConcerned = (id: string) =>
-    !isPartial || (concernedIds as Set<string>).has(id)
-
   const tasksById = new Map(tasks.map((t) => [t.id, t]))
   const order = buildReplanOrder(tasks)
 
@@ -2005,12 +1976,8 @@ export function replanTasks(
   // Timeline (intervalles fixés) par collaborateur — bornes INCLUSIVES en
   // jours ouvrés (compatibles avec `findFreeSlot`).
   const timeline = new Map<string, Array<[string, string]>>()
-  if (isPartial) {
-    prefillLockedIntervals(tasks, concernedIds as Set<string>, timeline)
-  }
 
   for (const t of order) {
-    if (!isConcerned(t.id)) continue
     placeTaskInTimeline(t, tasksById, proposed, timeline, allocations, absences)
   }
 
@@ -2328,76 +2295,6 @@ export function checkCoherence(tasks: Task[]): CoherenceIssue[] {
     ...detectNotBeforeViolations(tasks),
     ...detectFnltOverruns(tasks),
   ]
-}
-
-/**
- * v1.21 — Calcule l'ensemble des tâches « concernées » par une liste
- * d'incohérences = tâches directement impliquées + tous leurs descendants
- * (enfants de phases) + tous leurs successeurs transitifs (chaîne
- * `predecessor_id`). Sert au « Replan partiel » : on ne déplace que ces
- * tâches-là, le reste du planning est verrouillé.
- *
- * @param issues  Issues issues de `checkCoherence`.
- * @param tasks   Liste complète des tâches du projet.
- * @returns       Set d'ids à passer à `replanTasks(tasks, concernedIds)`.
- */
-/**
- * v1.21 — Indexe les ids des successeurs par prédécesseur. Helper interne
- * pour `concernedTaskIds`.
- */
-function indexSuccessorsByPredecessor(tasks: Task[]): Map<string, string[]> {
-  const byPred = new Map<string, string[]>()
-  for (const t of tasks) {
-    if (!t.predecessor_id) continue
-    const arr = byPred.get(t.predecessor_id) || []
-    arr.push(t.id)
-    byPred.set(t.predecessor_id, arr)
-  }
-  return byPred
-}
-
-/**
- * v1.21 — BFS sur le graphe `successors` à partir d'un ensemble initial,
- * en ajoutant chaque successeur visité à `out`. Borné pour éviter toute
- * boucle infinie en cas de cycle (anormal mais on protège).
- */
-function expandSuccessors(
-  out: Set<string>,
-  successors: Map<string, string[]>,
-  cap: number,
-): void {
-  const queue = [...out]
-  let safety = cap
-  while (queue.length > 0 && safety-- > 0) {
-    const id = queue.shift() as string
-    for (const succId of successors.get(id) || []) {
-      if (out.has(succId)) continue
-      out.add(succId)
-      queue.push(succId)
-    }
-  }
-}
-
-export function concernedTaskIds(
-  issues: CoherenceIssue[],
-  tasks: Task[],
-): Set<string> {
-  const out = new Set<string>()
-  for (const i of issues) {
-    for (const id of i.taskIds) out.add(id)
-  }
-  expandSuccessors(
-    out,
-    indexSuccessorsByPredecessor(tasks),
-    tasks.length * tasks.length + 1,
-  )
-  // Descendants (enfants des phases concernées). Une phase n'est jamais
-  // directement déplaçable, mais ses enfants doivent rester libres si la
-  // phase elle-même est mentionnée.
-  for (const t of tasks) {
-    if (t.parent_id && out.has(t.parent_id)) out.add(t.id)
-  }
-  return out
 }
 
 /**

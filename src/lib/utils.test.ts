@@ -14,7 +14,6 @@ import {
   scanReplanShortfalls,
   checkCoherence,
   clampDayWidth,
-  concernedTaskIds,
   dateToIso,
   dateToX,
   daysBetweenIso,
@@ -1179,128 +1178,6 @@ describe('addWorkingDays / workingDaysBetween (v1.23) — sautent les fériés',
   })
 })
 
-describe('replanTasks — variante PARTIELLE (concernedIds)', () => {
-  it('replan complet sans `concernedIds` : comportement v1.18 inchangé', () => {
-    // Référence : surcharge identique au scénario du brief Replan v1.18.
-    const tasks: Task[] = [
-      mkTask('t1a', {
-        name: 'Recherche audience',
-        collaborator_id: 'c1',
-        start_date: '2026-05-15',
-        end_date: '2026-05-29',
-      }),
-      mkTask('t1b', {
-        name: 'Définir le message',
-        collaborator_id: 'c1',
-        start_date: '2026-05-25',
-        end_date: '2026-06-05',
-      }),
-    ]
-    const moves = replanTasks(tasks)
-    expect(moves.map((m) => m.id)).toEqual(['t1b'])
-    expect(moves[0].newStart).toBe('2026-06-01')
-  })
-
-  it('`concernedIds` vide ⇒ aucun déplacement (toutes les tâches lockées)', () => {
-    const tasks: Task[] = [
-      mkTask('A', {
-        collaborator_id: 'c1',
-        start_date: '2026-05-15',
-        end_date: '2026-05-29',
-      }),
-      mkTask('B', {
-        collaborator_id: 'c1',
-        start_date: '2026-05-25',
-        end_date: '2026-06-05',
-      }),
-    ]
-    expect(replanTasks(tasks, new Set())).toEqual([])
-  })
-
-  it('replan partiel : SEULES les tâches listées peuvent être déplacées', () => {
-    // 3 tâches s'empilent sur c1 : A (15→29), B (25→6/5), C (1/6→10/6).
-    // Si concerned = {B}, seule B doit bouger. A et C restent figées.
-    const tasks: Task[] = [
-      mkTask('A', {
-        collaborator_id: 'c1',
-        start_date: '2026-05-15',
-        end_date: '2026-05-29',
-      }),
-      mkTask('B', {
-        collaborator_id: 'c1',
-        start_date: '2026-05-25',
-        end_date: '2026-06-05',
-      }),
-      mkTask('C', {
-        collaborator_id: 'c1',
-        start_date: '2026-06-01',
-        end_date: '2026-06-10',
-      }),
-    ]
-    const moves = replanTasks(tasks, new Set(['B']))
-    // Seule B est listée. A et C restent en place, font OBSTACLE.
-    expect(moves.map((m) => m.id)).toEqual(['B'])
-    // B doit attendre la fin de C (= 10/06, jour ouvré suivant = 11/06).
-    expect(moves[0].newStart).toBe('2026-06-11')
-  })
-
-  it('replan partiel : un descendant transitif (successeur) bouge si concerné', () => {
-    // X → Y (Y a X comme prédécesseur). Si on inclut Y dans concerned mais pas X,
-    // Y peut bouger pour satisfaire la contrainte.
-    const tasks: Task[] = [
-      mkTask('X', {
-        start_date: '2026-05-18',
-        end_date: '2026-05-22',
-      }),
-      mkTask('Y', {
-        predecessor_id: 'X',
-        start_date: '2026-05-15',
-        end_date: '2026-05-19',
-      }),
-    ]
-    const moves = replanTasks(tasks, new Set(['Y']))
-    expect(moves.map((m) => m.id)).toEqual(['Y'])
-    // Y doit démarrer au plus tôt à X.end (= 22/05, vendredi).
-    expect(moves[0].newStart >= '2026-05-22').toBe(true)
-  })
-})
-
-describe('concernedTaskIds — fermeture transitive', () => {
-  it('inclut les tâches mentionnées dans les issues', () => {
-    const tasks: Task[] = [mkTask('A'), mkTask('B'), mkTask('C')]
-    const issues: ReturnType<typeof checkCoherence> = [
-      {
-        kind: 'overload',
-        severity: 'error',
-        taskIds: ['A', 'B'],
-        message: 'x',
-      },
-    ]
-    const set = concernedTaskIds(issues, tasks)
-    expect([...set].sort()).toEqual(['A', 'B'])
-  })
-
-  it('propage aux successeurs transitifs (chaîne X → Y → Z)', () => {
-    const tasks: Task[] = [
-      mkTask('X'),
-      mkTask('Y', { predecessor_id: 'X' }),
-      mkTask('Z', { predecessor_id: 'Y' }),
-    ]
-    const set = concernedTaskIds(
-      [
-        {
-          kind: 'overload',
-          severity: 'error',
-          taskIds: ['X'],
-          message: 'x',
-        },
-      ],
-      tasks,
-    )
-    expect([...set].sort()).toEqual(['X', 'Y', 'Z'])
-  })
-})
-
 // =============================================================================
 // v1.24 — Tests dédiés couvrant les règles métier RG-GANTT-XXXX (cf.
 // docs/regles-metier.md). Chaque test cite explicitement la règle
@@ -2457,7 +2334,7 @@ describe('v2.2 / RG-INV — invariance de la charge sous Replan (Bug B1)', () =>
       },
     ]
     // 1er Replan : doit produire un move (correction de end_date vers 2026-06-12).
-    const moves1 = replanTasks(tasks, undefined, allocations, [])
+    const moves1 = replanTasks(tasks, allocations, [])
     expect(moves1.length).toBe(1)
     expect(moves1[0].newEnd).toBe('2026-06-12')
     expect(moves1[0].charge_jours).toBe(5) // charge préservée dans le move (RG-W)
@@ -2471,7 +2348,7 @@ describe('v2.2 / RG-INV — invariance de la charge sous Replan (Bug B1)', () =>
       t.charge_jours = m.charge_jours
     }
     // 2e Replan : doit être un no-op (point fixe atteint).
-    const moves2 = replanTasks(tasks, undefined, allocations, [])
+    const moves2 = replanTasks(tasks, allocations, [])
     expect(moves2).toEqual([])
   })
 })

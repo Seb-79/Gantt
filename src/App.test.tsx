@@ -1019,6 +1019,84 @@ describe('App — Replan préserve predecessor_lag (v1.23)', () => {
       expect(body.end_date).toBeTruthy()
     })
   })
+
+  // v2.2 / RG-W — Le PATCH du Replan inclut systématiquement `charge_jours`
+  // pour empêcher la back-dérivation côté serveur (boucle B1 corrigée).
+  // Reprend le setup exact du test voisin (predecessor_lag) qui déclenche déjà
+  // un Replan effectif → on ajoute juste l'assertion sur charge_jours.
+  it('v2.2 / RG-W — chaque PATCH de replan inclut charge_jours', async () => {
+    const state = mkState({
+      collaborators: [
+        { id: 'alice', name: 'Alice', color: '#3b82f6', position: 0 },
+      ],
+      tasks: [
+        {
+          id: 'PRED',
+          name: 'Pred',
+          kind: 'task',
+          start_date: '2026-06-08',
+          end_date: '2026-06-12',
+          progress: 0,
+          collaborator_id: 'alice',
+          color: null,
+          parent_id: null,
+          predecessor_id: null,
+          predecessor_lag: 0,
+          priority: null,
+          not_before_date: null,
+          not_later_than_date: null,
+          charge_jours: null,
+          position: 0,
+          project_id: 'p1',
+        },
+        {
+          id: 'SUCC',
+          name: 'Succ',
+          kind: 'task',
+          start_date: '2026-06-10',
+          end_date: '2026-06-12',
+          progress: 0,
+          collaborator_id: 'alice',
+          color: null,
+          parent_id: null,
+          predecessor_id: 'PRED',
+          predecessor_lag: 3,
+          priority: null,
+          not_before_date: null,
+          not_later_than_date: null,
+          charge_jours: null,
+          position: 1,
+          project_id: 'p1',
+        },
+      ],
+    })
+    const { calls } = setupFetchMock(state)
+    render(<App />)
+    await waitFor(() => screen.getByTestId('coherence-alert'))
+    fireEvent.click(
+      within(screen.getByTestId('coherence-alert')).getByRole('button', {
+        name: /Replan complet/,
+      }),
+    )
+    const dialog = await screen.findByRole('dialog', {
+      name: /replanification/i,
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Appliquer' }))
+
+    await waitFor(() => {
+      const patches = calls.filter(
+        (c) => c.method === 'PATCH' && c.url.startsWith('/api/tasks/'),
+      )
+      expect(patches.length).toBeGreaterThan(0)
+      for (const p of patches) {
+        const body = JSON.parse(p.body!)
+        // RG-W : charge_jours doit être présent (≥ 1, source de vérité préservée).
+        expect(body.charge_jours).toBeDefined()
+        expect(typeof body.charge_jours).toBe('number')
+        expect(body.charge_jours).toBeGreaterThanOrEqual(1)
+      }
+    })
+  })
 })
 
 describe('App — robustesse réseau', () => {

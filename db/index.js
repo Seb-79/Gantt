@@ -37,6 +37,7 @@ import {
   ensureMemberAllocationsTable,
   ensureProjectMembersTable,
   ensureProjectsMigration,
+  ensureProjectStartDateColumn,
   ensureTaskAssignmentsTable,
   ensureTaskColumns,
   ensureTaskPredecessorsTable,
@@ -95,6 +96,13 @@ export function initDb(dbPath) {
   // et rattache toutes les tâches orphelines au projet "Projet 1" (créé à la
   // volée s'il n'existe pas encore).
   ensureProjectsMigration(db)
+
+  // v2.3 / RG-GANTT-2000 — Ajoute la colonne `project_start_date` sur
+  // `projects` si elle manque, puis initialise sa valeur pour les projets
+  // existants à MIN(tasks.start_date) (ou today si projet vide). Doit
+  // tourner APRÈS ensureProjectsMigration qui s'assure que la table existe
+  // et qu'au moins un projet par défaut est créé.
+  ensureProjectStartDateColumn(db)
 
   // v1.21 — Crée la table task_predecessors (N:M tasks ↔ prédécesseurs) si
   // elle n'existe pas, puis migre une fois pour toutes les anciennes liaisons

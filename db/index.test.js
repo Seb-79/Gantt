@@ -37,6 +37,57 @@ describe('initDb', () => {
     expect(isDatabaseEmpty(db)).toBe(true)
   })
 
+  it('v2.3 / RG-GANTT-2000 — la colonne projects.project_start_date existe (NOT NULL)', () => {
+    const db = initDb(':memory:')
+    const cols = db.prepare('PRAGMA table_info(projects)').all()
+    const col = cols.find((c) => c.name === 'project_start_date')
+    expect(col).toBeDefined()
+    expect(col.notnull).toBe(1)
+  })
+
+  it('v2.3 / RG-GANTT-2000 — migration : ancienne base sans la colonne reçoit MIN(tasks.start_date) ou today', async () => {
+    const Database = (await import('better-sqlite3')).default
+    const tmpFile = `/tmp/gantt-pstart-migration-${Date.now()}.db`
+    const old = new Database(tmpFile)
+    // Schéma minimal v2.2 : projects SANS project_start_date, tasks rattachées.
+    old.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, position INTEGER NOT NULL);
+      CREATE TABLE collaborators (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        color TEXT NOT NULL DEFAULT '#3b82f6', position INTEGER NOT NULL
+      );
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'task',
+        start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+        progress INTEGER NOT NULL DEFAULT 0,
+        collaborator_id TEXT, color TEXT,
+        parent_id TEXT, position INTEGER NOT NULL,
+        project_id TEXT
+      );
+      INSERT INTO projects(id, name, position) VALUES ('pA', 'A', 1);
+      INSERT INTO projects(id, name, position) VALUES ('pB_empty', 'B', 2);
+      INSERT INTO tasks(id, name, start_date, end_date, position, project_id)
+        VALUES ('tA1', 'X', '2026-03-15', '2026-03-20', 1, 'pA');
+      INSERT INTO tasks(id, name, start_date, end_date, position, project_id)
+        VALUES ('tA2', 'Y', '2026-04-01', '2026-04-10', 2, 'pA');
+      INSERT INTO meta(key, value) VALUES ('version', '5');
+    `)
+    old.close()
+    const db = initDb(tmpFile)
+    const pA = db
+      .prepare("SELECT project_start_date FROM projects WHERE id = 'pA'")
+      .get()
+    const pB = db
+      .prepare("SELECT project_start_date FROM projects WHERE id = 'pB_empty'")
+      .get()
+    expect(pA.project_start_date).toBe('2026-03-15') // MIN(start_date)
+    // Projet vide → today (format ISO YYYY-MM-DD)
+    expect(pB.project_start_date).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(pB.project_start_date).toBe(new Date().toISOString().slice(0, 10))
+  })
+
   it('migre une base ancienne (sans predecessor_id) sans erreur', async () => {
     // Simule une base v1.0/v1.1 : on ouvre directement better-sqlite3,
     // on crée la table tasks AVEC l'ancien schéma (sans predecessor_id),

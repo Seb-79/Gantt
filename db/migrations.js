@@ -541,3 +541,51 @@ export function ensureTaskAssignmentsTable(db) {
     `[INIT] Migration v2.0 / F6 : ${rows.length} affectation(s) tâche↔collab migrée(s) vers task_assignments.`,
   )
 }
+
+/**
+ * v2.3 / RG-GANTT-2000 — Ajoute la colonne `project_start_date` sur `projects`
+ * si elle manque (base d'avant la v2.3), puis initialise sa valeur pour les
+ * projets existants à `MIN(start_date)` de leurs tâches (ou `today` si le
+ * projet est vide). Cette stratégie garantit qu'aucune `project_start_date`
+ * n'est postérieure à une tâche existante — RG-GANTT-2010 ne peut pas être
+ * violée par la migration elle-même.
+ *
+ * Idempotente : si la colonne existe déjà, aucune écriture n'est faite (le
+ * DEFAULT et l'UPDATE sont gardés derrière le check de présence).
+ *
+ * @param {import('better-sqlite3').Database} db
+ */
+export function ensureProjectStartDateColumn(db) {
+  const cols = db
+    .prepare(`PRAGMA table_info(projects)`)
+    .all()
+    .map((c) => c.name)
+  if (cols.includes('project_start_date')) return
+  // ALTER TABLE avec DEFAULT pour ne pas violer NOT NULL sur les lignes
+  // existantes. La vraie valeur est ensuite calculée par projet.
+  db.exec(
+    `ALTER TABLE projects ADD COLUMN project_start_date TEXT NOT NULL DEFAULT '2026-01-01'`,
+  )
+  // Initialisation par projet : MIN(tasks.start_date) si le projet a des
+  // tâches, sinon today (format ISO YYYY-MM-DD).
+  const todayIso = new Date().toISOString().slice(0, 10)
+  const projects = db.prepare(`SELECT id FROM projects`).all()
+  const upd = db.prepare(
+    `UPDATE projects SET project_start_date = ? WHERE id = ?`,
+  )
+  const minStart = db.prepare(
+    `SELECT MIN(start_date) AS d FROM tasks WHERE project_id = ?`,
+  )
+  let migrated = 0
+  for (const p of projects) {
+    const row = minStart.get(p.id)
+    const start = row?.d || todayIso
+    upd.run(start, p.id)
+    migrated++
+  }
+  if (migrated > 0) {
+    console.log(
+      `[INIT] Migration v2.3 (RG-GANTT-2000) : ${migrated} projet(s) → project_start_date initialisée depuis MIN(tasks.start_date) (ou today si vide).`,
+    )
+  }
+}

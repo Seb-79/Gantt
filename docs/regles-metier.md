@@ -92,6 +92,11 @@ l'écart courant en jours ouvrés. Si les deux sont fournies, la charge
 gagne. Cette politique permet au drag du bord droit d'une barre dans le
 planning (qui envoie `end_date`) d'éditer implicitement la charge.
 
+**(v2.2)** La back-dérivation depuis `end_date` (cas où seule `end_date`
+est fournie) ne s'applique qu'au **drag manuel du bord droit** dans le
+diagramme Gantt. Le Replan utilise un contrat distinct (RG-GANTT-1901)
+qui fournit `charge_jours` explicitement pour empêcher la back-dérivation.
+
 **Tests :** `utils.test.ts` → bloc `addWorkingDays (v1.9)` (8 cas) ;
 bloc `computeEndFromCharge (v2.0)` (3 cas dont « saute les fériés FR ») ;
 `db/index.test.js` → « v2.0 / RG-GANTT-0100 — activité créée sans charge_jours :
@@ -685,6 +690,28 @@ un Replan complet est relancé automatiquement. L'utilisateur peut
 décocher cette option pour figer son geste sans replanification.
 
 **Tests :** `App.test.tsx` → « case cochée par défaut : un Replan suit le PATCH d'édition » ; « case décochée : aucun replan, seul le PATCH d'édition part ».
+
+### RG-GANTT-1900
+
+**(v2.2 — invariance de la charge)** Un Replan ne modifie JAMAIS la
+`charge_jours` d'une activité. La charge est un invariant ; seules
+`start_date` et `end_date` peuvent évoluer sous l'action du Replan.
+Cette règle garantit qu'un Replan suivi d'aucune modification utilisateur
+est un point fixe : un second Replan immédiat retourne `[]`.
+
+**Tests :** `utils.test.ts` → « v2.2 / RG-INV — 2 Replans consécutifs sans modification produisent le même état » ; `db/index.test.js` → « v2.2 / RG-W — PATCH avec start+end+charge tous explicites : tous honorés sans recalcul ».
+
+### RG-GANTT-1901
+
+**(v2.2 — contrat PATCH du Replan)** Le PATCH issu du Replan (manuel ou
+automatique via RG-GANTT-0909) inclut systématiquement les quatre
+champs `start_date`, `end_date`, `charge_jours` et `predecessor_lag`.
+Le serveur honore les quatre valeurs telles quelles, sans
+back-dérivation. RG-GANTT-0100 (back-dérivation de `charge_jours`
+depuis `end_date - start_date`) ne s'applique plus qu'au drag manuel
+du bord droit dans le diagramme, où `charge_jours` n'est pas envoyé.
+
+**Tests :** `db/index.test.js` → « v2.2 / RG-W — PATCH avec start+end+charge tous explicites » ; `App.test.tsx` → « v2.2 / RG-W — chaque PATCH de replan inclut charge_jours ».
 
 ---
 

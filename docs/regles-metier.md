@@ -645,6 +645,10 @@ La replanification ne déplace **jamais** une activité vers une date
 antérieure à sa date de début actuelle. C'est un mouvement vers le
 futur uniquement.
 
+**(v2.2)** Si l'activité est en cours (`progress > 0`), la borne basse
+intègre en outre `today` (RG-GANTT-1903) : on ne replanifie pas le
+passé.
+
 **Tests :** `utils.test.ts` → « v1.24 — RG-GANTT-0903 — une activité isolée et libre n`est PAS ramenée en arrière par le replan » ; « après replan, la borne basse de chaque activité est >= sa start_date d`origine ».
 
 ### RG-GANTT-0904
@@ -744,6 +748,22 @@ jours-allocation (= reste à faire), arrondi au jour ouvré supérieur
 
 **Tests :** `utils.test.ts` → « v2.2 / RG-C — consommation du reste à faire ».
 
+### RG-GANTT-1905
+
+**(v2.2 — RG-L — politique sans alerte)** Une activité à `progress > 0`
+ET `today < start_date` (commencée avant la date prévue selon les
+données saisies) ne déclenche pas d'alerte dans le bandeau
+d'incohérences. Le Replan respecte la `start_date` saisie : la borne
+basse retombe sur `start_date` puisque `start_date > today`.
+L'éventuelle incohérence (saisie utilisateur erronée) reste à
+arbitrer par l'utilisateur via le TaskEditor.
+
+### RG-GANTT-1906
+
+**(v2.2 — RG-M — info silencieuse)** Une activité à `progress = 100`
+avec `today < end_date` (« finie en avance ») ne déclenche aucune
+alerte. La tâche reste lockée par RG-GANTT-1902.
+
 ### RG-GANTT-1907
 
 **(v2.2 — RG-N)** Un PATCH d'édition d'une activité qui ne modifie que
@@ -756,6 +776,15 @@ automatique (RG-GANTT-0909) qui produit la nouvelle date de fin si
 la case « Replanifier après enregistrement » est cochée.
 
 **Tests :** `db/index.test.js` → « v2.2 / RG-N — PATCH avec progress seul : end_date et charge_jours inchangés ».
+
+### RG-GANTT-1908
+
+**(v2.2 — RG-O)** Lorsque l'utilisateur édite manuellement
+`charge_jours` sur une activité à `progress > 0`, la valeur saisie
+est interprétée comme la **charge totale révisée** (et non comme le
+reste à faire). Le reste à faire dérivé devient
+`nouvelle_charge × (1 − progress/100)` lors du Replan suivant.
+L'utilisateur ne saisit jamais directement un « reste à faire ».
 
 ### RG-GANTT-1909
 

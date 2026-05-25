@@ -1665,7 +1665,7 @@ function ensureCollabIsMember(db, collabId, projectId) {
  *        ont été explicitement fournies par l'appelant).
  * @returns {{charge_jours:number|null, end_date:string}}
  */
-function resolveChargeAndEnd(next, patch, db) {
+function resolveChargeAndEnd(next, patch, db, isUpdate = false) {
   if (next.kind === 'milestone') {
     return { charge_jours: null, end_date: next.start_date }
   }
@@ -1707,6 +1707,17 @@ function resolveChargeAndEnd(next, patch, db) {
     patch &&
     Object.prototype.hasOwnProperty.call(patch, 'end_date') &&
     patch.end_date
+  // v2.2 / RG-W — Cas 3a' : si charge ET end_date sont TOUS DEUX fournis par
+  // le client (signal du Replan ou d'un éditeur qui contrôle les trois),
+  // les deux valeurs sont honorées telles quelles. Pas de back-dérivation,
+  // pas de recalcul. Ce cas court-circuite 3a (qui écraserait end) et 3b
+  // (qui back-dériverait charge — bug B1 historique du Replan).
+  // N'est actif que lors d'un PATCH (isUpdate=true) : à la création, si
+  // charge_jours est fourni, end doit toujours être recalculée (cas 3a normal).
+  if (isUpdate && hasExplicitCharge && hasExplicitEnd) {
+    const c = Math.max(1, Math.floor(Number(patch.charge_jours)))
+    return { charge_jours: c, end_date: patch.end_date }
+  }
   // Cas 3a : charge explicite gagne.
   if (hasExplicitCharge) {
     const c = Math.max(1, Math.floor(Number(patch.charge_jours)))
@@ -2099,7 +2110,7 @@ export function updateTask(db, id, patch) {
     //   • sinon → charge existante conservée, end recalculée depuis start.
     // v2.0 / F2/F6 — `db` + `next.collaborator_ids` permettent au recalcul
     // de consommer la capacité SOMMÉE des collabs jour par jour.
-    const resolved = resolveChargeAndEnd(next, patch, db)
+    const resolved = resolveChargeAndEnd(next, patch, db, true)
     next.charge_jours = resolved.charge_jours
     next.end_date = resolved.end_date
     // v1.24 — Applique la contrainte SNET en dernière étape (la borne basse

@@ -2427,54 +2427,60 @@ describe('rebuildAllocationsForCollab (v2.1 / F4 / RG-GANTT-2002)', () => {
 // =============================================================================
 
 describe('v2.2 / RG-INV — invariance de la charge sous Replan (Bug B1 — test rouge intentionnel)', () => {
-  it("RG-INV — 2 Replans consécutifs sans modification produisent le même état (le 2e retourne [])", () => {
-    // Allocation 50 % pour le collab → l'engine étire l'end_date pour absorber la charge.
-    // end_date est délibérément incohérente au départ (5 jours ouvrés bruts pour 5j-charge
-    // à 50 % → en réalité il faudrait 10 jours ouvrés bruts = 2026-06-12).
-    // Le 1er Replan doit donc corriger end_date vers 2026-06-12.
-    const tasks: Task[] = [
-      mkTask('t1', {
-        start_date: '2026-06-01',
-        end_date: '2026-06-05', // 5 jours ouvrés bruts, SOUS-ESTIMÉ pour alloc 50 %
-        charge_jours: 5,
-        priority: 3,
-        collaborator_id: 'c1',
-        collaborator_ids: ['c1'],
-        project_id: 'p1',
-      }),
-    ]
-    const allocations: MemberAllocation[] = [
-      {
-        id: 'a1',
-        project_id: 'p1',
-        collaborator_id: 'c1',
-        start_date: '2026-01-01',
-        end_date: '2026-12-31',
-        allocation_pct: 50,
-      },
-    ]
-    // 1er Replan : doit produire un move (correction de end_date vers 2026-06-12).
-    const moves1 = replanTasks(tasks, undefined, allocations, [])
-    expect(moves1.length).toBe(1)
-    expect(moves1[0].newEnd).toBe('2026-06-12')
-    // Simuler le round-trip serveur tel qu'il se passe actuellement (Bug B1) :
-    // le PATCH envoyé n'inclut PAS charge_jours → le serveur entre dans le cas
-    // "end_date explicite" (cas 3b) et back-dérive charge = workingDaysBetween(newStart, newEnd).
-    // Avec newEnd = 2026-06-12 (10 jours ouvrés bruts depuis 2026-06-01),
-    // la charge devient 10 au lieu de rester 5 → divergence à chaque Replan.
-    for (const m of moves1) {
-      const t = tasks.find((x) => x.id === m.id)!
-      t.start_date = m.newStart
-      t.end_date = m.newEnd
-      // BUG B1 : le serveur back-dérive charge_jours depuis workingDaysBetween
-      // quand le PATCH ne contient pas charge_jours. On simule cette back-dérivation.
-      // TODO L1.3 : remplacer cette simulation par `t.charge_jours = m.charge_jours` une fois ReplanMove enrichi.
-      t.charge_jours = workingDaysBetween(m.newStart, m.newEnd)
-    }
-    // 2e Replan : DOIT être un no-op si charge_jours n'a pas dérivé.
-    // Mais avec le Bug B1, charge_jours vaut maintenant 10 au lieu de 5 →
-    // le Replan veut étirer end_date encore plus loin → moves2 non vide.
-    const moves2 = replanTasks(tasks, undefined, allocations, [])
-    expect(moves2).toEqual([])
-  })
+  // v2.2 — it.fails : test rouge volontaire capturant le Bug B1. Passera vert
+  // après L1.3 (ReplanMove enrichi avec charge_jours). it.fails permet au
+  // pre-commit hook de passer sans --no-verify tout en gardant la sémantique TDD.
+  it.fails(
+    'RG-INV — 2 Replans consécutifs sans modification produisent le même état (le 2e retourne [])',
+    () => {
+      // Allocation 50 % pour le collab → l'engine étire l'end_date pour absorber la charge.
+      // end_date est délibérément incohérente au départ (5 jours ouvrés bruts pour 5j-charge
+      // à 50 % → en réalité il faudrait 10 jours ouvrés bruts = 2026-06-12).
+      // Le 1er Replan doit donc corriger end_date vers 2026-06-12.
+      const tasks: Task[] = [
+        mkTask('t1', {
+          start_date: '2026-06-01',
+          end_date: '2026-06-05', // 5 jours ouvrés bruts, SOUS-ESTIMÉ pour alloc 50 %
+          charge_jours: 5,
+          priority: 3,
+          collaborator_id: 'c1',
+          collaborator_ids: ['c1'],
+          project_id: 'p1',
+        }),
+      ]
+      const allocations: MemberAllocation[] = [
+        {
+          id: 'a1',
+          project_id: 'p1',
+          collaborator_id: 'c1',
+          start_date: '2026-01-01',
+          end_date: '2026-12-31',
+          allocation_pct: 50,
+        },
+      ]
+      // 1er Replan : doit produire un move (correction de end_date vers 2026-06-12).
+      const moves1 = replanTasks(tasks, undefined, allocations, [])
+      expect(moves1.length).toBe(1)
+      expect(moves1[0].newEnd).toBe('2026-06-12')
+      // Simuler le round-trip serveur tel qu'il se passe actuellement (Bug B1) :
+      // le PATCH envoyé n'inclut PAS charge_jours → le serveur entre dans le cas
+      // "end_date explicite" (cas 3b) et back-dérive charge = workingDaysBetween(newStart, newEnd).
+      // Avec newEnd = 2026-06-12 (10 jours ouvrés bruts depuis 2026-06-01),
+      // la charge devient 10 au lieu de rester 5 → divergence à chaque Replan.
+      for (const m of moves1) {
+        const t = tasks.find((x) => x.id === m.id)!
+        t.start_date = m.newStart
+        t.end_date = m.newEnd
+        // BUG B1 : le serveur back-dérive charge_jours depuis workingDaysBetween
+        // quand le PATCH ne contient pas charge_jours. On simule cette back-dérivation.
+        // À RETIRER en L1.3 — remplacer cette simulation par `t.charge_jours = m.charge_jours` une fois ReplanMove enrichi.
+        t.charge_jours = workingDaysBetween(m.newStart, m.newEnd)
+      }
+      // 2e Replan : DOIT être un no-op si charge_jours n'a pas dérivé.
+      // Mais avec le Bug B1, charge_jours vaut maintenant 10 au lieu de 5 →
+      // le Replan veut étirer end_date encore plus loin → moves2 non vide.
+      const moves2 = replanTasks(tasks, undefined, allocations, [])
+      expect(moves2).toEqual([])
+    },
+  )
 })

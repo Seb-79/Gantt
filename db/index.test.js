@@ -566,6 +566,22 @@ describe('updateTask', () => {
     expect(t.charge_jours).toBe(5) // charge inchangée
     expect(t.end_date).toBe('2026-06-12') // 08/06 + 5 ouvrés = vendredi 12/06
   })
+
+  it('v2.2 / RG-W — PATCH avec start+end+charge tous explicites : tous honorés sans recalcul', () => {
+    // Crée une tâche initiale avec charge 5, end calculé depuis start.
+    updateTask(db, 't1', { start_date: '2026-06-01', charge_jours: 5 })
+    // PATCH simulant un Replan : envoie start, end ET charge ensemble.
+    // Aucun des trois ne doit être recalculé / back-dérivé par le serveur.
+    updateTask(db, 't1', {
+      start_date: '2026-06-08',
+      end_date: '2026-06-19', // valeur "imposée" par le client (10 j calendaires)
+      charge_jours: 5, // charge inchangée par le replan
+    })
+    const t = getFullState(db).tasks.find((x) => x.id === 't1')
+    expect(t.start_date).toBe('2026-06-08')
+    expect(t.end_date).toBe('2026-06-19') // honorée telle quelle, pas recalculée
+    expect(t.charge_jours).toBe(5) // honorée telle quelle, pas back-dérivée
+  })
 })
 
 describe('v1.9 — cascade aux successeurs', () => {

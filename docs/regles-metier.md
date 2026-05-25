@@ -1653,6 +1653,22 @@ et modifiable ultérieurement via la modal Paramètres (RG-GANTT-2101).
 
 **Tests :** `db/index.test.js` → 2 tests `initDb` (colonne NOT NULL + migration ancienne base) ; `server/app.test.js` → « POST accepte project_start_date » + « POST sans → défaut today » + « PATCH modifie project_start_date ».
 
+### RG-GANTT-2102
+
+**(v2.3 — suppression du concept de démo)** Le code initialisant la base
+avec des données d'exemple est supprimé : pas de seed automatique au
+boot, pas d'endpoint `POST /api/reset`, pas de bouton « ↺ Restaurer
+démo » dans l'UI. Les données existantes en base ne sont pas wipées :
+elles deviennent des données utilisateur normales. À la création d'un
+nouveau projet, aucune tâche n'est créée par défaut.
+
+`DEMO_STATE` reste accessible en interne uniquement comme fixture pour
+les tests unitaires et d'intégration (cf. `server/app.test.js`).
+
+**Tests :** absence de l'endpoint vérifiée implicitement (le bouton et la
+route n'existent plus dans le code) ; `server/app.test.js` n'inclut plus
+le bloc `POST /api/reset`.
+
 ### RG-GANTT-2110
 
 **(v2.3 — validation date démarrage)** À la modification de la date de

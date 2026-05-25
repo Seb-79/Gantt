@@ -504,12 +504,6 @@ export default function App() {
     [fetchState],
   )
 
-  /** Reset des données démo. */
-  const handleReset = async () => {
-    if (!(await askConfirm('Restaurer les données de démonstration ?'))) return
-    mutate('POST', '/api/reset')
-  }
-
   /**
    * v2.0 / F1 — Ajoute un collaborateur à l'équipe du projet courant. Aucun
    * effet si la base n'a pas encore de projet (cas tout début, on évite un
@@ -1689,14 +1683,6 @@ export default function App() {
               onClick={handleScreenshot}
             >
               📷
-            </button>
-          </Tooltip>
-          <Tooltip label="Restaurer les données de démonstration" align="end">
-            <button
-              className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
-              onClick={handleReset}
-            >
-              ↺
             </button>
           </Tooltip>
           <StatusBadge status={status} />

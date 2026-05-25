@@ -24,14 +24,6 @@ describe('GET /api/state', () => {
   })
 })
 
-describe('POST /api/reset', () => {
-  it('restaure les données démo', async () => {
-    const app = makeApp()
-    const res = await request(app).post('/api/reset').expect(200)
-    expect(res.body.tasks.length).toBe(DEMO_STATE.tasks.length)
-  })
-})
-
 describe('Collaborateurs', () => {
   let app
   beforeEach(() => {

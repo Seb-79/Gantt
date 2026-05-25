@@ -232,30 +232,9 @@ describe('App — smoke', () => {
 })
 
 describe("App — barre d'outils", () => {
-  // v2.0 — Les anciens window.confirm sont remplacés par une modale custom
-  // (cf. src/components/Dialogs.tsx). Les tests cliquent désormais sur le
-  // bouton OK / Annuler de la modale au lieu de stubber window.confirm.
-  it('Reset démo : confirm() OK → POST /api/reset', async () => {
-    const { calls } = setupFetchMock()
-    render(<App />)
-    await waitFor(() => screen.getByRole('combobox'))
-    fireEvent.click(screen.getByLabelText(/Restaurer les données/))
-    fireEvent.click(await screen.findByRole('button', { name: 'OK' }))
-    await waitFor(() =>
-      expect(
-        calls.some((c) => c.method === 'POST' && c.url === '/api/reset'),
-      ).toBe(true),
-    )
-  })
-
-  it('Reset démo : confirm() annulé → aucun POST', async () => {
-    const { calls } = setupFetchMock()
-    render(<App />)
-    await waitFor(() => screen.getByRole('combobox'))
-    fireEvent.click(screen.getByLabelText(/Restaurer les données/))
-    fireEvent.click(await screen.findByRole('button', { name: 'Annuler' }))
-    expect(calls.find((c) => c.url === '/api/reset')).toBeUndefined()
-  })
+  // v2.3 — Le bouton "↺ Restaurer démo" est supprimé (RG-GANTT-2102).
+  // Les anciens window.confirm sont remplacés par une modale custom
+  // (cf. src/components/Dialogs.tsx) pour les autres confirmations.
 
   it('boutons de navigation temporelle modifient la fenêtre', async () => {
     setupFetchMock()

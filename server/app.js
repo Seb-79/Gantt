@@ -45,7 +45,6 @@ import {
   listProjectMembers,
   listProjects,
   moveTask,
-  resetToDemo,
   updateCollaborator,
   updateProject,
   updateTask,
@@ -159,18 +158,6 @@ export function createApp(db, { requestLog = true } = {}) {
         )
         .all()
       res.json({ tasks })
-    }),
-  )
-
-  // -------------------------------------------------------------------------
-  // RESET (données de démo)
-  // -------------------------------------------------------------------------
-
-  app.post(
-    '/api/reset',
-    safeRoute((_req, res) => {
-      resetToDemo(db)
-      res.json(getFullState(db))
     }),
   )
 

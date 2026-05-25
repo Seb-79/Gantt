@@ -910,10 +910,16 @@ export default function App() {
             // branche « lagInPatch=true » et PRÉSERVE le délai utilisateur
             // (sinon il ré-inférerait un lag depuis le nouveau gap, ce qui
             // écrasait la valeur saisie — bug v1.22 / Test délai).
+            // v2.2 / RG-W — Inclut `charge_jours` pour empêcher la
+            // back-dérivation côté serveur (RG-GANTT-1900 invariance de la
+            // charge sous Replan). Le moteur ne modifie JAMAIS la charge ;
+            // ce champ active le cas 3a' du serveur qui honore les trois
+            // valeurs telles quelles.
             body: JSON.stringify({
               start_date: m.newStart,
               end_date: m.newEnd,
               predecessor_lag: m.predecessor_lag,
+              charge_jours: m.charge_jours,
             }),
           })
           if (!res.ok) {

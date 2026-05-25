@@ -1617,6 +1617,13 @@ export interface ReplanMove {
    * Vaut 0 quand la tâche n'a pas de prédécesseur.
    */
   predecessor_lag: number
+  /**
+   * v2.2 / RG-W — charge_jours de la tâche, transmise telle quelle au PATCH
+   * pour empêcher la back-dérivation côté serveur (RG-INV / RG-GANTT-1900).
+   * Le moteur ne modifie JAMAIS la charge ; ce champ est ici uniquement pour
+   * neutraliser le cas 3b (back-dérivation) côté serveur en activant le cas 3a'.
+   */
+  charge_jours: number
 }
 
 /**
@@ -1956,6 +1963,9 @@ function buildReplanMoves(
       // renvoie tel quel et que le serveur ne le ré-infère pas depuis le
       // nouveau gap.
       predecessor_lag: t.predecessor_lag || 0,
+      // v2.2 / RG-W — Charge transmise telle quelle dans le PATCH : le serveur
+      // honore les 3 champs sans back-dérivation (cf. resolveChargeAndEnd cas 3a').
+      charge_jours: t.charge_jours ?? 1,
     })
   }
   return moves

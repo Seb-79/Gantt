@@ -1752,7 +1752,13 @@ L'opt-in se fait côté UI (App.tsx + WorkloadChart) en mémoïsant un
 appel `computeReplanResult(...)` à chaque rendu et en passant la
 `timeline` au composant. Cf. § 4 de la spec (« replan à la volée »).
 
-**Tests :** `utils.test.ts` → tests existants `computeWorkload` (rétrocompat sans `engineTimeline`) ; le câblage UI sera testé dans une itération suivante (opt-in).
+**Tests :** `utils.test.ts` → tests existants `computeWorkload` (rétrocompat sans `engineTimeline`).
+
+**Câblage UI livré (2026-05-26)** : `App.tsx` mémoïse un appel
+`computeReplanResult(...)` à chaque rendu et passe la `timeline` en prop
+`engineTimeline` à `<WorkloadChart>` (uniquement en `scope='current'`,
+le scope `'global'` reste en lecture par plage car la timeline n'est
+calculée que pour le projet courant). Coût : ~5-15 ms par rendu mémoïsé.
 
 ### RG-GANTT-2105
 

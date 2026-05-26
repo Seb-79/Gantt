@@ -1374,22 +1374,41 @@ export function computeWorkload(
   dates: Date[],
   allocations: MemberAllocation[] = [],
   absences: CollaboratorAbsence[] = [],
+  /**
+   * v2.3 / RG-GANTT-2104 — Timeline effective produite par le moteur Replan
+   * (cf. `computeReplanResult`). Si fournie, prime sur la lecture naïve des
+   * plages `[start_date, end_date]` : la contribution d'une tâche à un jour
+   * donné n'est comptée QUE pour les intervalles `[start, end]` où le moteur
+   * a effectivement placé la tâche pour ce collab. Évite la fausse surcharge
+   * quand deux tâches en cours ont des plages qui se chevauchent visuellement
+   * mais sont consommées séquentiellement par le moteur.
+   *
+   * Si `undefined`, comportement v2.2 (lecture naïve par plage).
+   */
+  engineTimeline?: Map<string, TimelineEntry[]>,
 ): Map<string, number[]> {
   const result = new Map<string, number[]>()
   for (const c of collaborators) {
     result.set(c.id, new Array(dates.length).fill(0))
   }
-  // v2.0 / F2 — La contribution d'une tâche à un jour donné est désormais
-  // pondérée par l'allocation effective du collab ce jour-là sur ce projet.
-  // v2.0 / F3 — Multiplicativement réduite par l'éventuelle absence du collab
-  // ce jour-là (cross-projet). Sans allocations → fallback F0/F1 : contribution
-  // = 1 par jour ouvré (les absences ne s'appliquent pas dans ce mode).
-  // v2.0 / F6 — Multi-collab : la tâche contribue à la timeline de CHAQUE
-  // collab affecté (pas seulement le 1er). Chacun voit donc sa propre part
-  // de la charge dans son plan de charge personnel.
+  // v2.3 / RG-GANTT-2104 — Si une timeline moteur est fournie, on l'utilise
+  // comme source de vérité. Chaque entry (taskId, start, end) est peinte
+  // sur la cellule du collab correspondant. Les autres tâches (non placées
+  // par le moteur, ex. sans collab) ne contribuent pas via ce chemin.
+  if (engineTimeline) {
+    paintFromEngineTimeline(
+      result,
+      tasks,
+      engineTimeline,
+      dates,
+      allocations,
+      absences,
+    )
+    return result
+  }
+  // Fallback v2.2 (rétrocompat) : lecture par plage [start_date, end_date].
   for (const t of tasks) {
     if (t.kind !== 'task') continue
-    // Source de vérité : `collaborators[]` (F6) ; fallback `collaborator_id` (legacy).
     const collabIds = taskCollabIds(t)
     if (collabIds.length === 0) continue
     for (const cId of collabIds) {
@@ -1399,6 +1418,77 @@ export function computeWorkload(
     }
   }
   return result
+}
+
+/**
+ * v2.3 / RG-GANTT-2104 — Helper : peint l'intégralité d'une timeline moteur
+ * sur le résultat `computeWorkload`. Extrait pour limiter la complexité
+ * cognitive de `computeWorkload`.
+ */
+function paintFromEngineTimeline(
+  result: Map<string, number[]>,
+  tasks: Task[],
+  engineTimeline: Map<string, TimelineEntry[]>,
+  dates: Date[],
+  allocations: MemberAllocation[],
+  absences: CollaboratorAbsence[],
+): void {
+  const taskById = new Map(tasks.map((t) => [t.id, t]))
+  for (const [cId, entries] of engineTimeline) {
+    const arr = result.get(cId)
+    if (!arr) continue
+    for (const entry of entries) {
+      const t = taskById.get(entry.taskId)
+      if (!t) continue
+      accumulateEntryWorkload(
+        t,
+        arr,
+        cId,
+        entry.start,
+        entry.end,
+        dates,
+        allocations,
+        absences,
+      )
+    }
+  }
+}
+
+/**
+ * v2.3 / RG-GANTT-2104 — Helper : peint la charge d'une tâche sur la plage
+ * effective `[entryStart, entryEnd]` retournée par le moteur Replan, en
+ * pondérant par allocation × (1−absence) comme `accumulateTaskWorkload`.
+ */
+function accumulateEntryWorkload(
+  t: Task,
+  arr: number[],
+  collabId: string,
+  entryStart: string,
+  entryEnd: string,
+  dates: Date[],
+  allocations: MemberAllocation[],
+  absences: CollaboratorAbsence[],
+): void {
+  const start = isoToDate(entryStart).getTime()
+  const end = isoToDate(entryEnd).getTime()
+  const useAllocations = allocations.length > 0
+  for (let i = 0; i < dates.length; i++) {
+    const d = dates[i]
+    const ts = d.getTime()
+    if (ts < start || ts > end) continue
+    if (isNonWorkingDay(d)) continue
+    if (useAllocations) {
+      arr[i] += getDailyAllocation(
+        dateToIso(d),
+        allocations,
+        t.project_id,
+        collabId,
+        absences,
+      )
+    } else {
+      arr[i] += 1
+    }
+  }
 }
 
 /**
@@ -1860,20 +1950,38 @@ function computeReplanEarliestStart(
     const today = todayIso()
     if (today > earliest) earliest = today
   }
-  if (t.predecessor_id) {
-    const pred = tasksById.get(t.predecessor_id)
-    if (pred) {
-      const predEnd = proposed.get(pred.id)?.end ?? pred.end_date
-      const lagStart = computeSuccessorStart(predEnd, t.predecessor_lag || 0)
-      if (lagStart > earliest) earliest = lagStart
-    }
-  }
+  // Contrainte prédécesseur (extraite pour limiter la complexité cognitive).
+  const predLowerBound = predecessorLowerBound(t, tasksById, proposed)
+  if (predLowerBound && predLowerBound > earliest) earliest = predLowerBound
   // v1.24 — SNET « Ne doit pas démarrer avant le » : le plus tardif gagne.
   if (t.not_before_date) {
     const snet = snapForwardToWorkingDay(t.not_before_date)
     if (snet > earliest) earliest = snet
   }
   return snapForwardToWorkingDay(earliest)
+}
+
+/**
+ * v2.3 — Helper : retourne la borne basse imposée par le prédécesseur
+ * (`pred.end + lag`), ou `null` si la contrainte ne s'applique pas
+ * (pas de prédécesseur, ou RG-GANTT-2106 : prédécesseur terminé dans le
+ * futur — on ignore la contrainte, l'alerte est levée dans checkCoherence).
+ */
+function predecessorLowerBound(
+  t: Task,
+  tasksById: Map<string, Task>,
+  proposed: Map<string, { start: string; end: string }>,
+): string | null {
+  if (!t.predecessor_id) return null
+  const pred = tasksById.get(t.predecessor_id)
+  if (!pred) return null
+  const predEnd = proposed.get(pred.id)?.end ?? pred.end_date
+  // RG-GANTT-2106 — Prédécesseur terminé (progress=100) avec end dans le futur :
+  // incohérence métier. On ignore la contrainte de prédécesseur ; l'alerte
+  // est levée par `detectPredecessorTerminatedInFuture` dans le bandeau.
+  const today = todayIso()
+  if ((pred.progress ?? 0) === 100 && predEnd > today) return null
+  return computeSuccessorStart(predEnd, t.predecessor_lag || 0)
 }
 
 /**
@@ -2022,52 +2130,98 @@ function buildReplanMoves(
   return moves
 }
 
-export function replanTasks(
+/**
+ * v2.3 / RG-GANTT-2104 — Une entrée de timeline collab produite par le
+ * moteur Replan : pour quelle tâche, et sur quelle plage `[start, end]`
+ * (inclusive, jours ouvrés) le collaborateur est-il effectivement
+ * consommé.
+ */
+export interface TimelineEntry {
+  taskId: string
+  start: string
+  end: string
+}
+
+/**
+ * v2.3 / RG-GANTT-2104 — Résultat complet d'un Replan :
+ *   • `moves` : déplacements à appliquer via PATCH (rétrocompat v2.2).
+ *   • `timeline` : intervalles effectivement consommés par collaborateur.
+ *     Sert de source de vérité pour le Plan de charge (`computeWorkload`)
+ *     et la détection de surcharge (`detectOverloads`), à la place de la
+ *     lecture naïve des plages `[start_date, end_date]` qui pouvait
+ *     produire des fausses surcharges (cf. spec § 3 / RG-GANTT-2104+2105).
+ */
+export interface ReplanResult {
+  moves: ReplanMove[]
+  timeline: Map<string, TimelineEntry[]>
+}
+
+/**
+ * v2.3 — Recalcule le placement complet du moteur sans persister, et
+ * retourne à la fois les moves PATCH-ables et la timeline effective.
+ * Sert au Plan de charge et à la détection de surcharge pour rester en
+ * cohérence parfaite avec le moteur. Fonction pure (idempotente).
+ */
+/**
+ * v2.3 / RG-GANTT-2104 — Construit la timeline enrichie (`taskId` + plage)
+ * à partir des dates proposées par le moteur. Extrait pour limiter la
+ * complexité cognitive de `computeReplanResult`. Tri stable par start.
+ */
+function buildEnrichedTimeline(
+  tasks: Task[],
+  proposed: Map<string, { start: string; end: string }>,
+): Map<string, TimelineEntry[]> {
+  const timeline = new Map<string, TimelineEntry[]>()
+  for (const t of tasks) {
+    if (t.kind !== 'task') continue
+    const collabIds = taskCollabIds(t)
+    if (collabIds.length === 0) continue
+    const p = proposed.get(t.id)
+    const start = p?.start ?? t.start_date
+    const end = p?.end ?? t.end_date
+    for (const cId of collabIds) {
+      const list = timeline.get(cId) ?? []
+      list.push({ taskId: t.id, start, end })
+      timeline.set(cId, list)
+    }
+  }
+  for (const [cId, list] of timeline) {
+    list.sort((a, b) => a.start.localeCompare(b.start))
+    timeline.set(cId, list)
+  }
+  return timeline
+}
+
+export function computeReplanResult(
   tasks: Task[],
   projectStartDate: string,
   allocations: MemberAllocation[] = [],
   absences: CollaboratorAbsence[] = [],
   options: { ignoreToday?: boolean } = {},
-): ReplanMove[] {
-  // v2.2 — Le Replan partiel (RG-GANTT-0905) est abandonné. Toutes les tâches
-  // `kind='task'` sont candidates au déplacement. Les obstacles éventuels
-  // (tâches lockées par RG-A à venir en L3) seront gérés par un
-  // pré-remplissage dédié (cf. prefillCompletedIntervals).
-  // v2.0 / F2 — `allocations` est la liste des périodes d'allocation du
-  // projet : le moteur consomme la capacité quotidienne (allocation %) pour
-  // calculer la fin de chaque tâche, au lieu de simples jours ouvrés bruts.
-  // v2.0 / F3 — `absences` réduit multiplicativement la capacité du collab
-  // (lecture cross-projet). Vide → pas d'impact.
-  // Tableau vide → comportement F0 (fin = start + charge en jours ouvrés).
-  // v2.2 / RG-V (RG-GANTT-1910) — `options.ignoreToday=true` active le mode
-  // "Planification anticipée" : RG-B est suspendue (today n'est plus borne
-  // basse). RG-A et RG-C continuent de s'appliquer.
+): ReplanResult {
   const ignoreToday = options.ignoreToday === true
   const tasksById = new Map(tasks.map((t) => [t.id, t]))
   const order = buildReplanOrder(tasks)
 
-  // Dates proposées par tâche (init = dates actuelles).
   const proposed = new Map<string, { start: string; end: string }>()
   for (const t of tasks) {
     proposed.set(t.id, { start: t.start_date, end: t.end_date })
   }
 
-  // Timeline (intervalles fixés) par collaborateur — bornes INCLUSIVES en
-  // jours ouvrés (compatibles avec `findFreeSlot`).
-  // v2.2 / RG-A — Pré-remplissage des tâches terminées (progress=100) comme
-  // obstacles : elles bloquent leur créneau mais ne sont JAMAIS déplacées.
-  const timeline = new Map<string, Array<[string, string]>>()
-  prefillCompletedIntervals(tasks, timeline)
+  // Timeline interne (pour le moteur, format [start, end]).
+  const timelineRaw = new Map<string, Array<[string, string]>>()
+  prefillCompletedIntervals(tasks, timelineRaw)
 
+  // v2.3 — Pour exposer la timeline « consommation effective », on note quel
+  // créneau correspond à quelle tâche. On reconstruit la map taskId → entry
+  // en parallèle.
   for (const t of order) {
-    // v2.2 / RG-A — Une tâche à progress=100 est lockée : pas de placement,
-    // pas de move. Elle est déjà dans la timeline via prefillCompletedIntervals.
     if (t.progress === 100) continue
     placeTaskInTimeline(
       t,
       tasksById,
       proposed,
-      timeline,
+      timelineRaw,
       allocations,
       absences,
       projectStartDate,
@@ -2075,7 +2229,33 @@ export function replanTasks(
     )
   }
 
-  return buildReplanMoves(order, proposed)
+  // v2.3 / RG-GANTT-2104 — Reconstruit la timeline enrichie (`taskId` + plage)
+  // à partir de `proposed`. Extrait dans un helper pour limiter la
+  // complexité cognitive de `computeReplanResult`.
+  const timeline = buildEnrichedTimeline(tasks, proposed)
+
+  return { moves: buildReplanMoves(order, proposed), timeline }
+}
+
+/**
+ * v1.18 / v2.2 — Variante "moves seulement" du Replan, conservée pour
+ * rétro-compatibilité avec les nombreux appelants (tests + PATCH App.tsx).
+ * Délègue à `computeReplanResult` puis n'expose que `moves`.
+ */
+export function replanTasks(
+  tasks: Task[],
+  projectStartDate: string,
+  allocations: MemberAllocation[] = [],
+  absences: CollaboratorAbsence[] = [],
+  options: { ignoreToday?: boolean } = {},
+): ReplanMove[] {
+  return computeReplanResult(
+    tasks,
+    projectStartDate,
+    allocations,
+    absences,
+    options,
+  ).moves
 }
 
 /**
@@ -2137,6 +2317,13 @@ export type CoherenceIssueKind =
    *  contrainte FNLT (« Fin au plus tard »). Severity = `warning` :
    *  signalement uniquement, jamais bloquant. */
   | 'fnlt_overrun'
+  /** v2.3 / RG-GANTT-2106 — Prédécesseur marqué terminé (`progress = 100`)
+   *  mais dont la `end_date` est dans le futur. Le Replan ignore la
+   *  contrainte de prédécesseur pour la tâche successeur ; cette alerte
+   *  signale l'incohérence métier (warning) pour que l'utilisateur la
+   *  corrige (mettre la fin du prédécesseur dans le passé, ou réduire son
+   *  progress sous 100). */
+  | 'predecessor_terminated_in_future'
 
 /** v1.21 — Une incohérence remontée pour affichage dans le bandeau. */
 export interface CoherenceIssue {
@@ -2381,6 +2568,34 @@ function detectFnltOverruns(tasks: Task[]): CoherenceIssue[] {
   return issues
 }
 
+/**
+ * v2.3 / RG-GANTT-2106 — Détecte les paires (prédécesseur terminé / successeur)
+ * où le prédécesseur est à `progress = 100` mais sa `end_date` est dans le
+ * futur (cas incohérent). Le Replan ignore la contrainte de prédécesseur
+ * pour ce cas (cf. `computeReplanEarliestStart`), mais on alerte l'utilisateur
+ * dans le bandeau d'incohérences pour qu'il arbitre.
+ */
+function detectPredecessorTerminatedInFuture(tasks: Task[]): CoherenceIssue[] {
+  const byId = new Map(tasks.map((t) => [t.id, t]))
+  const today = todayIso()
+  const issues: CoherenceIssue[] = []
+  for (const t of tasks) {
+    if (t.kind !== 'task') continue
+    if (!t.predecessor_id) continue
+    const pred = byId.get(t.predecessor_id)
+    if (!pred) continue
+    if ((pred.progress ?? 0) !== 100) continue
+    if (pred.end_date <= today) continue
+    issues.push({
+      kind: 'predecessor_terminated_in_future',
+      severity: 'warning',
+      taskIds: [t.id, pred.id],
+      message: `Le prédécesseur « ${pred.name} » de la tâche « ${t.name} » est marqué terminé mais sa date de fin (${pred.end_date}) est dans le futur. La contrainte de prédécesseur n'est pas appliquée par le Replan ; corrigez la fin du prédécesseur ou son avancement.`,
+    })
+  }
+  return issues
+}
+
 export function checkCoherence(tasks: Task[]): CoherenceIssue[] {
   return [
     ...detectOverloads(tasks),
@@ -2388,6 +2603,7 @@ export function checkCoherence(tasks: Task[]): CoherenceIssue[] {
     ...detectPriorityViolations(tasks),
     ...detectNotBeforeViolations(tasks),
     ...detectFnltOverruns(tasks),
+    ...detectPredecessorTerminatedInFuture(tasks),
   ]
 }
 

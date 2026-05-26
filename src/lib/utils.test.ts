@@ -1577,6 +1577,100 @@ describe('checkCoherence — FNLT (v2.0 / F4)', () => {
 })
 
 // =============================================================================
+// v2.3 / RG-GANTT-2106 — Prédécesseur terminé dans le futur (alerte coherence)
+// =============================================================================
+
+describe('v2.3 / RG-GANTT-2106 — prédécesseur terminé dans le futur', () => {
+  // Fige today à 2026-06-10 pour avoir un point d'ancrage stable.
+  let dateNowSpy: ReturnType<typeof vi.spyOn> | null = null
+  beforeEach(() => {
+    const fixed = new Date('2026-06-10T00:00:00.000Z').getTime()
+    dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(fixed)
+  })
+  afterEach(() => {
+    dateNowSpy?.mockRestore()
+  })
+
+  it('v2.3 / RG-GANTT-2106 — détecte une alerte si pred progress=100 ET end > today', () => {
+    // P : prédécesseur terminé (progress=100) avec end_date dans le futur (incohérence).
+    // A : successeur de P. Le moteur ignore la contrainte ; le bandeau alerte.
+    const tasks: Task[] = [
+      mkTask('P', {
+        name: 'Pred',
+        progress: 100,
+        start_date: '2026-08-01',
+        end_date: '2026-08-15', // dans le futur par rapport à today=2026-06-10
+        charge_jours: 10,
+      }),
+      mkTask('A', {
+        name: 'Succ',
+        progress: 0,
+        start_date: '2026-09-01',
+        end_date: '2026-09-05',
+        predecessor_id: 'P',
+        predecessor_lag: 0,
+      }),
+    ]
+    const issues = checkCoherence(tasks)
+    const alert = issues.find(
+      (i) => i.kind === 'predecessor_terminated_in_future',
+    )
+    expect(alert).toBeDefined()
+    expect(alert!.severity).toBe('warning')
+    expect(alert!.message).toMatch(/Pred.*Succ|Succ.*Pred/)
+  })
+
+  it("v2.3 / RG-GANTT-2106 — pas d'alerte si pred end_date est dans le passé", () => {
+    // Cas nominal : prédécesseur terminé avec end_date dans le passé.
+    const tasks: Task[] = [
+      mkTask('P', {
+        name: 'Pred',
+        progress: 100,
+        start_date: '2026-05-01',
+        end_date: '2026-05-15', // passé (< today=2026-06-10)
+        charge_jours: 10,
+      }),
+      mkTask('A', {
+        name: 'Succ',
+        progress: 0,
+        start_date: '2026-06-15',
+        end_date: '2026-06-19',
+        predecessor_id: 'P',
+        predecessor_lag: 0,
+      }),
+    ]
+    const issues = checkCoherence(tasks)
+    expect(
+      issues.find((i) => i.kind === 'predecessor_terminated_in_future'),
+    ).toBeUndefined()
+  })
+
+  it("v2.3 / RG-GANTT-2106 — pas d'alerte si pred progress < 100 (même dans le futur)", () => {
+    const tasks: Task[] = [
+      mkTask('P', {
+        name: 'Pred',
+        progress: 50,
+        start_date: '2026-08-01',
+        end_date: '2026-08-15',
+        charge_jours: 10,
+      }),
+      mkTask('A', {
+        name: 'Succ',
+        progress: 0,
+        start_date: '2026-09-01',
+        end_date: '2026-09-05',
+        predecessor_id: 'P',
+        predecessor_lag: 0,
+      }),
+    ]
+    const issues = checkCoherence(tasks)
+    expect(
+      issues.find((i) => i.kind === 'predecessor_terminated_in_future'),
+    ).toBeUndefined()
+  })
+})
+
+// =============================================================================
 // v2.0 / F5 — Capacité totale + seuils normalisés
 // =============================================================================
 

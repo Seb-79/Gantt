@@ -42,9 +42,14 @@ CREATE TABLE IF NOT EXISTS collaborators (
 
 -- v1.8 — Projets : un Gantt = N projets distincts, on en charge un à la fois.
 CREATE TABLE IF NOT EXISTS projects (
-  id       TEXT PRIMARY KEY,
-  name     TEXT NOT NULL,
-  position INTEGER NOT NULL
+  id                 TEXT PRIMARY KEY,
+  name               TEXT NOT NULL,
+  position           INTEGER NOT NULL,
+  -- v2.3 / RG-GANTT-2100 — Date de démarrage du projet. Sert de borne basse
+  -- globale par défaut pour le Replan. Peut être dans le passé ou le futur.
+  -- Valeur par défaut '2026-01-01' pour les bases ré-initialisées ; pour les
+  -- nouveaux projets créés via l'API, le défaut applicatif est `today`.
+  project_start_date TEXT NOT NULL DEFAULT '2026-01-01'
 );
 
 CREATE TABLE IF NOT EXISTS tasks (

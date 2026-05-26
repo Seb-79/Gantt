@@ -54,6 +54,12 @@ export interface Project {
   name: string
   /** Position d'affichage dans le sélecteur. */
   position: number
+  /**
+   * v2.3 / RG-GANTT-2100 — Date de démarrage du projet (ISO YYYY-MM-DD).
+   * Borne basse globale par défaut du Replan. Peut être dans le passé ou
+   * le futur, sans restriction.
+   */
+  project_start_date: string
 }
 
 /** Une tâche ou un jalon dans le Gantt. */

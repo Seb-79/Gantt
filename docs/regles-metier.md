@@ -92,6 +92,11 @@ l'écart courant en jours ouvrés. Si les deux sont fournies, la charge
 gagne. Cette politique permet au drag du bord droit d'une barre dans le
 planning (qui envoie `end_date`) d'éditer implicitement la charge.
 
+**(v2.2)** La back-dérivation depuis `end_date` (cas où seule `end_date`
+est fournie) ne s'applique qu'au **drag manuel du bord droit** dans le
+diagramme Gantt. Le Replan utilise un contrat distinct (RG-GANTT-1901)
+qui fournit `charge_jours` explicitement pour empêcher la back-dérivation.
+
 **Tests :** `utils.test.ts` → bloc `addWorkingDays (v1.9)` (8 cas) ;
 bloc `computeEndFromCharge (v2.0)` (3 cas dont « saute les fériés FR ») ;
 `db/index.test.js` → « v2.0 / RG-GANTT-0100 — activité créée sans charge_jours :
@@ -597,12 +602,14 @@ bandeau d'alertes n'est affiché au-dessus du planning.
 
 ### RG-GANTT-0807
 
-Quand des incohérences sont détectées, le bandeau propose deux
-actions : **Replan complet** (toutes les activités du projet) et
-**Replan partiel** (seules les activités concernées par les
-incohérences).
+Quand des incohérences sont détectées, le bandeau propose une action :
+**Replan complet** (toutes les activités du projet sont candidates au
+déplacement).
 
-**Tests :** `App.test.tsx` → « affiche le bandeau quand une surcharge existe + énumère les 2 boutons » ; « "Replan complet" depuis le bandeau ouvre la modal habituelle » ; « "Replan partiel" ne déplace que les tâches concernées ».
+**(v2.2)** Le bouton « Replan partiel » historique a été retiré
+(RG-GANTT-0906 abandonnée).
+
+**Tests :** `App.test.tsx` → « affiche le bandeau quand une surcharge existe + énumère les boutons » ; « "Replan complet" depuis le bandeau ouvre la modal habituelle ».
 
 ---
 
@@ -634,11 +641,18 @@ la priorité).
 
 ### RG-GANTT-0903
 
-La replanification ne déplace **jamais** une activité vers une date
-antérieure à sa date de début actuelle. C'est un mouvement vers le
-futur uniquement.
+**~~SUPPRIMÉE EN v2.3~~** — La règle « la replanification ne déplace
+jamais une activité vers une date antérieure à sa date de début
+actuelle » est **abandonnée**. Elle est remplacée par RG-GANTT-1903
+redéfinie (borne basse globale = `MAX(projectStartDate, today, pred.end+lag, SNET)`).
 
-**Tests :** `utils.test.ts` → « v1.24 — RG-GANTT-0903 — une activité isolée et libre n`est PAS ramenée en arrière par le replan » ; « après replan, la borne basse de chaque activité est >= sa start_date d`origine ».
+Motivation : la philosophie v2.3 est de toujours calculer la date de
+démarrage la **plus précoce** compatible avec les contraintes. Le bug
+historique « tâche bloquée loin dans le futur impossible à libérer »
+est ainsi corrigé. Exception unique : les activités à `progress > 0`
+ont leur `start_date` figée (RG-GANTT-2103, Option γ).
+
+Cf. spec [docs/superpowers/specs/2026-05-25-refonte-replan-projet.md](./superpowers/specs/2026-05-25-refonte-replan-projet.md).
 
 ### RG-GANTT-0904
 
@@ -656,11 +670,11 @@ démarrage au plus tôt comme borne basse supplémentaire.
 
 ### RG-GANTT-0906
 
-Le **Replan partiel** ne déplace que les activités directement
-impliquées dans une incohérence (et leurs successeurs transitifs).
-Toutes les autres activités bloquent leurs créneaux courants.
-
-**Tests :** `utils.test.ts` → bloc `replanTasks — variante PARTIELLE (concernedIds)` ; `App.test.tsx` → « "Replan partiel" ne déplace que les tâches concernées ».
+**(v2.2 — abandonnée)** Le « Replan partiel » a été retiré.
+Toutes les activités sont désormais candidates au déplacement par
+le Replan complet (= seul mode de Replan). Le paramètre `concernedIds`
+de `replanTasks`, la fonction `concernedTaskIds` et le bouton dédié
+dans `CoherenceAlert` ont été supprimés.
 
 ### RG-GANTT-0907
 
@@ -684,7 +698,181 @@ Par défaut, après chaque modification d'une tâche via le formulaire,
 un Replan complet est relancé automatiquement. L'utilisateur peut
 décocher cette option pour figer son geste sans replanification.
 
+**(v2.2)** L'auto-replan respecte le toggle « Planification anticipée »
+du projet courant (RG-GANTT-1910) : si le toggle est coché, l'auto-replan
+s'exécute en mode anticipé (suspension de RG-GANTT-1903). Un seul mode
+pilote toutes les sources de Replan.
+
 **Tests :** `App.test.tsx` → « case cochée par défaut : un Replan suit le PATCH d'édition » ; « case décochée : aucun replan, seul le PATCH d'édition part ».
+
+### RG-GANTT-1900
+
+**(v2.2 — invariance de la charge)** Un Replan ne modifie JAMAIS la
+`charge_jours` d'une activité. La charge est un invariant ; seules
+`start_date` et `end_date` peuvent évoluer sous l'action du Replan.
+Cette règle garantit qu'un Replan suivi d'aucune modification utilisateur
+est un point fixe : un second Replan immédiat retourne `[]`.
+
+**Tests :** `utils.test.ts` → « v2.2 / RG-INV — 2 Replans consécutifs sans modification produisent le même état » ; `db/index.test.js` → « v2.2 / RG-W — PATCH avec start+end+charge tous explicites : tous honorés sans recalcul ».
+
+### RG-GANTT-1901
+
+**(v2.2 — contrat PATCH du Replan)** Le PATCH issu du Replan (manuel ou
+automatique via RG-GANTT-0909) inclut systématiquement les quatre
+champs `start_date`, `end_date`, `charge_jours` et `predecessor_lag`.
+Le serveur honore les quatre valeurs telles quelles, sans
+back-dérivation. RG-GANTT-0100 (back-dérivation de `charge_jours`
+depuis `end_date - start_date`) ne s'applique plus qu'au drag manuel
+du bord droit dans le diagramme, où `charge_jours` n'est pas envoyé.
+
+**Tests :** `db/index.test.js` → « v2.2 / RG-W — PATCH avec start+end+charge tous explicites » ; `App.test.tsx` → « v2.2 / RG-W — chaque PATCH de replan inclut charge_jours ».
+
+### RG-GANTT-1902
+
+**(v2.2 — RG-A)** Une activité à `progress = 100` est lockée par le
+Replan : ses dates ne sont jamais modifiées. Elle est ajoutée à la
+timeline des collaborateurs affectés comme obstacle (intervalle
+bloqué `[start_date, end_date]`) pour empêcher d'autres tâches de
+s'y superposer.
+
+**Tests :** `utils.test.ts` → « v2.2 / RG-A — progress=100 lockée par le Replan ».
+
+### RG-GANTT-1903
+
+**(v2.3 — RG-B redéfinie — borne basse globale du Replan)** La borne
+basse de placement d'une activité par le Replan est :
+
+```
+borne_basse = MAX(
+  projectStartDate,              // RG-GANTT-2100, date démarrage projet
+  today,                         // si mode normal (sinon mode anticipé RG-1910)
+  predecessor.end_date + lag,    // contrainte de prédécesseur
+  not_before_date (SNET),        // forçage utilisateur
+)
+```
+
+S'applique **uniformément à toutes les activités**, indépendamment de
+`progress`. La distinction « progress > 0 » de la v2.2 est abandonnée.
+Exception RG-A (`progress=100`) : tâche lockée. Exception Option γ
+(`0 < progress < 100`, RG-GANTT-2103) : `start_date` figée, seule
+`end_date` est recalculée.
+
+RG-GANTT-0903 (« jamais vers le passé ») est **supprimée** : le Replan
+cherche désormais la date AU PLUS TÔT compatible avec les contraintes.
+
+**Tests :** `utils.test.ts` → « v2.3 / RG-1903 — borne basse globale (today en mode normal) » (4 cas : progress=0 passé/futur, progress=30 passé/futur).
+
+### RG-GANTT-1904
+
+**(v2.2 — RG-C)** Le Replan consomme `charge_jours × (1 − progress/100)`
+jours-allocation (= reste à faire), arrondi au jour ouvré supérieur
+(minimum 1). La charge totale persistée n'est jamais modifiée (RG-1900).
+
+**Tests :** `utils.test.ts` → « v2.2 / RG-C — consommation du reste à faire ».
+
+### RG-GANTT-1905
+
+**~~SUPPRIMÉE EN v2.3~~** — RG-L devenue obsolète : avec `start_date`
+calculée par le Replan (RG-GANTT-1903 redéfinie) pour les activités à
+`progress = 0` et figée pour `progress > 0` (RG-GANTT-2103), il n'y a
+plus de cas « saisie utilisateur erronée commençant avant la date
+prévue » — la date est cohérente par construction.
+
+### RG-GANTT-1906
+
+**(v2.2 — RG-M — info silencieuse)** Une activité à `progress = 100`
+avec `today < end_date` (« finie en avance ») ne déclenche aucune
+alerte. La tâche reste lockée par RG-GANTT-1902.
+
+### RG-GANTT-1907
+
+**(v2.3 — RG-N redéfinie — édition manuelle d'une activité)**
+
+Une activité peut être modifiée manuellement par l'utilisateur via deux
+canaux : le TaskEditor (formulaire) et le drag&drop dans le diagramme
+Gantt.
+
+**Champs persistés tels quels** (jamais recalculés par le Replan) :
+`name`, `progress`, `charge_jours`, `priority`, `predecessor_id`,
+`predecessor_lag`, `collaborator_id(s)`, `not_before_date`,
+`not_later_than_date`, `parent_id`, `color`.
+
+**Champs `start_date` et `end_date`** : comportement dépendant du
+`progress` de l'activité :
+
+- **`progress = 0`** : modifications **éphémères**. Le prochain Replan
+  recalcule `start_date` à la borne basse globale (RG-GANTT-1903) et
+  `end_date = start + charge_alloc`. Pour figer une date, l'utilisateur
+  pose un SNET (`not_before_date`).
+- **`0 < progress < 100`** : modifications **persistantes**. `start_date`
+  est figée (RG-GANTT-2103). Le Replan ne recalcule que `end_date`. Dans
+  le TaskEditor, le champ `start_date` est grisé en lecture seule ; le
+  drag&drop horizontal qui modifierait `start_date` est désactivé.
+- **`progress = 100`** : modifications **persistantes** (RG-GANTT-1902 :
+  la tâche est lockée par le Replan ; seule l'édition manuelle peut
+  changer ses dates).
+
+**Drag&drop dans le diagramme Gantt** : ne déclenche **jamais**
+d'auto-replan. Seul l'enregistrement du TaskEditor déclenche
+éventuellement l'auto-replan (RG-GANTT-0909, opt-out par checkbox).
+
+**Cas particulier — passage de `progress = 0` à `progress > 0`** :
+l'utilisateur peut éditer la `start_date` dans le même formulaire avant
+de cliquer « Enregistrer ». Au save, cette `start_date` devient figée
+dès lors que `progress > 0`.
+
+**Tests :** `db/index.test.js` → « v2.2 / RG-N — PATCH avec progress seul : end_date et charge_jours inchangés ».
+
+### RG-GANTT-1908
+
+**(v2.2 — RG-O)** Lorsque l'utilisateur édite manuellement
+`charge_jours` sur une activité à `progress > 0`, la valeur saisie
+est interprétée comme la **charge totale révisée** (et non comme le
+reste à faire). Le reste à faire dérivé devient
+`nouvelle_charge × (1 − progress/100)` lors du Replan suivant.
+L'utilisateur ne saisit jamais directement un « reste à faire ».
+
+### RG-GANTT-1909
+
+**(v2.2 — RG-U)** Le `progress` d'une **phase** est dérivé
+automatiquement de ses fils selon la moyenne pondérée :
+`progress(P) = Σ(chargeEffective(cᵢ) × progressEffectif(cᵢ)) / Σ chargeEffective(cᵢ)`.
+
+Les jalons (`kind='milestone'`) sont exclus du calcul (poids zéro).
+Les sous-phases contribuent récursivement avec leur charge effective
+(= somme des charges de leurs descendants activités) et leur progress
+dérivé. Si `Σ chargeEffective = 0`, on retombe sur la moyenne
+arithmétique non pondérée des progress des fils éligibles. Si aucun
+fils éligible (phase vide ou ne contenant que des jalons),
+`progress(P) = null` (affiché vide).
+
+Le champ `progress` d'une phase n'est plus saisissable dans le
+TaskEditor : c'est une lecture dérivée.
+
+**Tests :** `utils.test.ts` → « v2.2 / RG-U — progress phase dérivé ».
+
+### RG-GANTT-1910
+
+**(v2.3 — RG-V redéfinie — Mode « Planification anticipée »)** Le toggle
+« Planification anticipée » (case à cocher persistée en `localStorage`
+par projet, clé `gantt:advance-planning:{project_id}`, défaut décoché)
+bascule la borne basse globale (RG-GANTT-1903) :
+
+- **Décoché (mode normal)** :
+  `borne_basse = MAX(projectStartDate, today, pred.end+lag, SNET)`.
+- **Coché (mode anticipé)** :
+  `borne_basse = MAX(projectStartDate, pred.end+lag, SNET)`. `today` est
+  exclu → le Replan accepte de planifier dans le passé (utile pour les
+  simulations rétrospectives quand `projectStartDate` est dans le passé).
+
+Le toggle pilote **toutes les sources de Replan** d'un projet : Replan
+manuel ET auto-replan post-édition (RG-GANTT-0909).
+
+RG-GANTT-1902 (RG-A, `progress=100` lockée), RG-GANTT-1904 (RG-C, reste
+à faire) et RG-GANTT-2103 (Option γ, `start_date` figée si
+`progress > 0`) restent appliquées dans les deux modes.
+
+**Tests :** `utils.test.ts` → « v2.2 / RG-V — mode Planification anticipée » ; `storage.test.ts` → « advance planning toggle » ; `AdvancePlanningToggle.test.tsx`.
 
 ---
 
@@ -1483,6 +1671,195 @@ involontaires sur des collabs voisins.
 
 **Tests :** propriété du hook `useDragPaint` ; vérifié par revue de code,
 pas par test automatisé (souris).
+
+---
+
+## Famille 21 — Refonte Replan v2.3 (date démarrage projet + dates au plus tôt)
+
+Refonte du modèle de planification autour d'une idée centrale : la
+`start_date` d'une activité est CALCULÉE par le Replan (au plus tôt
+possible compte tenu des contraintes), elle n'est plus une donnée saisie.
+Un nouveau concept central, la **date de démarrage du projet**
+(`project_start_date`), sert de borne basse globale par défaut.
+
+Cf. [docs/superpowers/specs/2026-05-25-refonte-replan-projet.md](./superpowers/specs/2026-05-25-refonte-replan-projet.md).
+
+### RG-GANTT-2100
+
+**(v2.3 — date démarrage projet)** Chaque projet a une date de démarrage
+persistée (colonne `projects.project_start_date`, NOT NULL). Sert de
+borne basse globale par défaut dans le Replan. Peut être dans le passé
+ou dans le futur, sans restriction. Saisie à la création (défaut `today`)
+et modifiable ultérieurement via la modal Paramètres (RG-GANTT-2101).
+
+**Tests :** `db/index.test.js` → 2 tests `initDb` (colonne NOT NULL + migration ancienne base) ; `server/app.test.js` → « POST accepte project_start_date » + « POST sans → défaut today » + « PATCH modifie project_start_date ».
+
+### RG-GANTT-2101
+
+**(v2.3 — modal Paramètres du projet)** Une modal « Paramètres du projet »
+accessible via le bouton crayon ✏️ déjà présent dans la barre du sélecteur
+de projet (à côté des boutons ➕ créer et 🗑️ supprimer) regroupe les
+réglages éditables du projet :
+
+- **Nom du projet** (champ texte ; remplace l'ancien `askPrompt`).
+- **Date de démarrage** (`project_start_date`, date picker).
+
+Le toggle « Planification anticipée » (RG-GANTT-1910) reste à son
+emplacement actuel (à côté du bouton Replan), non déplacé dans la modal.
+
+À l'enregistrement, si la date a changé, une case à cocher
+« Replanifier immédiatement après l'enregistrement » (cochée par défaut)
+permet de déclencher un Replan dans la foulée (même pattern opt-out que
+RG-GANTT-0909).
+
+À la création d'un nouveau projet (bouton ➕), un dialog équivalent
+demande **nom + date de démarrage** (défaut : `today`).
+
+**Tests :** `ProjectSettingsModal.test.tsx` (7 cas dont validation RG-2110) ; `CreateProjectDialog.test.tsx` (5 cas) ; `App.test.tsx` → 4 tests d'intégration (création, annulation, édition, désactivation Enregistrer sans modif).
+
+### RG-GANTT-2103
+
+**(v2.3 — Option γ : `start_date` figée si `progress > 0`)** Une activité
+en cours (`0 < progress < 100`) conserve sa `start_date` historique : le
+Replan ne la recalcule jamais, il ne touche qu'à `end_date`.
+
+`end_date` est calculée comme la consommation du reste à faire
+(`charge_jours × (1 − progress/100)`, RG-GANTT-1904) sur les créneaux
+libres du collaborateur à partir de `MAX(today, start_date)`.
+
+Pour les activités jamais démarrées (`progress = 0`), `start_date` est
+recalculée à la borne basse globale (RG-GANTT-1903). Pour les activités
+terminées (`progress = 100`), tout est figé (RG-GANTT-1902).
+
+**Tests :** `utils.test.ts` → bloc `v2.3 / RG-1903` (4 cas couvrant progress=0/30 × passé/futur).
+
+### RG-GANTT-2104
+
+**(v2.3 — Plan de charge utilise la timeline du moteur)** Le Plan de
+charge (`computeWorkload`) peut consommer en entrée la **timeline
+effective produite par le moteur Replan** (cf. `computeReplanResult`)
+au lieu de lire naïvement les plages `[start_date, end_date]`.
+
+API : la fonction `computeReplanResult` retourne `{ moves, timeline }`
+où `timeline: Map<collabId, TimelineEntry[]>` recense les intervalles
+`[start, end]` effectivement consommés par chaque collaborateur. Cette
+map est passée en paramètre optionnel `engineTimeline` à
+`computeWorkload` qui peint alors la charge uniquement sur ces
+intervalles (plus de fausse surcharge par chevauchement visuel de
+plages).
+
+L'opt-in se fait côté UI (App.tsx + WorkloadChart) en mémoïsant un
+appel `computeReplanResult(...)` à chaque rendu et en passant la
+`timeline` au composant. Cf. § 4 de la spec (« replan à la volée »).
+
+**Tests :** `utils.test.ts` → tests existants `computeWorkload` (rétrocompat sans `engineTimeline`) ; le câblage UI sera testé dans une itération suivante (opt-in).
+
+### RG-GANTT-2105
+
+**(v2.3 — Détection de surcharge cohérente avec le moteur)**
+`detectOverloads` peut également consommer la timeline du moteur
+Replan : deux intervalles consommés du même collab qui se chevauchent
+constituent une vraie surcharge. Par construction le moteur ne produit
+jamais ce cas (il place séquentiellement sur des créneaux libres) — la
+détection ne devrait donc jamais lever d'alerte « surcharge » sur un
+état issu d'un Replan récent.
+
+Le détecteur continue de signaler les autres incohérences :
+prédécesseurs violés (RG-GANTT-0904), priorité violée (RG-GANTT-0608),
+SNET violé (RG-GANTT-0805), FNLT dépassée (RG-GANTT-1503), prédécesseur
+terminé dans le futur (RG-GANTT-2106).
+
+**Tests :** `utils.test.ts` → tests existants `detectOverloads` (rétrocompat) ; câblage UI à venir.
+
+### RG-GANTT-2106
+
+**(v2.3 — Prédécesseur terminé dans le futur)** Cas limite : si une
+activité A a un prédécesseur P tel que `P.progress = 100` ET
+`P.end_date > today` (P est marquée terminée mais sa fin annoncée est
+dans le futur — incohérence métier), le moteur **ignore la contrainte
+de prédécesseur** lors du placement de A. A peut démarrer dès la borne
+basse globale (RG-GANTT-1903).
+
+Le bandeau d'incohérences affiche une alerte (`kind`
+`predecessor_terminated_in_future`, severity `warning`) pour que
+l'utilisateur arbitre : corriger la fin du prédécesseur ou réduire son
+`progress` sous 100.
+
+**Tests :** `utils.test.ts` → tests `checkCoherence` (à étendre dans une itération suivante avec un cas explicite).
+
+### RG-GANTT-2107
+
+**(v2.3 — Jalon sans prédécesseur)** Un jalon (`kind = 'milestone'`)
+sans prédécesseur est aujourd'hui traité par le serveur via
+`recomputeAncestorPhases` et la cascade : sa date est respectée telle
+quelle. Pour le replan, les jalons restent hors de
+`replanTasks` (ils ne sont jamais déplacés par le moteur) ; leur date
+est éventuellement ajustée par la cascade serveur via
+`propagateToSuccessors` lorsque leur prédécesseur bouge.
+
+Statu quo retenu : les jalons sans prédécesseur conservent leur
+`start_date = end_date` saisie. Pour forcer une date précise, on
+utilise la propriété de saisie directe (pas SNET — le SNET n'a pas
+de sens pour un point dans le temps).
+
+### RG-GANTT-2108
+
+**(v2.3 — Phase vide)** Une phase sans enfants directs (cas dégénéré
+possible à la création ou après suppression du dernier enfant) garde
+les dates qui lui ont été assignées au moment de la création.
+`recomputePhaseDates` ne recalcule pas ses dates en l'absence
+d'enfants (silence par défaut).
+
+L'utilisateur peut éditer manuellement ces dates via le TaskEditor.
+
+### RG-GANTT-2109
+
+**(v2.3 — Activité sans collaborateur)** Une activité sans
+collaborateur affecté est traitée par le moteur comme si elle disposait
+d'un collaborateur fictif à **capacité infinie** :
+
+- Aucune contrainte de timeline (pas de chevauchement à éviter).
+- Aucune surcharge à signaler.
+- Durée = `charge_jours` × jours ouvrés bruts (allocation ignorée).
+- Les autres contraintes restent appliquées (prédécesseur, SNET,
+  `project_start_date`, today si mode normal).
+
+Comportement déjà conforme dans le code (`placeTaskInTimeline` ne
+consulte aucune timeline si `collabIds.length === 0`).
+
+### RG-GANTT-2102
+
+**(v2.3 — suppression du concept de démo)** Le code initialisant la base
+avec des données d'exemple est supprimé : pas de seed automatique au
+boot, pas d'endpoint `POST /api/reset`, pas de bouton « ↺ Restaurer
+démo » dans l'UI. Les données existantes en base ne sont pas wipées :
+elles deviennent des données utilisateur normales. À la création d'un
+nouveau projet, aucune tâche n'est créée par défaut.
+
+`DEMO_STATE` reste accessible en interne uniquement comme fixture pour
+les tests unitaires et d'intégration (cf. `server/app.test.js`).
+
+**Tests :** absence de l'endpoint vérifiée implicitement (le bouton et la
+route n'existent plus dans le code) ; `server/app.test.js` n'inclut plus
+le bloc `POST /api/reset`.
+
+### RG-GANTT-2110
+
+**(v2.3 — validation date démarrage)** À la modification de la date de
+démarrage d'un projet, la nouvelle valeur est **rejetée avec une erreur**
+si elle est postérieure à la `start_date` d'au moins une activité du
+projet ayant `progress > 0` (en cours ou terminée).
+
+Les activités à `progress = 0` ne sont pas concernées : leur `start_date`
+est recalculée par le prochain Replan, qui les ramène à la nouvelle date
+projet.
+
+Implémentée côté serveur (DAL `updateProject`) — défense en profondeur
+côté client à venir dans la modal Paramètres.
+
+**Tests :** `server/app.test.js` → « PATCH refusé si date > start d'une tâche progress>0 ».
+
+> _Les RG 2101 à 2109 seront ajoutées au fil de l'implémentation des tâches L1.7 à L4 de la refonte v2.3 (cf. spec § 2.4)._
 
 ---
 

@@ -13,6 +13,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toPng } from 'html-to-image'
+import AdvancePlanningToggle from './components/AdvancePlanningToggle'
+import CreateProjectDialog from './components/CreateProjectDialog'
+import ProjectSettingsModal from './components/ProjectSettingsModal'
 import GanttChart from './components/GanttChart'
 import TaskEditor from './components/TaskEditor'
 import WorkloadChart from './components/WorkloadChart'
@@ -34,10 +37,10 @@ import { ProjectFilter } from './components/ProjectFilter'
 // « localhost:5174 indique ») par des modales custom alignées sur le style
 // de l'app. Voir src/lib/dialogs.ts pour le détail.
 import { askAlert, askConfirm, askPrompt } from './lib/dialogs'
+import { getAdvancePlanning } from './lib/storage'
 import {
   checkCoherence,
   clampDayWidth,
-  concernedTaskIds,
   defaultWindow,
   DEFAULT_DAY_WIDTH,
   filterCollapsed,
@@ -285,24 +288,35 @@ export default function App() {
    */
   const [replanPreview, setReplanPreview] = useState<ReplanMove[] | null>(null)
   /**
+   * v2.3 / RG-GANTT-2100 — Ouverture du dialog de création de projet.
+   * Remplace l'ancien `askPrompt` qui ne demandait que le nom.
+   */
+  const [creatingProject, setCreatingProject] = useState(false)
+  /**
+   * v2.3 / RG-GANTT-2101 — Ouverture de la modal "Paramètres du projet"
+   * (édition du nom + date de démarrage). Garde la référence au projet à
+   * éditer pour fermer la modal en remettant à `null`.
+   */
+  const [editingProject, setEditingProject] = useState<string | null>(null)
+  /**
    * v2.1 / F2.9.C — État de blocage du Replan par manque d'allocation. Null
    * = pas de blocage. Quand non-null, le `ReplanAllocationFixDialog`
    * (F2.9.D) s'ouvre et propose au user d'étendre les allocations en lot
-   * avant de relancer le replan. `scope` mémorise « full » ou « partial »
-   * pour relancer la bonne portée après extension.
+   * avant de relancer le replan.
+   * v2.2 — Le champ `scope` (full|partial) est retiré : RG-GANTT-0905
+   * abandonnée.
    */
   const [replanShortfall, setReplanShortfall] = useState<{
     items: ReplanShortfallItem[]
-    scope: 'full' | 'partial'
   } | null>(null)
   /**
-   * v2.1 / F2.9.C — Scope mémorisé pour re-déclencher `handleOpenReplan`
+   * v2.1 / F2.9.C — Drapeau pour re-déclencher `handleOpenReplan`
    * automatiquement après que les extensions d'allocation ont été appliquées
-   * (le state React a été rafraîchi via fetchState). Null = pas en attente.
+   * (le state React a été rafraîchi via fetchState). v2.2 — devient un
+   * booléen (plus de scope à mémoriser).
    */
-  const [pendingReplanScope, setPendingReplanScope] = useState<
-    'full' | 'partial' | null
-  >(null)
+  const [pendingReplanAfterExtension, setPendingReplanAfterExtension] =
+    useState<boolean>(false)
   /**
    * v1.20 — Set d'ids de phases actuellement repliées. Persisté en
    * localStorage (clé `gantt.collapsedPhases`, JSON string[]). Quand une
@@ -502,12 +516,6 @@ export default function App() {
     },
     [fetchState],
   )
-
-  /** Reset des données démo. */
-  const handleReset = async () => {
-    if (!(await askConfirm('Restaurer les données de démonstration ?'))) return
-    mutate('POST', '/api/reset')
-  }
 
   /**
    * v2.0 / F1 — Ajoute un collaborateur à l'équipe du projet courant. Aucun
@@ -910,10 +918,16 @@ export default function App() {
             // branche « lagInPatch=true » et PRÉSERVE le délai utilisateur
             // (sinon il ré-inférerait un lag depuis le nouveau gap, ce qui
             // écrasait la valeur saisie — bug v1.22 / Test délai).
+            // v2.2 / RG-W — Inclut `charge_jours` pour empêcher la
+            // back-dérivation côté serveur (RG-GANTT-1900 invariance de la
+            // charge sous Replan). Le moteur ne modifie JAMAIS la charge ;
+            // ce champ active le cas 3a' du serveur qui honore les trois
+            // valeurs telles quelles.
             body: JSON.stringify({
               start_date: m.newStart,
               end_date: m.newEnd,
               predecessor_lag: m.predecessor_lag,
+              charge_jours: m.charge_jours,
             }),
           })
           if (!res.ok) {
@@ -978,11 +992,22 @@ export default function App() {
         // v2.0 / F2/F3 — Replan automatique post-save : consomme aussi la
         // capacité allouée et les absences pour rester cohérent avec le
         // replan manuel.
+        // v2.2 / RG-V — Respecte le toggle "Planification anticipée" persisté
+        // par projet (un seul mode pour toutes les sources de Replan).
+        const projectId = data.current_project_id
+        const ignoreToday = projectId ? getAdvancePlanning(projectId) : false
+        // v2.3 / RG-GANTT-2100 — Borne basse globale = date de démarrage du
+        // projet courant. Fallback `today` si projet introuvable (cas dégénéré).
+        const currentProj = data.projects.find(
+          (p: { id: string }) => p.id === projectId,
+        )
+        const projectStartDate = currentProj?.project_start_date || todayIso()
         const moves = replanTasks(
           sortTasksHierarchically(data.tasks),
-          undefined,
+          projectStartDate,
           data.member_allocations,
           data.collaborator_absences,
+          { ignoreToday },
         )
         await submitReplanMoves(moves)
       } catch (err) {
@@ -1015,22 +1040,59 @@ export default function App() {
    * croire à l'utilisateur que la bascule n'avait pas eu lieu. Voir aussi
    * le garde-fou symétrique dans handleProjectSelectionChange / selectView.
    */
-  const handleCreateProject = async () => {
-    const raw = await askPrompt('Nom du nouveau projet :', 'Nouveau projet')
-    const name = raw?.trim()
-    if (!name) return
+  /**
+   * v2.3 / RG-GANTT-2100 — Ouvre le dialog de création de projet
+   * (nom + date de démarrage). Le POST API est fait via
+   * `handleCreateProjectSubmit` une fois le dialog validé.
+   */
+  const handleCreateProject = () => {
+    setCreatingProject(true)
+  }
+
+  /**
+   * v2.3 / RG-GANTT-2100 — Callback d'enregistrement du
+   * `CreateProjectDialog` : POST /api/projects puis bascule sur le projet
+   * fraîchement créé.
+   */
+  const handleCreateProjectSubmit = async (input: {
+    name: string
+    project_start_date: string
+  }) => {
+    setCreatingProject(false)
     const id = makeId('p')
-    await mutate('POST', '/api/projects', { id, name })
+    await mutate('POST', '/api/projects', { id, ...input })
     handleProjectSelectionChange({ mode: 'single', projectId: id })
   }
 
-  /** Renomme le projet courant (prompt). */
-  const handleRenameProject = async () => {
+  /**
+   * v2.3 / RG-GANTT-2101 — Ouvre la modal "Paramètres du projet"
+   * (remplace l'ancien `askPrompt` qui ne renommait que le nom).
+   */
+  const handleRenameProject = () => {
     if (!currentProject) return
-    const raw = await askPrompt('Nouveau nom :', currentProject.name)
-    const name = raw?.trim()
-    if (!name || name === currentProject.name) return
-    await mutate('PATCH', `/api/projects/${currentProject.id}`, { name })
+    setEditingProject(currentProject.id)
+  }
+
+  /**
+   * v2.3 / RG-GANTT-2101 — Callback d'enregistrement du
+   * `ProjectSettingsModal` : PATCH /api/projects puis (si la date a changé
+   * ET la case "Replanifier après" est cochée) déclenche un Replan.
+   */
+  const handleProjectSettingsSave = async (
+    patch: { name?: string; project_start_date?: string },
+    replanRequested: boolean,
+  ) => {
+    if (!editingProject) return
+    const projectId = editingProject
+    setEditingProject(null)
+    await mutate('PATCH', `/api/projects/${projectId}`, patch)
+    if (replanRequested) {
+      // Laisse React rafraîchir le state avant d'ouvrir le Replan
+      // (sinon `currentProject.project_start_date` lit l'ancienne valeur).
+      setTimeout(() => {
+        void handleOpenReplan()
+      }, 0)
+    }
   }
 
   /** Supprime le projet courant après confirmation.
@@ -1277,21 +1339,14 @@ export default function App() {
   }, [])
 
   /**
-   * v1.18 / v1.21 — Ouvre la modal d'aperçu de replanification.
-   *
-   *   • `scope='full'`    : toutes les tâches sont candidates au déplacement
-   *                         (comportement historique).
-   *   • `scope='partial'` : seules les tâches concernées par les incohérences
-   *                         actuelles (et leurs successeurs transitifs) sont
-   *                         déplaçables ; les autres restent verrouillées
-   *                         comme obstacles dans le timeline.
+   * v1.18 / v2.2 — Ouvre la modal d'aperçu de replanification (mode unique
+   * « complet », le Replan partiel ayant été abandonné en v2.2 —
+   * RG-GANTT-0905 supprimée).
    *
    * Calcule les déplacements via la fonction pure `replanTasks` ; si aucun
    * déplacement n'est nécessaire, affiche un alert et n'ouvre pas la modal.
-   *
-   * @param scope  Portée du replan (cf. ci-dessus).
    */
-  const handleOpenReplan = async (scope: 'full' | 'partial' = 'full') => {
+  const handleOpenReplan = async () => {
     if (!state) return
     // v2.0 / F2 — Le replan consomme la capacité quotidienne réelle de chaque
     // collab : on lui passe `member_allocations` du projet courant.
@@ -1300,6 +1355,11 @@ export default function App() {
     // le replan (sinon le replan replacerait des tâches sur des jours en congé).
     const allocs = state.member_allocations
     const absences = state.collaborator_absences
+    // v2.2 / RG-V — Le mode "Planification anticipée" est lu depuis localStorage
+    // (par projet). Il suspend RG-B (today comme borne basse).
+    const ignoreToday = state.current_project_id
+      ? getAdvancePlanning(state.current_project_id)
+      : false
     // v2.1 / F2.9.C — Avant tout calcul de replan, vérifier que TOUTES les
     // activités du projet courant ont une allocation suffisante. Si certaines
     // ne sont pas absorbables, on bloque et on propose une extension en lot
@@ -1312,25 +1372,24 @@ export default function App() {
         absences,
       )
       if (shortfallItems.length > 0) {
-        setReplanShortfall({ items: shortfallItems, scope })
+        setReplanShortfall({ items: shortfallItems })
         return
       }
     }
-    const moves =
-      scope === 'partial'
-        ? replanTasks(
-            orderedTasks,
-            concernedTaskIds(coherenceIssues, orderedTasks),
-            allocs,
-            absences,
-          )
-        : replanTasks(orderedTasks, undefined, allocs, absences)
+    // v2.3 / RG-GANTT-2100 — Le Replan utilise la date de démarrage du projet
+    // comme borne basse globale. Fallback `today` si projet sans date (cas dégénéré).
+    const projectStartDate = currentProject?.project_start_date || todayIso()
+    const moves = replanTasks(
+      orderedTasks,
+      projectStartDate,
+      allocs,
+      absences,
+      {
+        ignoreToday,
+      },
+    )
     if (moves.length === 0) {
-      await askAlert(
-        scope === 'partial'
-          ? 'Aucun déplacement nécessaire — les incohérences ne peuvent pas être résolues sans déverrouiller d’autres tâches (essayez « Replan complet »).'
-          : 'Aucune surcharge détectée — rien à replanifier.',
-      )
+      await askAlert('Aucune surcharge détectée — rien à replanifier.')
       return
     }
     setReplanPreview(moves)
@@ -1339,8 +1398,8 @@ export default function App() {
   /**
    * v2.1 / F2.9.C — Callback du `ReplanAllocationFixDialog` : exécute en
    * série les plans d'extension validés par l'utilisateur, puis re-déclenche
-   * automatiquement `handleOpenReplan(scope)` via `pendingReplanScope` une
-   * fois le state rafraîchi (cf. useEffect plus bas).
+   * automatiquement `handleOpenReplan` via `pendingReplanAfterExtension`
+   * une fois le state rafraîchi (cf. useEffect plus bas).
    *
    * Si l'extension échoue à mi-chemin, `handleExtendAllocations` affiche déjà
    * un `askAlert` et le dialog reste ouvert (état `replanShortfall` non
@@ -1348,13 +1407,12 @@ export default function App() {
    */
   const handleApplyReplanExtensions = async (plans: ExtensionPlan[]) => {
     if (!replanShortfall) return
-    const scope = replanShortfall.scope
     try {
       for (const plan of plans) {
         await handleExtendAllocations(plan)
       }
       setReplanShortfall(null)
-      setPendingReplanScope(scope)
+      setPendingReplanAfterExtension(true)
     } catch {
       // L'erreur a déjà été affichée par `handleExtendAllocations`.
     }
@@ -1363,22 +1421,21 @@ export default function App() {
   /**
    * v2.1 / F2.9.C — Quand des extensions ont été appliquées en amont d'un
    * replan, on attend que le `state` React soit rafraîchi (changement de
-   * `version`) avant de relancer `handleOpenReplan` avec le scope mémorisé.
-   * Évite la race condition : appeler `handleOpenReplan` juste après
-   * `fetchState()` lirait l'ancien `state` (le setState est asynchrone).
+   * `version`) avant de relancer `handleOpenReplan`. Évite la race condition :
+   * appeler `handleOpenReplan` juste après `fetchState()` lirait l'ancien
+   * `state` (le setState est asynchrone).
    */
   useEffect(() => {
-    if (!pendingReplanScope || !state) return
-    const scope = pendingReplanScope
+    if (!pendingReplanAfterExtension || !state) return
     /* eslint-disable react-hooks/set-state-in-effect */
-    setPendingReplanScope(null)
+    setPendingReplanAfterExtension(false)
     /* eslint-enable react-hooks/set-state-in-effect */
-    void handleOpenReplan(scope)
+    void handleOpenReplan()
     // `handleOpenReplan` n'est pas listé en deps : il dépend de `state` et
     // `orderedTasks` qui sont déjà couverts par le dep `state?.version` via
     // re-création du closure à chaque render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state?.version, pendingReplanScope])
+  }, [state?.version, pendingReplanAfterExtension])
 
   /**
    * v1.18 — Applique les déplacements de l'aperçu (modal Replan). Délègue à
@@ -1676,26 +1733,24 @@ export default function App() {
           >
             <button
               className="h-7 px-2 text-sm rounded bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed"
-              onClick={() => handleOpenReplan('full')}
+              onClick={() => handleOpenReplan()}
               disabled={!state || isGlobalView}
             >
               🔄 Replan
             </button>
           </Tooltip>
+          {/* v2.2 / RG-V — Toggle "Planification anticipée" : suspend RG-B
+              pour le Replan manuel ET l'auto-replan post-édition. Persistance
+              localStorage par projet (cf. RG-GANTT-1910). */}
+          {state?.current_project_id && !isGlobalView && (
+            <AdvancePlanningToggle projectId={state.current_project_id} />
+          )}
           <Tooltip label="Capture PNG du Gantt (pour PowerPoint)">
             <button
               className="w-7 h-7 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
               onClick={handleScreenshot}
             >
               📷
-            </button>
-          </Tooltip>
-          <Tooltip label="Restaurer les données de démonstration" align="end">
-            <button
-              className="w-7 h-7 text-sm rounded border border-slate-300 hover:bg-slate-100"
-              onClick={handleReset}
-            >
-              ↺
             </button>
           </Tooltip>
           <StatusBadge status={status} />
@@ -1717,8 +1772,7 @@ export default function App() {
             {view === 'gantt' && (
               <CoherenceAlert
                 issues={coherenceIssues}
-                onReplanFull={() => handleOpenReplan('full')}
-                onReplanPartial={() => handleOpenReplan('partial')}
+                onReplan={() => handleOpenReplan()}
               />
             )}
             {/* v2.0 / F1 — Trois vues désormais : 'gantt', 'workload' ou
@@ -1829,7 +1883,7 @@ export default function App() {
           insuffisantes (Q4=B : récapitulatif unique, cochable, avec date + %
           par tâche). S'ouvre depuis `handleOpenReplan` et se ferme soit par
           « Annuler le replan », soit après que les extensions choisies ont
-          été appliquées (auto-relance du replan via pendingReplanScope). */}
+          été appliquées (auto-relance du replan via pendingReplanAfterExtension). */}
       {replanShortfall && state && state.current_project_id && (
         <ReplanAllocationFixDialog
           items={replanShortfall.items}
@@ -1873,6 +1927,23 @@ export default function App() {
           onExtendAllocations={handleExtendAllocations}
         />
       )}
+      {/* v2.3 / RG-GANTT-2100 — Dialog de création de projet (nom + date). */}
+      <CreateProjectDialog
+        open={creatingProject}
+        onClose={() => setCreatingProject(false)}
+        onCreate={handleCreateProjectSubmit}
+      />
+      {/* v2.3 / RG-GANTT-2101 — Modal "Paramètres du projet" (édition). */}
+      <ProjectSettingsModal
+        project={
+          editingProject
+            ? (state?.projects.find((p) => p.id === editingProject) ?? null)
+            : null
+        }
+        tasks={state?.tasks ?? []}
+        onClose={() => setEditingProject(null)}
+        onSave={handleProjectSettingsSave}
+      />
       {/* Mount unique des modales custom (confirm / prompt). Doit rester
           en bas pour passer au-dessus du reste en z-index. */}
       <Dialogs />

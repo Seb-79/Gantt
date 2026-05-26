@@ -2,7 +2,7 @@
 // TESTS — fonctions utilitaires Gantt (Vitest)
 // =============================================================================
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   addDaysIso,
   addWorkingDays,
@@ -14,8 +14,8 @@ import {
   scanReplanShortfalls,
   checkCoherence,
   clampDayWidth,
-  concernedTaskIds,
   dateToIso,
+  derivePhaseProgress,
   dateToX,
   daysBetweenIso,
   defaultWindow,
@@ -51,7 +51,7 @@ import {
   MAX_DAY_WIDTH,
   MIN_DAY_WIDTH,
 } from './utils'
-import type { Collaborator, Task } from './types'
+import type { Collaborator, MemberAllocation, Task } from './types'
 import { mkTask as mkTaskBase } from '../test/fixtures'
 
 /**
@@ -757,6 +757,19 @@ describe('filterCollapsed (v1.20)', () => {
 // =============================================================================
 
 describe('replanTasks (v1.18)', () => {
+  // v2.3 — RG-GANTT-1903 redéfinie borne la base à `today` en mode normal.
+  // Les fixtures de ces tests historiques utilisent des dates en mai/juin 2026.
+  // On fige `today` au 2026-01-01 pour que `today < fixtures` et ne perturbe
+  // pas les scénarios. Les tests dédiés à RG-1903 / RG-V utilisent leur propre
+  // `vi.setSystemTime` quand ils veulent tester la borne `today`.
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('aucun déplacement si aucune surcharge', () => {
     // v1.23 — Scénario shifté sur la semaine du 08/06/2026 pour éviter le
     // Lundi de Pentecôte (25/05/2026) qui rend le test fragile.
@@ -772,7 +785,9 @@ describe('replanTasks (v1.18)', () => {
         end_date: '2026-06-19',
       }),
     ]
-    expect(replanTasks(tasks)).toEqual([])
+    // v2.3 — projectStartDate aligné sur la plus précoce des fixtures pour
+    // que la borne basse globale ne tire pas les tâches en arrière.
+    expect(replanTasks(tasks, '2026-06-08')).toEqual([])
   })
 
   it('pousse la 2e tâche après la 1re quand elles se chevauchent pour le même collab', () => {
@@ -793,7 +808,7 @@ describe('replanTasks (v1.18)', () => {
         end_date: '2026-06-05', // ven 5 juin (10 j ouvrés)
       }),
     ]
-    const moves = replanTasks(tasks)
+    const moves = replanTasks(tasks, '2026-05-15')
     expect(moves).toHaveLength(1)
     expect(moves[0]).toMatchObject({
       id: 'B',
@@ -821,7 +836,7 @@ describe('replanTasks (v1.18)', () => {
         priority: 1,
       }),
     ]
-    const moves = replanTasks(tasks)
+    const moves = replanTasks(tasks, '2026-05-18')
     expect(moves.map((m) => m.id)).toEqual(['A'])
     // A part au lundi suivant la fin de B (mer 20 → jeu 21 = jour ouvré).
     expect(moves[0].newStart).toBe('2026-05-21')
@@ -841,7 +856,7 @@ describe('replanTasks (v1.18)', () => {
         end_date: '2026-05-20',
       }),
     ]
-    const moves = replanTasks(tasks)
+    const moves = replanTasks(tasks, '2026-05-18')
     expect(moves.map((m) => m.id)).toEqual(['BOTTOM'])
   })
 
@@ -862,7 +877,7 @@ describe('replanTasks (v1.18)', () => {
         priority: 1,
       }),
     ]
-    const moves = replanTasks(tasks)
+    const moves = replanTasks(tasks, '2026-05-18')
     // v1.23 — A reste sur place ; B démarre dès la fin de A en sautant les
     // jours non ouvrés : lun 25/05 est désormais férié (Pentecôte), donc B
     // démarre le mardi 26/05.
@@ -883,7 +898,7 @@ describe('replanTasks (v1.18)', () => {
         end_date: '2026-05-22',
       }),
     ]
-    expect(replanTasks(tasks)).toEqual([])
+    expect(replanTasks(tasks, '2026-05-18')).toEqual([])
   })
 
   it('ignore les jalons et les phases', () => {
@@ -906,7 +921,7 @@ describe('replanTasks (v1.18)', () => {
       }),
     ]
     // Aucune surcharge sur tâche réelle → aucun déplacement.
-    expect(replanTasks(tasks)).toEqual([])
+    expect(replanTasks(tasks, '2026-05-18')).toEqual([])
   })
 })
 
@@ -1179,128 +1194,6 @@ describe('addWorkingDays / workingDaysBetween (v1.23) — sautent les fériés',
   })
 })
 
-describe('replanTasks — variante PARTIELLE (concernedIds)', () => {
-  it('replan complet sans `concernedIds` : comportement v1.18 inchangé', () => {
-    // Référence : surcharge identique au scénario du brief Replan v1.18.
-    const tasks: Task[] = [
-      mkTask('t1a', {
-        name: 'Recherche audience',
-        collaborator_id: 'c1',
-        start_date: '2026-05-15',
-        end_date: '2026-05-29',
-      }),
-      mkTask('t1b', {
-        name: 'Définir le message',
-        collaborator_id: 'c1',
-        start_date: '2026-05-25',
-        end_date: '2026-06-05',
-      }),
-    ]
-    const moves = replanTasks(tasks)
-    expect(moves.map((m) => m.id)).toEqual(['t1b'])
-    expect(moves[0].newStart).toBe('2026-06-01')
-  })
-
-  it('`concernedIds` vide ⇒ aucun déplacement (toutes les tâches lockées)', () => {
-    const tasks: Task[] = [
-      mkTask('A', {
-        collaborator_id: 'c1',
-        start_date: '2026-05-15',
-        end_date: '2026-05-29',
-      }),
-      mkTask('B', {
-        collaborator_id: 'c1',
-        start_date: '2026-05-25',
-        end_date: '2026-06-05',
-      }),
-    ]
-    expect(replanTasks(tasks, new Set())).toEqual([])
-  })
-
-  it('replan partiel : SEULES les tâches listées peuvent être déplacées', () => {
-    // 3 tâches s'empilent sur c1 : A (15→29), B (25→6/5), C (1/6→10/6).
-    // Si concerned = {B}, seule B doit bouger. A et C restent figées.
-    const tasks: Task[] = [
-      mkTask('A', {
-        collaborator_id: 'c1',
-        start_date: '2026-05-15',
-        end_date: '2026-05-29',
-      }),
-      mkTask('B', {
-        collaborator_id: 'c1',
-        start_date: '2026-05-25',
-        end_date: '2026-06-05',
-      }),
-      mkTask('C', {
-        collaborator_id: 'c1',
-        start_date: '2026-06-01',
-        end_date: '2026-06-10',
-      }),
-    ]
-    const moves = replanTasks(tasks, new Set(['B']))
-    // Seule B est listée. A et C restent en place, font OBSTACLE.
-    expect(moves.map((m) => m.id)).toEqual(['B'])
-    // B doit attendre la fin de C (= 10/06, jour ouvré suivant = 11/06).
-    expect(moves[0].newStart).toBe('2026-06-11')
-  })
-
-  it('replan partiel : un descendant transitif (successeur) bouge si concerné', () => {
-    // X → Y (Y a X comme prédécesseur). Si on inclut Y dans concerned mais pas X,
-    // Y peut bouger pour satisfaire la contrainte.
-    const tasks: Task[] = [
-      mkTask('X', {
-        start_date: '2026-05-18',
-        end_date: '2026-05-22',
-      }),
-      mkTask('Y', {
-        predecessor_id: 'X',
-        start_date: '2026-05-15',
-        end_date: '2026-05-19',
-      }),
-    ]
-    const moves = replanTasks(tasks, new Set(['Y']))
-    expect(moves.map((m) => m.id)).toEqual(['Y'])
-    // Y doit démarrer au plus tôt à X.end (= 22/05, vendredi).
-    expect(moves[0].newStart >= '2026-05-22').toBe(true)
-  })
-})
-
-describe('concernedTaskIds — fermeture transitive', () => {
-  it('inclut les tâches mentionnées dans les issues', () => {
-    const tasks: Task[] = [mkTask('A'), mkTask('B'), mkTask('C')]
-    const issues: ReturnType<typeof checkCoherence> = [
-      {
-        kind: 'overload',
-        severity: 'error',
-        taskIds: ['A', 'B'],
-        message: 'x',
-      },
-    ]
-    const set = concernedTaskIds(issues, tasks)
-    expect([...set].sort()).toEqual(['A', 'B'])
-  })
-
-  it('propage aux successeurs transitifs (chaîne X → Y → Z)', () => {
-    const tasks: Task[] = [
-      mkTask('X'),
-      mkTask('Y', { predecessor_id: 'X' }),
-      mkTask('Z', { predecessor_id: 'Y' }),
-    ]
-    const set = concernedTaskIds(
-      [
-        {
-          kind: 'overload',
-          severity: 'error',
-          taskIds: ['X'],
-          message: 'x',
-        },
-      ],
-      tasks,
-    )
-    expect([...set].sort()).toEqual(['X', 'Y', 'Z'])
-  })
-})
-
 // =============================================================================
 // v1.24 — Tests dédiés couvrant les règles métier RG-GANTT-XXXX (cf.
 // docs/regles-metier.md). Chaque test cite explicitement la règle
@@ -1375,43 +1268,24 @@ describe('v1.24 — RG-GANTT-0206 — effectiveTaskColor ignore le collab pour u
   })
 })
 
-describe('v1.24 — RG-GANTT-0903 — Replan ne déplace jamais une activité vers le passé', () => {
-  it('une activité isolée et libre n`est PAS ramenée en arrière par le replan', () => {
-    // Aucune surcharge, aucun prédécesseur : il n'y a rien à corriger. Le
-    // replan ne doit pas proposer de déplacer la tâche vers une date plus
-    // ancienne pour « optimiser » le planning.
-    const t = mkTask('seule', {
-      collaborator_id: 'c1',
-      start_date: '2026-07-15', // mercredi
-      end_date: '2026-07-17',
-    })
-    const moves = replanTasks([t])
-    expect(moves).toEqual([])
-  })
-
-  it('après replan, la borne basse de chaque activité est >= sa start_date d`origine', () => {
-    // Garantie générale : même quand le replan déplace une tâche (à cause
-    // d'une surcharge), il NE LA RAMÈNE JAMAIS en deçà de sa start_date
-    // initiale. Le mouvement est unidirectionnel (vers le futur).
-    const a = mkTask('a', {
-      collaborator_id: 'c1',
-      start_date: '2026-06-08',
-      end_date: '2026-06-12',
-    })
-    const b = mkTask('b', {
-      collaborator_id: 'c1',
-      start_date: '2026-06-10', // chevauche A → surcharge
-      end_date: '2026-06-15',
-    })
-    const moves = replanTasks([a, b])
-    for (const m of moves) {
-      const orig = [a, b].find((t) => t.id === m.id)!
-      expect(m.newStart >= orig.start_date).toBe(true)
-    }
-  })
-})
+// v2.3 — Le describe `RG-GANTT-0903 — Replan ne déplace jamais une activité
+// vers le passé` est SUPPRIMÉ : la règle 0903 a été abandonnée au profit de
+// RG-GANTT-1903 (borne basse globale = MAX(projectStartDate, today, pred.end+lag, SNET)).
+// Le Replan cherche désormais la date AU PLUS TÔT. Les scénarios "isolée
+// libre" ramènent maintenant la tâche à `MAX(projectStartDate, today)` et c'est
+// le comportement attendu. Cf. spec docs/superpowers/specs/2026-05-25-refonte-replan-projet.md.
 
 describe('v1.24 — RG-GANTT-0703 / 0709 — replan respecte la borne basse SNET', () => {
+  // v2.3 — Fige today pour ne pas perturber les fixtures (cf. note dans
+  // describe('replanTasks (v1.18)') plus haut).
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('SNET > pred.end + lag → la borne basse de replan est le SNET', () => {
     // Scénario : prédécesseur X finit le mercredi 10/06/2026, lag = 0 (Y peut
     // démarrer dès le 10/06). Mais Y porte une contrainte « Ne doit pas
@@ -1431,7 +1305,7 @@ describe('v1.24 — RG-GANTT-0703 / 0709 — replan respecte la borne basse SNET
       predecessor_lag: 0,
       not_before_date: '2026-06-22', // borne SNET plus tardive
     })
-    const moves = replanTasks([X, Y])
+    const moves = replanTasks([X, Y], '2026-06-08')
     // Y doit être proposé à partir du 22/06 (lundi).
     const moveY = moves.find((m) => m.id === 'Y')
     expect(moveY).toBeDefined()
@@ -1456,7 +1330,7 @@ describe('v1.24 — RG-GANTT-0703 / 0709 — replan respecte la borne basse SNET
       predecessor_lag: 0,
       not_before_date: '2026-06-01', // borne SNET plus ancienne, sans effet
     })
-    const moves = replanTasks([X, Y])
+    const moves = replanTasks([X, Y], '2026-06-08')
     const moveY = moves.find((m) => m.id === 'Y')
     // Y commence APRÈS la fin de X, conformément à la règle prédécesseur.
     expect(moveY?.newStart || Y.start_date >= X.end_date).toBeTruthy()
@@ -1699,6 +1573,100 @@ describe('checkCoherence — FNLT (v2.0 / F4)', () => {
     expect(
       checkCoherence(tasks).filter((i) => i.kind === 'fnlt_overrun'),
     ).toHaveLength(0)
+  })
+})
+
+// =============================================================================
+// v2.3 / RG-GANTT-2106 — Prédécesseur terminé dans le futur (alerte coherence)
+// =============================================================================
+
+describe('v2.3 / RG-GANTT-2106 — prédécesseur terminé dans le futur', () => {
+  // Fige today à 2026-06-10 pour avoir un point d'ancrage stable.
+  let dateNowSpy: ReturnType<typeof vi.spyOn> | null = null
+  beforeEach(() => {
+    const fixed = new Date('2026-06-10T00:00:00.000Z').getTime()
+    dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(fixed)
+  })
+  afterEach(() => {
+    dateNowSpy?.mockRestore()
+  })
+
+  it('v2.3 / RG-GANTT-2106 — détecte une alerte si pred progress=100 ET end > today', () => {
+    // P : prédécesseur terminé (progress=100) avec end_date dans le futur (incohérence).
+    // A : successeur de P. Le moteur ignore la contrainte ; le bandeau alerte.
+    const tasks: Task[] = [
+      mkTask('P', {
+        name: 'Pred',
+        progress: 100,
+        start_date: '2026-08-01',
+        end_date: '2026-08-15', // dans le futur par rapport à today=2026-06-10
+        charge_jours: 10,
+      }),
+      mkTask('A', {
+        name: 'Succ',
+        progress: 0,
+        start_date: '2026-09-01',
+        end_date: '2026-09-05',
+        predecessor_id: 'P',
+        predecessor_lag: 0,
+      }),
+    ]
+    const issues = checkCoherence(tasks)
+    const alert = issues.find(
+      (i) => i.kind === 'predecessor_terminated_in_future',
+    )
+    expect(alert).toBeDefined()
+    expect(alert!.severity).toBe('warning')
+    expect(alert!.message).toMatch(/Pred.*Succ|Succ.*Pred/)
+  })
+
+  it("v2.3 / RG-GANTT-2106 — pas d'alerte si pred end_date est dans le passé", () => {
+    // Cas nominal : prédécesseur terminé avec end_date dans le passé.
+    const tasks: Task[] = [
+      mkTask('P', {
+        name: 'Pred',
+        progress: 100,
+        start_date: '2026-05-01',
+        end_date: '2026-05-15', // passé (< today=2026-06-10)
+        charge_jours: 10,
+      }),
+      mkTask('A', {
+        name: 'Succ',
+        progress: 0,
+        start_date: '2026-06-15',
+        end_date: '2026-06-19',
+        predecessor_id: 'P',
+        predecessor_lag: 0,
+      }),
+    ]
+    const issues = checkCoherence(tasks)
+    expect(
+      issues.find((i) => i.kind === 'predecessor_terminated_in_future'),
+    ).toBeUndefined()
+  })
+
+  it("v2.3 / RG-GANTT-2106 — pas d'alerte si pred progress < 100 (même dans le futur)", () => {
+    const tasks: Task[] = [
+      mkTask('P', {
+        name: 'Pred',
+        progress: 50,
+        start_date: '2026-08-01',
+        end_date: '2026-08-15',
+        charge_jours: 10,
+      }),
+      mkTask('A', {
+        name: 'Succ',
+        progress: 0,
+        start_date: '2026-09-01',
+        end_date: '2026-09-05',
+        predecessor_id: 'P',
+        predecessor_lag: 0,
+      }),
+    ]
+    const issues = checkCoherence(tasks)
+    expect(
+      issues.find((i) => i.kind === 'predecessor_terminated_in_future'),
+    ).toBeUndefined()
   })
 })
 
@@ -2415,5 +2383,471 @@ describe('rebuildAllocationsForCollab (v2.1 / F4 / RG-GANTT-2002)', () => {
     expect(r.toCreate).toEqual([
       { start_date: '2026-06-15', end_date: '2026-06-19', allocation_pct: 100 },
     ])
+  })
+})
+
+// =============================================================================
+// v2.2 / RG-INV — Invariance de la charge sous Replan (test rouge volontaire)
+// =============================================================================
+// Ce test capture le Bug B1 : le Replan génère un PATCH sans charge_jours,
+// ce qui cause une dérive divergente de end_date à chaque Replan consécutif.
+// Le test DOIT ÉCHOUER avant le fix (L1 tasks 2-3) et passer après.
+// =============================================================================
+
+describe('v2.2 / RG-INV — invariance de la charge sous Replan (Bug B1)', () => {
+  // v2.3 — Fige today pour ne pas perturber les fixtures de juin 2026.
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  // v2.2 — Test d'idempotence du Replan : avec le contrat RG-W en place
+  // (ReplanMove.charge_jours + PATCH incluant charge_jours), un Replan suivi
+  // d'application des moves doit être un point fixe (le 2e Replan retourne []).
+  it('RG-INV — 2 Replans consécutifs sans modification produisent le même état (le 2e retourne [])', () => {
+    // Allocation 50 % pour le collab → l'engine étire l'end_date pour absorber la charge.
+    // end_date est délibérément incohérente au départ (5 jours ouvrés bruts pour 5j-charge
+    // à 50 % → en réalité il faudrait 10 jours ouvrés bruts = 2026-06-12).
+    // Le 1er Replan doit donc corriger end_date vers 2026-06-12.
+    const tasks: Task[] = [
+      mkTask('t1', {
+        start_date: '2026-06-01',
+        end_date: '2026-06-05', // 5 jours ouvrés bruts, SOUS-ESTIMÉ pour alloc 50 %
+        charge_jours: 5,
+        priority: 3,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const allocations: MemberAllocation[] = [
+      {
+        id: 'a1',
+        project_id: 'p1',
+        collaborator_id: 'c1',
+        start_date: '2026-01-01',
+        end_date: '2026-12-31',
+        allocation_pct: 50,
+      },
+    ]
+    // v2.3 — projectStartDate aligné sur la fixture (= start_date) pour
+    // éviter que RG-1903 redéfinie ne tire la tâche en arrière.
+    // 1er Replan : doit produire un move (correction de end_date vers 2026-06-12).
+    const moves1 = replanTasks(tasks, '2026-06-01', allocations, [])
+    expect(moves1.length).toBe(1)
+    expect(moves1[0].newEnd).toBe('2026-06-12')
+    expect(moves1[0].charge_jours).toBe(5) // charge préservée dans le move (RG-W)
+    // Appliquer les moves en respectant le contrat RG-W : start, end ET
+    // charge_jours sont écrits tels quels (cas 3a' côté serveur). La charge
+    // reste donc STABLE.
+    for (const m of moves1) {
+      const t = tasks.find((x) => x.id === m.id)!
+      t.start_date = m.newStart
+      t.end_date = m.newEnd
+      t.charge_jours = m.charge_jours
+    }
+    // 2e Replan : doit être un no-op (point fixe atteint).
+    const moves2 = replanTasks(tasks, '2026-06-01', allocations, [])
+    expect(moves2).toEqual([])
+  })
+})
+
+// =============================================================================
+// v2.2 / RG-A (RG-GANTT-1902) — progress=100 lockée par le Replan
+// =============================================================================
+
+describe('v2.2 / RG-A — progress=100 lockée par le Replan', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('ne propose aucun move pour une tâche à progress=100', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 100,
+        start_date: '2026-06-01',
+        end_date: '2026-06-05',
+        charge_jours: 5,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+      mkTask('t2', {
+        progress: 0,
+        start_date: '2026-06-08',
+        end_date: '2026-06-12',
+        charge_jours: 5,
+        collaborator_id: 'c2',
+        collaborator_ids: ['c2'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-06-01', [], [])
+    // t1 (progress=100) ne doit jamais apparaître dans les moves.
+    expect(moves.find((m) => m.id === 't1')).toBeUndefined()
+  })
+
+  it("bloque l'intervalle de t1 comme obstacle pour les autres tâches du même collab", () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 100,
+        start_date: '2026-06-01',
+        end_date: '2026-06-05', // lundi → vendredi, 5 j ouvrés
+        charge_jours: 5,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+      mkTask('t2', {
+        progress: 0,
+        // Chevauche t1 → la timeline doit pousser t2 APRÈS la fin de t1.
+        start_date: '2026-06-01',
+        end_date: '2026-06-05',
+        charge_jours: 5,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-06-01', [], [])
+    const m2 = moves.find((m) => m.id === 't2')
+    expect(m2).toBeDefined()
+    // t1 termine le 05/06 → t2 doit démarrer ≥ 08/06 (lundi suivant).
+    expect(m2!.newStart >= '2026-06-08').toBe(true)
+  })
+})
+
+// =============================================================================
+// v2.3 / RG-GANTT-1903 (redéfinie) — borne basse globale du Replan
+//   = MAX(projectStartDate, today_si_mode_normal, pred.end+lag, SNET)
+// S'applique à TOUTES les activités, indépendamment de progress.
+// Exception RG-GANTT-2103 (Option γ) : pour progress > 0, start_date reste figée.
+// =============================================================================
+
+describe('v2.3 / RG-1903 — borne basse globale (today en mode normal)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-10T12:00:00Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('progress=0 avec start_date dans le passé : Replan tire la tâche à today', () => {
+    // v2.3 — RG-0903 supprimée : le moteur cherche TOUJOURS au plus tôt.
+    // Avec projectStartDate dans le passé (2026-01-01), la borne basse
+    // effective est `MAX(2026-01-01, today=2026-06-10)` = today.
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 0,
+        start_date: '2026-06-01', // dans le passé par rapport à today (10/06)
+        end_date: '2026-06-05',
+        charge_jours: 5,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-01-01', [], [])
+    expect(moves.length).toBe(1)
+    // newStart est snappé au prochain jour ouvré ≥ today (10/06 = mercredi).
+    expect(moves[0].newStart >= '2026-06-10').toBe(true)
+  })
+
+  it('progress=0 avec start_date dans le futur : start tirée au plus tôt (projectStartDate ou today)', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 0,
+        start_date: '2026-08-15', // dans le futur (parqué loin)
+        end_date: '2026-08-19',
+        charge_jours: 5,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-01-01', [], [])
+    // RG-0903 supprimée : la tâche est ramenée à today (borne basse globale).
+    expect(moves.length).toBe(1)
+    expect(moves[0].newStart >= '2026-06-10').toBe(true)
+    expect(moves[0].newStart < '2026-08-15').toBe(true)
+  })
+
+  it('progress=30 (en cours) avec start_date dans le passé : start figée (RG-2103, Option γ)', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 30,
+        start_date: '2026-06-01', // dans le passé : conservée
+        end_date: '2026-06-05',
+        charge_jours: 5,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-01-01', [], [])
+    // RG-2103 / Option γ : start_date historique conservée.
+    if (moves.length > 0) {
+      expect(moves[0].newStart).toBe('2026-06-01')
+    } else {
+      expect(tasks[0].start_date).toBe('2026-06-01')
+    }
+  })
+
+  it('progress=30 (en cours) avec start_date dans le futur : start respectée', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 30,
+        start_date: '2026-06-22',
+        end_date: '2026-06-26',
+        charge_jours: 5,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-01-01', [], [])
+    if (moves.length > 0) {
+      expect(moves[0].newStart).toBe('2026-06-22')
+    } else {
+      expect(tasks[0].start_date).toBe('2026-06-22')
+    }
+  })
+})
+
+// =============================================================================
+// v2.2 / RG-C (RG-GANTT-1904) — consomme uniquement le reste à faire
+// =============================================================================
+
+describe('v2.2 / RG-C — consommation du reste à faire', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-01T12:00:00Z'))
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it('tâche progress=50 charge=10 : Replan place 5 jours ouvrés (la moitié)', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 50,
+        start_date: '2026-06-01', // lundi
+        end_date: '2026-06-12', // ancien end basé sur 10 j ouvrés
+        charge_jours: 10,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-01-01', [], [])
+    expect(moves.length).toBe(1)
+    const m = moves[0]
+    // newStart = 2026-06-01 (today). newEnd = start + 5 j ouvrés = vendredi 05/06.
+    expect(m.newStart).toBe('2026-06-01')
+    expect(m.newEnd).toBe('2026-06-05')
+    expect(m.charge_jours).toBe(10) // charge totale préservée (RG-INV).
+  })
+
+  it('progress=0 (par défaut) : comportement identique à v2.1 (charge complète)', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 0,
+        start_date: '2026-06-01',
+        end_date: '2026-06-12', // 10 j ouvrés
+        charge_jours: 10,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-01-01', [], [])
+    // Pour progress=0 sans surcharge, le moteur ne propose un move que si
+    // l'end calculé diffère. Sans allocation %, end = start + 10 j ouvrés = 12/06.
+    expect(moves.length).toBe(0)
+  })
+
+  it('progress=100 : pas dans les moves (RG-A), pas concerné par RG-C', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 100,
+        start_date: '2026-06-01',
+        end_date: '2026-06-12',
+        charge_jours: 10,
+        collaborator_id: 'c1',
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-01-01', [], [])
+    // Lockée par RG-A → aucun move.
+    expect(moves.find((m) => m.id === 't1')).toBeUndefined()
+  })
+})
+
+// =============================================================================
+// v2.2 / RG-U (RG-GANTT-1909) — progress phase dérivé (moyenne pondérée)
+// =============================================================================
+
+describe('v2.2 / RG-U — progress phase dérivé', () => {
+  it('phase avec 2 activités (10 à 20 %, 30 à 80 %) → 65 %', () => {
+    const tasks: Task[] = [
+      mkTask('p1', { kind: 'phase', parent_id: null }),
+      mkTask('t1', {
+        kind: 'task',
+        parent_id: 'p1',
+        charge_jours: 10,
+        progress: 20,
+      }),
+      mkTask('t2', {
+        kind: 'task',
+        parent_id: 'p1',
+        charge_jours: 30,
+        progress: 80,
+      }),
+    ]
+    // (10*20 + 30*80) / (10+30) = (200+2400)/40 = 2600/40 = 65.
+    expect(derivePhaseProgress('p1', tasks)).toBe(65)
+  })
+
+  it('phase imbriquée : récursion correcte', () => {
+    const tasks: Task[] = [
+      mkTask('p1', { kind: 'phase', parent_id: null }),
+      mkTask('p2', { kind: 'phase', parent_id: 'p1' }),
+      mkTask('t1', {
+        kind: 'task',
+        parent_id: 'p2',
+        charge_jours: 10,
+        progress: 50,
+      }),
+      mkTask('t2', {
+        kind: 'task',
+        parent_id: 'p1',
+        charge_jours: 10,
+        progress: 100,
+      }),
+    ]
+    // p2 = 50, p1 = (10*50 + 10*100) / 20 = 75.
+    expect(derivePhaseProgress('p2', tasks)).toBe(50)
+    expect(derivePhaseProgress('p1', tasks)).toBe(75)
+  })
+
+  it('phase ne contenant que des jalons → null', () => {
+    const tasks: Task[] = [
+      mkTask('p1', { kind: 'phase' }),
+      mkTask('j1', { kind: 'milestone', parent_id: 'p1' }),
+      mkTask('j2', { kind: 'milestone', parent_id: 'p1' }),
+    ]
+    expect(derivePhaseProgress('p1', tasks)).toBeNull()
+  })
+
+  it('phase vide → null', () => {
+    const tasks: Task[] = [mkTask('p1', { kind: 'phase' })]
+    expect(derivePhaseProgress('p1', tasks)).toBeNull()
+  })
+
+  it('cas limite : Σ charges = 0 → moyenne arithmétique non pondérée', () => {
+    // Théorique : 2 tâches sans charge_jours (= 0 → ignorées dans la pondération).
+    const tasks: Task[] = [
+      mkTask('p1', { kind: 'phase' }),
+      mkTask('t1', {
+        kind: 'task',
+        parent_id: 'p1',
+        charge_jours: 0,
+        progress: 30,
+      }),
+      mkTask('t2', {
+        kind: 'task',
+        parent_id: 'p1',
+        charge_jours: 0,
+        progress: 70,
+      }),
+    ]
+    // Moyenne arithmétique : (30 + 70) / 2 = 50.
+    expect(derivePhaseProgress('p1', tasks)).toBe(50)
+  })
+
+  it('id inconnu ou non-phase → null', () => {
+    const tasks: Task[] = [mkTask('t1', { kind: 'task' })]
+    expect(derivePhaseProgress('inconnu', tasks)).toBeNull()
+    expect(derivePhaseProgress('t1', tasks)).toBeNull()
+  })
+})
+
+// =============================================================================
+// v2.2 / RG-V (RG-GANTT-1910) — Mode "Planification anticipée" : suspend RG-B
+// =============================================================================
+
+describe('v2.2 / RG-V — mode Planification anticipée', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-10T12:00:00Z'))
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it("ignoreToday=true : tâche progress > 0 avec start dans le passé n'est PAS tirée à today", () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 30,
+        start_date: '2026-06-01', // dans le passé, mais on suspend RG-B
+        end_date: '2026-06-05',
+        charge_jours: 5,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-01-01', [], [], {
+      ignoreToday: true,
+    })
+    // En mode anticipé, RG-B suspendue : borne basse = start_date (01/06).
+    if (moves.length > 0) {
+      // Le moteur peut quand même proposer un move si end change (reste à
+      // faire ≠ écart actuel). On vérifie juste que start est respectée.
+      expect(moves[0].newStart).toBe('2026-06-01')
+    } else {
+      expect(tasks[0].start_date).toBe('2026-06-01')
+    }
+  })
+
+  it('ignoreToday=true : RG-A reste appliquée (progress=100 lockée)', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 100,
+        start_date: '2026-06-01',
+        end_date: '2026-06-05',
+        charge_jours: 5,
+        collaborator_id: 'c1',
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-01-01', [], [], {
+      ignoreToday: true,
+    })
+    expect(moves.find((m) => m.id === 't1')).toBeUndefined()
+  })
+
+  it('ignoreToday=true : RG-C reste appliquée (consomme reste à faire)', () => {
+    const tasks: Task[] = [
+      mkTask('t1', {
+        progress: 50,
+        start_date: '2026-06-01',
+        end_date: '2026-06-12', // ancien end basé sur 10 j ouvrés
+        charge_jours: 10,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-01-01', [], [], {
+      ignoreToday: true,
+    })
+    expect(moves.length).toBe(1)
+    expect(moves[0].newStart).toBe('2026-06-01')
+    // Reste à faire = 10 * 0.5 = 5 j → end = 01/06 + 5 wd = 05/06.
+    expect(moves[0].newEnd).toBe('2026-06-05')
+    expect(moves[0].charge_jours).toBe(10) // charge totale préservée (RG-INV)
   })
 })

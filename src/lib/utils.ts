@@ -1192,7 +1192,10 @@ export function workingDaysBetween(startIso: string, endIso: string): number {
  * @returns Date ISO du jour.
  */
 export function todayIso(): string {
-  return dateToIso(new Date())
+  // v2.3 — Passe par `Date.now()` (et pas `new Date()`) pour permettre aux
+  // tests de mocker la date courante via `vi.spyOn(Date, 'now')` sans avoir
+  // recours à `vi.useFakeTimers()` qui casse les timers de Testing Library.
+  return dateToIso(new Date(Date.now()))
 }
 
 /**
@@ -1371,22 +1374,41 @@ export function computeWorkload(
   dates: Date[],
   allocations: MemberAllocation[] = [],
   absences: CollaboratorAbsence[] = [],
+  /**
+   * v2.3 / RG-GANTT-2104 — Timeline effective produite par le moteur Replan
+   * (cf. `computeReplanResult`). Si fournie, prime sur la lecture naïve des
+   * plages `[start_date, end_date]` : la contribution d'une tâche à un jour
+   * donné n'est comptée QUE pour les intervalles `[start, end]` où le moteur
+   * a effectivement placé la tâche pour ce collab. Évite la fausse surcharge
+   * quand deux tâches en cours ont des plages qui se chevauchent visuellement
+   * mais sont consommées séquentiellement par le moteur.
+   *
+   * Si `undefined`, comportement v2.2 (lecture naïve par plage).
+   */
+  engineTimeline?: Map<string, TimelineEntry[]>,
 ): Map<string, number[]> {
   const result = new Map<string, number[]>()
   for (const c of collaborators) {
     result.set(c.id, new Array(dates.length).fill(0))
   }
-  // v2.0 / F2 — La contribution d'une tâche à un jour donné est désormais
-  // pondérée par l'allocation effective du collab ce jour-là sur ce projet.
-  // v2.0 / F3 — Multiplicativement réduite par l'éventuelle absence du collab
-  // ce jour-là (cross-projet). Sans allocations → fallback F0/F1 : contribution
-  // = 1 par jour ouvré (les absences ne s'appliquent pas dans ce mode).
-  // v2.0 / F6 — Multi-collab : la tâche contribue à la timeline de CHAQUE
-  // collab affecté (pas seulement le 1er). Chacun voit donc sa propre part
-  // de la charge dans son plan de charge personnel.
+  // v2.3 / RG-GANTT-2104 — Si une timeline moteur est fournie, on l'utilise
+  // comme source de vérité. Chaque entry (taskId, start, end) est peinte
+  // sur la cellule du collab correspondant. Les autres tâches (non placées
+  // par le moteur, ex. sans collab) ne contribuent pas via ce chemin.
+  if (engineTimeline) {
+    paintFromEngineTimeline(
+      result,
+      tasks,
+      engineTimeline,
+      dates,
+      allocations,
+      absences,
+    )
+    return result
+  }
+  // Fallback v2.2 (rétrocompat) : lecture par plage [start_date, end_date].
   for (const t of tasks) {
     if (t.kind !== 'task') continue
-    // Source de vérité : `collaborators[]` (F6) ; fallback `collaborator_id` (legacy).
     const collabIds = taskCollabIds(t)
     if (collabIds.length === 0) continue
     for (const cId of collabIds) {
@@ -1396,6 +1418,77 @@ export function computeWorkload(
     }
   }
   return result
+}
+
+/**
+ * v2.3 / RG-GANTT-2104 — Helper : peint l'intégralité d'une timeline moteur
+ * sur le résultat `computeWorkload`. Extrait pour limiter la complexité
+ * cognitive de `computeWorkload`.
+ */
+function paintFromEngineTimeline(
+  result: Map<string, number[]>,
+  tasks: Task[],
+  engineTimeline: Map<string, TimelineEntry[]>,
+  dates: Date[],
+  allocations: MemberAllocation[],
+  absences: CollaboratorAbsence[],
+): void {
+  const taskById = new Map(tasks.map((t) => [t.id, t]))
+  for (const [cId, entries] of engineTimeline) {
+    const arr = result.get(cId)
+    if (!arr) continue
+    for (const entry of entries) {
+      const t = taskById.get(entry.taskId)
+      if (!t) continue
+      accumulateEntryWorkload(
+        t,
+        arr,
+        cId,
+        entry.start,
+        entry.end,
+        dates,
+        allocations,
+        absences,
+      )
+    }
+  }
+}
+
+/**
+ * v2.3 / RG-GANTT-2104 — Helper : peint la charge d'une tâche sur la plage
+ * effective `[entryStart, entryEnd]` retournée par le moteur Replan, en
+ * pondérant par allocation × (1−absence) comme `accumulateTaskWorkload`.
+ */
+function accumulateEntryWorkload(
+  t: Task,
+  arr: number[],
+  collabId: string,
+  entryStart: string,
+  entryEnd: string,
+  dates: Date[],
+  allocations: MemberAllocation[],
+  absences: CollaboratorAbsence[],
+): void {
+  const start = isoToDate(entryStart).getTime()
+  const end = isoToDate(entryEnd).getTime()
+  const useAllocations = allocations.length > 0
+  for (let i = 0; i < dates.length; i++) {
+    const d = dates[i]
+    const ts = d.getTime()
+    if (ts < start || ts > end) continue
+    if (isNonWorkingDay(d)) continue
+    if (useAllocations) {
+      arr[i] += getDailyAllocation(
+        dateToIso(d),
+        allocations,
+        t.project_id,
+        collabId,
+        absences,
+      )
+    } else {
+      arr[i] += 1
+    }
+  }
 }
 
 /**
@@ -1617,6 +1710,13 @@ export interface ReplanMove {
    * Vaut 0 quand la tâche n'a pas de prédécesseur.
    */
   predecessor_lag: number
+  /**
+   * v2.2 / RG-W — charge_jours de la tâche, transmise telle quelle au PATCH
+   * pour empêcher la back-dérivation côté serveur (RG-INV / RG-GANTT-1900).
+   * Le moteur ne modifie JAMAIS la charge ; ce champ est ici uniquement pour
+   * neutraliser le cas 3b (back-dérivation) côté serveur en activant le cas 3a'.
+   */
+  charge_jours: number
 }
 
 /**
@@ -1765,6 +1865,29 @@ function buildReplanOrder(tasks: Task[]): Task[] {
 }
 
 /**
+ * v2.2 / RG-A (RG-GANTT-1902) — Pré-remplit la timeline des collaborateurs
+ * avec les tâches TERMINÉES (`progress = 100`). Ces tâches sont des obstacles
+ * que le Replan doit contourner mais ne déplace JAMAIS.
+ *
+ * Reprend le rôle structurel de l'ancienne `prefillLockedIntervals` du mode
+ * partial abandonné (RG-GANTT-0906), avec un filtre différent : `progress = 100`
+ * au lieu de `!concernedIds.has(id)`.
+ */
+function prefillCompletedIntervals(
+  tasks: Task[],
+  timeline: Map<string, Array<[string, string]>>,
+): void {
+  for (const t of tasks) {
+    if (t.kind !== 'task') continue
+    if (t.progress !== 100) continue
+    const collabIds = taskCollabIds(t)
+    for (const cId of collabIds) {
+      pushTimelineInterval(timeline, cId, t.start_date, t.end_date)
+    }
+  }
+}
+
+/**
  * v1.18 — Replanifie les tâches d'un projet pour résoudre toute surcharge
  * collaborateur. Fonction PURE : ne mute rien, retourne la liste des
  * déplacements à appliquer (à `PATCH /api/tasks/:id` ensuite).
@@ -1790,38 +1913,75 @@ function buildReplanOrder(tasks: Task[]): Task[] {
  * @returns      Tableau (potentiellement vide) des déplacements proposés.
  */
 /**
- * v1.18 — Calcule la borne basse de début pour une tâche en replanification :
- * on prend le maximum entre sa date de début actuelle (= on ne recule jamais)
- * et la contrainte de prédécesseur (= fin proposée du prédécesseur + lag).
+ * v2.3 / RG-GANTT-1903 (redéfinie) — Calcule la borne basse globale de
+ * placement pour une tâche en replanification, indépendamment de `progress` :
  *
- * @param t          Tâche à placer.
- * @param tasksById  Index des tâches.
- * @param proposed   Dates déjà proposées (pour récupérer la fin du prédécesseur).
- * @returns          Date ISO YYYY-MM-DD (déjà snappée jour ouvré).
+ *   borne_basse = MAX(
+ *     projectStartDate,             // date démarrage projet (RG-GANTT-2100)
+ *     today,                        // si mode normal (sinon RG-GANTT-1910 / mode anticipé)
+ *     predecessor.end + lag,        // contrainte de prédécesseur (PERT)
+ *     not_before_date (SNET),       // forçage utilisateur
+ *   )
+ *
+ * v2.3 — RG-GANTT-0903 (« jamais vers le passé ») est SUPPRIMÉE : on ne lit
+ * plus `t.start_date` comme borne basse. Le moteur cherche TOUJOURS la date
+ * au plus tôt compatible avec les contraintes. Exception : les activités en
+ * cours (`0 < progress < 100`) ont leur `start_date` figée — c'est géré
+ * dans `placeTaskInTimeline` (RG-GANTT-2103), pas ici.
+ *
+ * @param t                 Tâche à placer.
+ * @param tasksById         Index des tâches.
+ * @param proposed          Dates déjà proposées (pour récupérer la fin du prédécesseur).
+ * @param projectStartDate  Date de démarrage du projet (RG-GANTT-2100).
+ * @param options           ignoreToday : si true, suspend la borne basse `today` (RG-V).
+ * @returns                 Date ISO YYYY-MM-DD (déjà snappée jour ouvré).
  */
 function computeReplanEarliestStart(
   t: Task,
   tasksById: Map<string, Task>,
   proposed: Map<string, { start: string; end: string }>,
+  projectStartDate: string,
+  options: { ignoreToday?: boolean } = {},
 ): string {
-  let earliest = t.start_date
-  if (t.predecessor_id) {
-    const pred = tasksById.get(t.predecessor_id)
-    if (pred) {
-      const predEnd = proposed.get(pred.id)?.end ?? pred.end_date
-      const lagStart = computeSuccessorStart(predEnd, t.predecessor_lag || 0)
-      if (lagStart > earliest) earliest = lagStart
-    }
+  // v2.3 / RG-GANTT-1903 — Borne basse = projectStartDate par défaut.
+  let earliest = projectStartDate
+  // v2.3 / RG-V — En mode normal, today entre aussi dans le MAX.
+  if (!options.ignoreToday) {
+    const today = todayIso()
+    if (today > earliest) earliest = today
   }
-  // v1.24 — Borne basse supplémentaire : la contrainte SNET « Ne doit pas
-  // démarrer avant le », snappée au prochain jour ouvré. La règle « plus
-  // tardif gagne » est portée par ce max successif (current_start, pred.end
-  // + lag, SNET).
+  // Contrainte prédécesseur (extraite pour limiter la complexité cognitive).
+  const predLowerBound = predecessorLowerBound(t, tasksById, proposed)
+  if (predLowerBound && predLowerBound > earliest) earliest = predLowerBound
+  // v1.24 — SNET « Ne doit pas démarrer avant le » : le plus tardif gagne.
   if (t.not_before_date) {
     const snet = snapForwardToWorkingDay(t.not_before_date)
     if (snet > earliest) earliest = snet
   }
   return snapForwardToWorkingDay(earliest)
+}
+
+/**
+ * v2.3 — Helper : retourne la borne basse imposée par le prédécesseur
+ * (`pred.end + lag`), ou `null` si la contrainte ne s'applique pas
+ * (pas de prédécesseur, ou RG-GANTT-2106 : prédécesseur terminé dans le
+ * futur — on ignore la contrainte, l'alerte est levée dans checkCoherence).
+ */
+function predecessorLowerBound(
+  t: Task,
+  tasksById: Map<string, Task>,
+  proposed: Map<string, { start: string; end: string }>,
+): string | null {
+  if (!t.predecessor_id) return null
+  const pred = tasksById.get(t.predecessor_id)
+  if (!pred) return null
+  const predEnd = proposed.get(pred.id)?.end ?? pred.end_date
+  // RG-GANTT-2106 — Prédécesseur terminé (progress=100) avec end dans le futur :
+  // incohérence métier. On ignore la contrainte de prédécesseur ; l'alerte
+  // est levée par `detectPredecessorTerminatedInFuture` dans le bandeau.
+  const today = todayIso()
+  if ((pred.progress ?? 0) === 100 && predEnd > today) return null
+  return computeSuccessorStart(predEnd, t.predecessor_lag || 0)
 }
 
 /**
@@ -1863,30 +2023,57 @@ function placeTaskInTimeline(
   timeline: Map<string, Array<[string, string]>>,
   allocations: MemberAllocation[],
   absences: CollaboratorAbsence[],
+  projectStartDate: string,
+  options: { ignoreToday?: boolean } = {},
 ): void {
-  // v2.0 — La charge est désormais lue depuis `task.charge_jours` (source de
-  // vérité). Pour les tâches issues de bases anciennes ou de tests qui ne
-  // l'auraient pas encore peuplée, on retombe sur l'écart courant pour rester
-  // rétro-compatible (filet de sécurité ; la migration `ensureChargeColumn`
-  // peuple toujours la colonne au boot).
-  const charge =
+  // v2.0 — Charge totale lue depuis `task.charge_jours` (source de vérité).
+  const totalCharge =
     t.charge_jours && t.charge_jours >= 1
       ? t.charge_jours
       : Math.max(1, workingDaysBetween(t.start_date, t.end_date))
-  const earliest = computeReplanEarliestStart(t, tasksById, proposed)
-  // v2.0 / F6 — Liste multi-collab : on lit `collaborators[]` (source de
-  // vérité depuis F6) avec fallback sur l'alias `collaborator_id`. La timeline
-  // de chaque collab impacté est consultée et mise à jour pour bloquer
-  // tous les créneaux simultanément.
+  // v2.2 / RG-C (RG-GANTT-1904) — Reste à faire = charge × (1 − progress/100).
+  const progressFrac = Math.max(0, Math.min(100, t.progress ?? 0)) / 100
+  const effectiveCharge = Math.max(
+    1,
+    Math.ceil(totalCharge * (1 - progressFrac)),
+  )
+  // v2.3 / RG-GANTT-2103 (Option γ) — Pour une activité en cours
+  // (0 < progress < 100), `start_date` est FIGÉE à sa valeur historique :
+  // le Replan ne la recalcule pas, il ne touche qu'à `end_date`. La
+  // consommation du reste à faire démarre à `MAX(today, start_date)` —
+  // on ne consomme jamais dans le passé.
+  //
+  // Pour une activité jamais démarrée (progress = 0), `start_date` est
+  // recalculée à la borne basse globale (RG-GANTT-1903).
+  let earliest: string
+  if (progressFrac > 0) {
+    // Activité en cours : start figée. Consommation à partir de MAX(today, start_date).
+    const today = todayIso()
+    earliest = t.start_date > today ? t.start_date : today
+  } else {
+    // Activité jamais démarrée : start au plus tôt selon la borne basse globale.
+    earliest = computeReplanEarliestStart(
+      t,
+      tasksById,
+      proposed,
+      projectStartDate,
+      options,
+    )
+  }
   const collabIds = taskCollabIds(t)
-  // v2.0 / F6 — Recherche d'un créneau libre simultanément pour TOUS les
-  // collabs affectés : on prend le MAX des findFreeSlot individuels (chaque
-  // collab impose sa propre contrainte).
   let newStart = earliest
   for (const cId of collabIds) {
     const intervals = timeline.get(cId) || []
-    const candidate = findFreeSlot(intervals, earliest, charge)
+    const candidate = findFreeSlot(intervals, earliest, effectiveCharge)
     if (candidate > newStart) newStart = candidate
+  }
+  // v2.3 / RG-GANTT-2103 — Si la tâche est en cours, on contraint newStart
+  // à rester égal à la start_date figée (le moteur peut avoir trouvé un
+  // créneau plus tardif à cause d'obstacles, mais la barre démarre toujours
+  // historiquement). Dans ce cas, on accepte que la consommation effective
+  // démarre plus tard (la timeline reflétera cela).
+  if (progressFrac > 0) {
+    newStart = t.start_date
   }
   // v2.0 / F2 — La fin est calculée en consommant la capacité quotidienne
   // (allocation %) du collab sur le projet.
@@ -1894,7 +2081,8 @@ function placeTaskInTimeline(
   // jour (lecture multiplicative).
   // v2.0 / F6 — En multi-collab, la capacité du jour est la SOMME des
   // contributions de tous les affectés (Q12a additif uniforme).
-  const newEnd = computeEndFromCharge(newStart, charge, {
+  // v2.2 / RG-C — La consommation porte sur `effectiveCharge` (reste à faire).
+  const newEnd = computeEndFromCharge(newStart, effectiveCharge, {
     projectId: t.project_id,
     collaboratorId: t.collaborator_id,
     collaboratorIds: collabIds.length > 0 ? collabIds : undefined,
@@ -1905,28 +2093,6 @@ function placeTaskInTimeline(
   // v2.0 / F6 — Bloque le créneau dans la timeline de CHAQUE collab affecté.
   for (const cId of collabIds) {
     pushTimelineInterval(timeline, cId, newStart, newEnd)
-  }
-}
-
-/**
- * v1.21 — Pré-remplit la timeline des collaborateurs avec les tâches LOCKÉES
- * (= non concernées en mode partiel). Ces tâches gardent leurs dates et
- * bloquent les créneaux correspondants. Extrait de `replanTasks` pour
- * limiter la complexité cognitive.
- */
-function prefillLockedIntervals(
-  tasks: Task[],
-  concernedIds: Set<string>,
-  timeline: Map<string, Array<[string, string]>>,
-): void {
-  for (const t of tasks) {
-    if (t.kind !== 'task') continue
-    if (concernedIds.has(t.id)) continue
-    // v2.0 / F6 — Lit la liste multi-collab (avec fallback legacy).
-    const collabIds = taskCollabIds(t)
-    for (const cId of collabIds) {
-      pushTimelineInterval(timeline, cId, t.start_date, t.end_date)
-    }
   }
 }
 
@@ -1956,55 +2122,140 @@ function buildReplanMoves(
       // renvoie tel quel et que le serveur ne le ré-infère pas depuis le
       // nouveau gap.
       predecessor_lag: t.predecessor_lag || 0,
+      // v2.2 / RG-W — Charge transmise telle quelle dans le PATCH : le serveur
+      // honore les 3 champs sans back-dérivation (cf. resolveChargeAndEnd cas 3a').
+      charge_jours: t.charge_jours ?? 1,
     })
   }
   return moves
 }
 
-export function replanTasks(
+/**
+ * v2.3 / RG-GANTT-2104 — Une entrée de timeline collab produite par le
+ * moteur Replan : pour quelle tâche, et sur quelle plage `[start, end]`
+ * (inclusive, jours ouvrés) le collaborateur est-il effectivement
+ * consommé.
+ */
+export interface TimelineEntry {
+  taskId: string
+  start: string
+  end: string
+}
+
+/**
+ * v2.3 / RG-GANTT-2104 — Résultat complet d'un Replan :
+ *   • `moves` : déplacements à appliquer via PATCH (rétrocompat v2.2).
+ *   • `timeline` : intervalles effectivement consommés par collaborateur.
+ *     Sert de source de vérité pour le Plan de charge (`computeWorkload`)
+ *     et la détection de surcharge (`detectOverloads`), à la place de la
+ *     lecture naïve des plages `[start_date, end_date]` qui pouvait
+ *     produire des fausses surcharges (cf. spec § 3 / RG-GANTT-2104+2105).
+ */
+export interface ReplanResult {
+  moves: ReplanMove[]
+  timeline: Map<string, TimelineEntry[]>
+}
+
+/**
+ * v2.3 — Recalcule le placement complet du moteur sans persister, et
+ * retourne à la fois les moves PATCH-ables et la timeline effective.
+ * Sert au Plan de charge et à la détection de surcharge pour rester en
+ * cohérence parfaite avec le moteur. Fonction pure (idempotente).
+ */
+/**
+ * v2.3 / RG-GANTT-2104 — Construit la timeline enrichie (`taskId` + plage)
+ * à partir des dates proposées par le moteur. Extrait pour limiter la
+ * complexité cognitive de `computeReplanResult`. Tri stable par start.
+ */
+function buildEnrichedTimeline(
   tasks: Task[],
-  concernedIds?: Set<string>,
+  proposed: Map<string, { start: string; end: string }>,
+): Map<string, TimelineEntry[]> {
+  const timeline = new Map<string, TimelineEntry[]>()
+  for (const t of tasks) {
+    if (t.kind !== 'task') continue
+    const collabIds = taskCollabIds(t)
+    if (collabIds.length === 0) continue
+    const p = proposed.get(t.id)
+    const start = p?.start ?? t.start_date
+    const end = p?.end ?? t.end_date
+    for (const cId of collabIds) {
+      const list = timeline.get(cId) ?? []
+      list.push({ taskId: t.id, start, end })
+      timeline.set(cId, list)
+    }
+  }
+  for (const [cId, list] of timeline) {
+    list.sort((a, b) => a.start.localeCompare(b.start))
+    timeline.set(cId, list)
+  }
+  return timeline
+}
+
+export function computeReplanResult(
+  tasks: Task[],
+  projectStartDate: string,
   allocations: MemberAllocation[] = [],
   absences: CollaboratorAbsence[] = [],
-): ReplanMove[] {
-  // v1.21 — `concernedIds` actif → replan PARTIEL : seules les tâches
-  // listées peuvent voir leurs dates modifiées. Les autres sont LOCKÉES à
-  // leurs dates actuelles ET ajoutées au timeline du collaborateur (=
-  // obstacles à contourner). Si `concernedIds` est `undefined`, le replan
-  // est COMPLET (comportement historique : toutes les tâches `task` sont
-  // candidates au déplacement).
-  // v2.0 / F2 — `allocations` est la liste des périodes d'allocation du
-  // projet : le moteur consomme la capacité quotidienne (allocation %) pour
-  // calculer la fin de chaque tâche, au lieu de simples jours ouvrés bruts.
-  // v2.0 / F3 — `absences` réduit multiplicativement la capacité du collab
-  // (lecture cross-projet). Vide → pas d'impact.
-  // Tableau vide → comportement F0 (fin = start + charge en jours ouvrés).
-  const isPartial = !!concernedIds
-  const isConcerned = (id: string) =>
-    !isPartial || (concernedIds as Set<string>).has(id)
-
+  options: { ignoreToday?: boolean } = {},
+): ReplanResult {
+  const ignoreToday = options.ignoreToday === true
   const tasksById = new Map(tasks.map((t) => [t.id, t]))
   const order = buildReplanOrder(tasks)
 
-  // Dates proposées par tâche (init = dates actuelles).
   const proposed = new Map<string, { start: string; end: string }>()
   for (const t of tasks) {
     proposed.set(t.id, { start: t.start_date, end: t.end_date })
   }
 
-  // Timeline (intervalles fixés) par collaborateur — bornes INCLUSIVES en
-  // jours ouvrés (compatibles avec `findFreeSlot`).
-  const timeline = new Map<string, Array<[string, string]>>()
-  if (isPartial) {
-    prefillLockedIntervals(tasks, concernedIds as Set<string>, timeline)
-  }
+  // Timeline interne (pour le moteur, format [start, end]).
+  const timelineRaw = new Map<string, Array<[string, string]>>()
+  prefillCompletedIntervals(tasks, timelineRaw)
 
+  // v2.3 — Pour exposer la timeline « consommation effective », on note quel
+  // créneau correspond à quelle tâche. On reconstruit la map taskId → entry
+  // en parallèle.
   for (const t of order) {
-    if (!isConcerned(t.id)) continue
-    placeTaskInTimeline(t, tasksById, proposed, timeline, allocations, absences)
+    if (t.progress === 100) continue
+    placeTaskInTimeline(
+      t,
+      tasksById,
+      proposed,
+      timelineRaw,
+      allocations,
+      absences,
+      projectStartDate,
+      { ignoreToday },
+    )
   }
 
-  return buildReplanMoves(order, proposed)
+  // v2.3 / RG-GANTT-2104 — Reconstruit la timeline enrichie (`taskId` + plage)
+  // à partir de `proposed`. Extrait dans un helper pour limiter la
+  // complexité cognitive de `computeReplanResult`.
+  const timeline = buildEnrichedTimeline(tasks, proposed)
+
+  return { moves: buildReplanMoves(order, proposed), timeline }
+}
+
+/**
+ * v1.18 / v2.2 — Variante "moves seulement" du Replan, conservée pour
+ * rétro-compatibilité avec les nombreux appelants (tests + PATCH App.tsx).
+ * Délègue à `computeReplanResult` puis n'expose que `moves`.
+ */
+export function replanTasks(
+  tasks: Task[],
+  projectStartDate: string,
+  allocations: MemberAllocation[] = [],
+  absences: CollaboratorAbsence[] = [],
+  options: { ignoreToday?: boolean } = {},
+): ReplanMove[] {
+  return computeReplanResult(
+    tasks,
+    projectStartDate,
+    allocations,
+    absences,
+    options,
+  ).moves
 }
 
 /**
@@ -2066,6 +2317,13 @@ export type CoherenceIssueKind =
    *  contrainte FNLT (« Fin au plus tard »). Severity = `warning` :
    *  signalement uniquement, jamais bloquant. */
   | 'fnlt_overrun'
+  /** v2.3 / RG-GANTT-2106 — Prédécesseur marqué terminé (`progress = 100`)
+   *  mais dont la `end_date` est dans le futur. Le Replan ignore la
+   *  contrainte de prédécesseur pour la tâche successeur ; cette alerte
+   *  signale l'incohérence métier (warning) pour que l'utilisateur la
+   *  corrige (mettre la fin du prédécesseur dans le passé, ou réduire son
+   *  progress sous 100). */
+  | 'predecessor_terminated_in_future'
 
 /** v1.21 — Une incohérence remontée pour affichage dans le bandeau. */
 export interface CoherenceIssue {
@@ -2310,6 +2568,34 @@ function detectFnltOverruns(tasks: Task[]): CoherenceIssue[] {
   return issues
 }
 
+/**
+ * v2.3 / RG-GANTT-2106 — Détecte les paires (prédécesseur terminé / successeur)
+ * où le prédécesseur est à `progress = 100` mais sa `end_date` est dans le
+ * futur (cas incohérent). Le Replan ignore la contrainte de prédécesseur
+ * pour ce cas (cf. `computeReplanEarliestStart`), mais on alerte l'utilisateur
+ * dans le bandeau d'incohérences pour qu'il arbitre.
+ */
+function detectPredecessorTerminatedInFuture(tasks: Task[]): CoherenceIssue[] {
+  const byId = new Map(tasks.map((t) => [t.id, t]))
+  const today = todayIso()
+  const issues: CoherenceIssue[] = []
+  for (const t of tasks) {
+    if (t.kind !== 'task') continue
+    if (!t.predecessor_id) continue
+    const pred = byId.get(t.predecessor_id)
+    if (!pred) continue
+    if ((pred.progress ?? 0) !== 100) continue
+    if (pred.end_date <= today) continue
+    issues.push({
+      kind: 'predecessor_terminated_in_future',
+      severity: 'warning',
+      taskIds: [t.id, pred.id],
+      message: `Le prédécesseur « ${pred.name} » de la tâche « ${t.name} » est marqué terminé mais sa date de fin (${pred.end_date}) est dans le futur. La contrainte de prédécesseur n'est pas appliquée par le Replan ; corrigez la fin du prédécesseur ou son avancement.`,
+    })
+  }
+  return issues
+}
+
 export function checkCoherence(tasks: Task[]): CoherenceIssue[] {
   return [
     ...detectOverloads(tasks),
@@ -2317,77 +2603,8 @@ export function checkCoherence(tasks: Task[]): CoherenceIssue[] {
     ...detectPriorityViolations(tasks),
     ...detectNotBeforeViolations(tasks),
     ...detectFnltOverruns(tasks),
+    ...detectPredecessorTerminatedInFuture(tasks),
   ]
-}
-
-/**
- * v1.21 — Calcule l'ensemble des tâches « concernées » par une liste
- * d'incohérences = tâches directement impliquées + tous leurs descendants
- * (enfants de phases) + tous leurs successeurs transitifs (chaîne
- * `predecessor_id`). Sert au « Replan partiel » : on ne déplace que ces
- * tâches-là, le reste du planning est verrouillé.
- *
- * @param issues  Issues issues de `checkCoherence`.
- * @param tasks   Liste complète des tâches du projet.
- * @returns       Set d'ids à passer à `replanTasks(tasks, concernedIds)`.
- */
-/**
- * v1.21 — Indexe les ids des successeurs par prédécesseur. Helper interne
- * pour `concernedTaskIds`.
- */
-function indexSuccessorsByPredecessor(tasks: Task[]): Map<string, string[]> {
-  const byPred = new Map<string, string[]>()
-  for (const t of tasks) {
-    if (!t.predecessor_id) continue
-    const arr = byPred.get(t.predecessor_id) || []
-    arr.push(t.id)
-    byPred.set(t.predecessor_id, arr)
-  }
-  return byPred
-}
-
-/**
- * v1.21 — BFS sur le graphe `successors` à partir d'un ensemble initial,
- * en ajoutant chaque successeur visité à `out`. Borné pour éviter toute
- * boucle infinie en cas de cycle (anormal mais on protège).
- */
-function expandSuccessors(
-  out: Set<string>,
-  successors: Map<string, string[]>,
-  cap: number,
-): void {
-  const queue = [...out]
-  let safety = cap
-  while (queue.length > 0 && safety-- > 0) {
-    const id = queue.shift() as string
-    for (const succId of successors.get(id) || []) {
-      if (out.has(succId)) continue
-      out.add(succId)
-      queue.push(succId)
-    }
-  }
-}
-
-export function concernedTaskIds(
-  issues: CoherenceIssue[],
-  tasks: Task[],
-): Set<string> {
-  const out = new Set<string>()
-  for (const i of issues) {
-    for (const id of i.taskIds) out.add(id)
-  }
-  expandSuccessors(
-    out,
-    indexSuccessorsByPredecessor(tasks),
-    tasks.length * tasks.length + 1,
-  )
-  // Descendants (enfants des phases concernées). Une phase n'est jamais
-  // directement déplaçable, mais ses enfants doivent rester libres si la
-  // phase elle-même est mentionnée.
-  for (const t of tasks) {
-    if (t.parent_id && out.has(t.parent_id)) out.add(t.id)
-  }
-  return out
 }
 
 /**
@@ -2418,4 +2635,92 @@ export function descendantIds(taskId: string, tasks: Task[]): Set<string> {
   }
   walk(taskId)
   return out
+}
+
+/**
+ * v2.2 / RG-U (RG-GANTT-1909) — Somme des `charge_jours` des descendants
+ * activités d'un nœud (récursif). Jalons exclus (charge effective = 0).
+ * Helper interne pour `derivePhaseProgress`.
+ */
+function sumDescendantTaskCharges(nodeId: string, tasks: Task[]): number {
+  let total = 0
+  const children = tasks.filter((t) => t.parent_id === nodeId)
+  for (const c of children) {
+    if (c.kind === 'task' && c.charge_jours && c.charge_jours >= 1) {
+      total += c.charge_jours
+    } else if (c.kind === 'phase') {
+      total += sumDescendantTaskCharges(c.id, tasks)
+    }
+  }
+  return total
+}
+
+/**
+ * v2.2 / RG-U (RG-GANTT-1909) — Calcule récursivement le progress dérivé d'une
+ * phase à partir de ses fils (activités, sous-phases ; jalons exclus).
+ *
+ * Formule :
+ *   chargeEffective(c) = charge_jours(c)               si c est une activité
+ *                      | 0                             si c est un jalon
+ *                      | Σ chargeEffective(fils de c) si c est une sous-phase
+ *
+ *   progressEffectif(c) = progress(c)                  si c est une activité
+ *                       | derivePhaseProgress(c)       si c est une sous-phase
+ *                       | (non éligible)               si c est un jalon
+ *
+ *   progress(P) = Σ(chargeEffective(cᵢ) × progressEffectif(cᵢ)) / Σ chargeEffective(cᵢ)
+ *
+ * Cas limites :
+ *   • Σ chargeEffective = 0 → moyenne arithmétique non pondérée des progress
+ *     des fils éligibles.
+ *   • Aucun fils éligible (vide ou que des jalons) → null (affiché vide).
+ *
+ * @param phaseId  Id de la phase racine.
+ * @param tasks    Toutes les tâches du projet.
+ * @returns        Progress dérivé entier 0..100, ou null si non applicable.
+ */
+/**
+ * v2.2 / RG-U — Construit la contribution d'un fils pour le calcul de
+ * progress d'une phase. Extrait pour limiter la complexité cognitive de
+ * `derivePhaseProgress`.
+ */
+function phaseChildContribution(
+  c: Task,
+  tasks: Task[],
+): { charge: number; progress: number } | null {
+  if (c.kind === 'milestone') return null
+  if (c.kind === 'task') {
+    const chg = c.charge_jours && c.charge_jours >= 1 ? c.charge_jours : 0
+    return { charge: chg, progress: c.progress ?? 0 }
+  }
+  // c.kind === 'phase' : récursion.
+  const subProgress = derivePhaseProgress(c.id, tasks)
+  if (subProgress === null) return null
+  return {
+    charge: sumDescendantTaskCharges(c.id, tasks),
+    progress: subProgress,
+  }
+}
+
+export function derivePhaseProgress(
+  phaseId: string,
+  tasks: Task[],
+): number | null {
+  const phase = tasks.find((t) => t.id === phaseId)
+  if (!phase || phase.kind !== 'phase') return null
+  const contributions: Array<{ charge: number; progress: number }> = []
+  for (const c of tasks) {
+    if (c.parent_id !== phaseId) continue
+    const contrib = phaseChildContribution(c, tasks)
+    if (contrib) contributions.push(contrib)
+  }
+  if (contributions.length === 0) return null
+  const totalCharge = contributions.reduce((s, c) => s + c.charge, 0)
+  if (totalCharge === 0) {
+    // Cas limite : moyenne arithmétique non pondérée.
+    const sum = contributions.reduce((s, c) => s + c.progress, 0)
+    return Math.round(sum / contributions.length)
+  }
+  const weighted = contributions.reduce((s, c) => s + c.charge * c.progress, 0)
+  return Math.round(weighted / totalCharge)
 }

@@ -30,8 +30,22 @@ function mkState(overrides: Partial<GanttState> = {}): GanttState {
     version: 1,
     current_project_id: 'p1',
     projects: [
-      { id: 'p1', name: 'Projet 1', position: 0 },
-      { id: 'p2', name: 'Projet 2', position: 1 },
+      // v2.3 / RG-GANTT-2100 — project_start_date alignée sur la start_date
+      // de la tâche par défaut (2026-06-01) pour que la borne basse globale
+      // du Replan n'altère pas les scénarios historiques (= aucun move
+      // proposé tant que la tâche démarre à sa date d'origine).
+      {
+        id: 'p1',
+        name: 'Projet 1',
+        position: 0,
+        project_start_date: '2026-06-01',
+      },
+      {
+        id: 'p2',
+        name: 'Projet 2',
+        position: 1,
+        project_start_date: '2026-06-01',
+      },
     ],
     collaborators: [{ id: 'c1', name: 'Alice', color: '#3b82f6', position: 0 }],
     tasks: [
@@ -232,30 +246,9 @@ describe('App — smoke', () => {
 })
 
 describe("App — barre d'outils", () => {
-  // v2.0 — Les anciens window.confirm sont remplacés par une modale custom
-  // (cf. src/components/Dialogs.tsx). Les tests cliquent désormais sur le
-  // bouton OK / Annuler de la modale au lieu de stubber window.confirm.
-  it('Reset démo : confirm() OK → POST /api/reset', async () => {
-    const { calls } = setupFetchMock()
-    render(<App />)
-    await waitFor(() => screen.getByRole('combobox'))
-    fireEvent.click(screen.getByLabelText(/Restaurer les données/))
-    fireEvent.click(await screen.findByRole('button', { name: 'OK' }))
-    await waitFor(() =>
-      expect(
-        calls.some((c) => c.method === 'POST' && c.url === '/api/reset'),
-      ).toBe(true),
-    )
-  })
-
-  it('Reset démo : confirm() annulé → aucun POST', async () => {
-    const { calls } = setupFetchMock()
-    render(<App />)
-    await waitFor(() => screen.getByRole('combobox'))
-    fireEvent.click(screen.getByLabelText(/Restaurer les données/))
-    fireEvent.click(await screen.findByRole('button', { name: 'Annuler' }))
-    expect(calls.find((c) => c.url === '/api/reset')).toBeUndefined()
-  })
+  // v2.3 — Le bouton "↺ Restaurer démo" est supprimé (RG-GANTT-2102).
+  // Les anciens window.confirm sont remplacés par une modale custom
+  // (cf. src/components/Dialogs.tsx) pour les autres confirmations.
 
   it('boutons de navigation temporelle modifient la fenêtre', async () => {
     setupFetchMock()
@@ -289,42 +282,49 @@ describe('App — gestion des projets', () => {
   // (<Dialogs />). Les tests :
   //   • saisissent le nom dans le champ texte de la modale (pour prompt),
   //   • cliquent sur OK / Annuler (pour les deux types).
-  it('création : prompt() → POST /api/projects + bascule sur le nouveau', async () => {
+  // v2.3 / RG-GANTT-2100 + 2101 — Les modales custom remplacent askPrompt.
+  // Création : <CreateProjectDialog> (nom + date démarrage).
+  // Édition : <ProjectSettingsModal> (nom + date démarrage + checkbox replan).
+  it('v2.3 — création : ouvre CreateProjectDialog → POST /api/projects (nom + date)', async () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
     fireEvent.click(screen.getByLabelText('Nouveau projet'))
-    const input = await screen.findByRole('textbox')
-    fireEvent.change(input, { target: { value: 'Mon projet' } })
-    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    // La modale s'ouvre avec un champ texte "Nom du projet" + un input date.
+    const nameInput = await screen.findByLabelText(/nom du projet/i)
+    fireEvent.change(nameInput, { target: { value: 'Mon projet' } })
+    const dateInput = screen.getByLabelText(/date de démarrage/i)
+    fireEvent.change(dateInput, { target: { value: '2026-09-01' } })
+    fireEvent.click(screen.getByRole('button', { name: /créer/i }))
     await waitFor(() => {
       const post = calls.find(
         (c) => c.method === 'POST' && c.url === '/api/projects',
       )
       expect(post).toBeTruthy()
-      expect(JSON.parse(post!.body!).name).toBe('Mon projet')
+      const body = JSON.parse(post!.body!)
+      expect(body.name).toBe('Mon projet')
+      expect(body.project_start_date).toBe('2026-09-01')
     })
   })
 
-  it('création annulée (prompt vide) → aucun POST', async () => {
+  it('v2.3 — création annulée → aucun POST', async () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
     fireEvent.click(screen.getByLabelText('Nouveau projet'))
-    const input = await screen.findByRole('textbox')
-    fireEvent.change(input, { target: { value: '' } })
-    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    await screen.findByLabelText(/nom du projet/i)
+    fireEvent.click(screen.getByRole('button', { name: /annuler/i }))
     expect(calls.find((c) => c.url === '/api/projects')).toBeUndefined()
   })
 
-  it('renommage : prompt() → PATCH /api/projects/:id', async () => {
+  it('v2.3 — paramètres : ouvre ProjectSettingsModal → PATCH /api/projects/:id (nom)', async () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
     fireEvent.click(screen.getByLabelText('Renommer le projet'))
-    const input = await screen.findByRole('textbox')
-    fireEvent.change(input, { target: { value: 'Projet renommé' } })
-    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    const nameInput = await screen.findByLabelText(/nom du projet/i)
+    fireEvent.change(nameInput, { target: { value: 'Projet renommé' } })
+    fireEvent.click(screen.getByRole('button', { name: /enregistrer/i }))
     await waitFor(() => {
       const patch = calls.find(
         (c) => c.method === 'PATCH' && c.url === '/api/projects/p1',
@@ -334,13 +334,16 @@ describe('App — gestion des projets', () => {
     })
   })
 
-  it('renommage : prompt identique → pas de PATCH', async () => {
+  it('v2.3 — paramètres : aucune modification → bouton Enregistrer désactivé, pas de PATCH', async () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
     fireEvent.click(screen.getByLabelText('Renommer le projet'))
-    // La modale s'ouvre avec le nom courant pré-rempli — on valide directement.
-    fireEvent.click(await screen.findByRole('button', { name: 'OK' }))
+    await screen.findByLabelText(/nom du projet/i)
+    // Le bouton "Enregistrer" est désactivé tant qu'aucun champ n'a changé.
+    const saveBtn = screen.getByRole('button', { name: /enregistrer/i })
+    expect(saveBtn).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: /annuler/i }))
     expect(
       calls.find(
         (c) => c.method === 'PATCH' && c.url.startsWith('/api/projects'),
@@ -367,7 +370,16 @@ describe('App — gestion des projets', () => {
   // simplement que la base sera vide après l'opération.
   it('v1.24 / RG-GANTT-1106 — suppression : dernier projet → bouton actif (base vide après)', async () => {
     setupFetchMock(
-      mkState({ projects: [{ id: 'p1', name: 'Seul', position: 0 }] }),
+      mkState({
+        projects: [
+          {
+            id: 'p1',
+            name: 'Seul',
+            position: 0,
+            project_start_date: '2026-05-01',
+          },
+        ],
+      }),
     )
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
@@ -394,6 +406,22 @@ describe('App — gestion des projets', () => {
 /** Helper : état avec une surcharge Alice exactement comme dans le brief. */
 function mkOverloadedState(): GanttState {
   return mkState({
+    // v2.3 — projectStartDate aligné sur t1a.start_date pour ne pas que la
+    // borne basse globale du Replan tire t1a en arrière.
+    projects: [
+      {
+        id: 'p1',
+        name: 'Projet 1',
+        position: 0,
+        project_start_date: '2026-05-15',
+      },
+      {
+        id: 'p2',
+        name: 'Projet 2',
+        position: 1,
+        project_start_date: '2026-05-15',
+      },
+    ],
     collaborators: [
       { id: 'alice', name: 'Alice', color: '#3b82f6', position: 0 },
     ],
@@ -457,6 +485,22 @@ function mkOverloadedState(): GanttState {
 }
 
 describe('App — Replan (non-régression métier)', () => {
+  // v2.3 — Fige today à 2026-05-01 pour que la borne basse globale du Replan
+  // (MAX(projectStartDate, today, ...)) ne tire pas les fixtures historiques
+  // de mai-juin 2026 vers une date plus précoce.
+  let dateNowSpy: ReturnType<typeof vi.spyOn> | null = null
+  beforeEach(() => {
+    // v2.3 — Mocke `Date.now()` SEUL (sans toucher aux timers de Testing
+    // Library) pour figer `todayIso()` à mai 2026. La borne basse globale du
+    // Replan (RG-GANTT-1903 redéfinie) utilise today : sans ce mock, les
+    // fixtures de mai-juin 2026 seraient tirées au today système réel.
+    const fixedNow = new Date('2026-05-15T00:00:00.000Z').getTime()
+    dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(fixedNow)
+  })
+  afterEach(() => {
+    dateNowSpy?.mockRestore()
+  })
+
   it("sans surcharge : alerte 'Aucune surcharge' et aucune modal n'apparaît", async () => {
     // L'état mkState() ne contient qu'une tâche sans collaborateur → aucune
     // surcharge possible → l'algorithme n'a rien à proposer.
@@ -731,10 +775,7 @@ describe("App — bandeau d'incohérence (v1.21)", () => {
     expect(
       within(alert).getByText(/Surcharge.*Recherche audience.*Définir/),
     ).toBeInTheDocument()
-    // Deux boutons d'action distincts.
-    expect(
-      within(alert).getByRole('button', { name: /Replan partiel/ }),
-    ).toBeInTheDocument()
+    // v2.2 — Un seul bouton « Replan complet » (Replan partiel abandonné, RG-GANTT-0905 supprimée).
     expect(
       within(alert).getByRole('button', { name: /Replan complet/ }),
     ).toBeInTheDocument()
@@ -755,104 +796,7 @@ describe("App — bandeau d'incohérence (v1.21)", () => {
     ).toBeInTheDocument()
   })
 
-  it('"Replan partiel" ne déplace que les tâches concernées', async () => {
-    // Scénario : 3 tâches sur c1.
-    //   • A : 15→29 mai (référence, lockée)
-    //   • B : 25 mai → 5 juin (concernée par la surcharge avec A)
-    //   • C : 8→12 juin (lockée, sans conflit)
-    // « Replan partiel » ne doit déplacer QUE B, et la nouvelle date doit
-    // contourner A (= 1er juin), sans toucher à A ni à C.
-    const state = mkState({
-      collaborators: [
-        { id: 'c1', name: 'Alice', color: '#3b82f6', position: 0 },
-      ],
-      tasks: [
-        {
-          id: 'A',
-          name: 'A',
-          kind: 'task',
-          start_date: '2026-05-15',
-          end_date: '2026-05-29',
-          progress: 0,
-          collaborator_id: 'c1',
-          color: null,
-          parent_id: null,
-          predecessor_id: null,
-          predecessor_lag: 0,
-          priority: null,
-          not_before_date: null,
-          not_later_than_date: null,
-          charge_jours: null,
-          position: 0,
-          project_id: 'p1',
-        },
-        {
-          id: 'B',
-          name: 'B',
-          kind: 'task',
-          start_date: '2026-05-25',
-          end_date: '2026-06-05',
-          progress: 0,
-          collaborator_id: 'c1',
-          color: null,
-          parent_id: null,
-          predecessor_id: null,
-          predecessor_lag: 0,
-          priority: null,
-          not_before_date: null,
-          not_later_than_date: null,
-          charge_jours: null,
-          position: 1,
-          project_id: 'p1',
-        },
-        {
-          id: 'C',
-          name: 'C',
-          kind: 'task',
-          start_date: '2026-06-08',
-          end_date: '2026-06-12',
-          progress: 0,
-          collaborator_id: 'c1',
-          color: null,
-          parent_id: null,
-          predecessor_id: null,
-          predecessor_lag: 0,
-          priority: null,
-          not_before_date: null,
-          not_later_than_date: null,
-          charge_jours: null,
-          position: 2,
-          project_id: 'p1',
-        },
-      ],
-    })
-    const { calls } = setupFetchMock(state)
-    render(<App />)
-    await waitFor(() => screen.getByTestId('coherence-alert'))
-    fireEvent.click(
-      within(screen.getByTestId('coherence-alert')).getByRole('button', {
-        name: /Replan partiel/,
-      }),
-    )
-    const dialog = await screen.findByRole('dialog', {
-      name: /replanification/i,
-    })
-    // SEULE la tâche B doit apparaître dans la modal d'aperçu.
-    expect(
-      within(dialog).getByText('B', { selector: 'td' }),
-    ).toBeInTheDocument()
-    expect(within(dialog).queryByText('A', { selector: 'td' })).toBeNull()
-    expect(within(dialog).queryByText('C', { selector: 'td' })).toBeNull()
-    // Application → un seul PATCH (sur B).
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Appliquer' }))
-    await waitFor(() => {
-      const patches = calls.filter(
-        (c) => c.method === 'PATCH' && c.url.startsWith('/api/tasks/'),
-      )
-      expect(patches).toHaveLength(1)
-      expect(patches[0].url).toBe('/api/tasks/B')
-    })
-  })
+  // v2.2 — Test "Replan partiel" supprimé : RG-GANTT-0905 abandonnée.
 })
 
 // =============================================================================
@@ -866,6 +810,21 @@ describe("App — bandeau d'incohérence (v1.21)", () => {
 // =============================================================================
 
 describe("App — auto-replan après modification d'une tâche (v1.22)", () => {
+  // v2.3 — Fige today à 2026-05-01 pour que les fixtures de mai 2026 ne soient
+  // pas tirées par la borne basse globale `today` (RG-GANTT-1903 redéfinie).
+  let dateNowSpy: ReturnType<typeof vi.spyOn> | null = null
+  beforeEach(() => {
+    // v2.3 — Mocke `Date.now()` SEUL (sans toucher aux timers de Testing
+    // Library) pour figer `todayIso()` à mai 2026. La borne basse globale du
+    // Replan (RG-GANTT-1903 redéfinie) utilise today : sans ce mock, les
+    // fixtures de mai-juin 2026 seraient tirées au today système réel.
+    const fixedNow = new Date('2026-05-15T00:00:00.000Z').getTime()
+    dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(fixedNow)
+  })
+  afterEach(() => {
+    dateNowSpy?.mockRestore()
+  })
+
   // Réutilise le scénario de surcharge Alice (`mkOverloadedState` plus haut)
   // : 2 tâches qui se chevauchent sur le même collab → le PATCH d'édition
   // est suivi d'un PATCH sur la tâche poussée par le Replan automatique.
@@ -1017,6 +976,84 @@ describe('App — Replan préserve predecessor_lag (v1.23)', () => {
       // Et les dates proposées sont aussi présentes.
       expect(body.start_date).toBeTruthy()
       expect(body.end_date).toBeTruthy()
+    })
+  })
+
+  // v2.2 / RG-W — Le PATCH du Replan inclut systématiquement `charge_jours`
+  // pour empêcher la back-dérivation côté serveur (boucle B1 corrigée).
+  // Reprend le setup exact du test voisin (predecessor_lag) qui déclenche déjà
+  // un Replan effectif → on ajoute juste l'assertion sur charge_jours.
+  it('v2.2 / RG-W — chaque PATCH de replan inclut charge_jours', async () => {
+    const state = mkState({
+      collaborators: [
+        { id: 'alice', name: 'Alice', color: '#3b82f6', position: 0 },
+      ],
+      tasks: [
+        {
+          id: 'PRED',
+          name: 'Pred',
+          kind: 'task',
+          start_date: '2026-06-08',
+          end_date: '2026-06-12',
+          progress: 0,
+          collaborator_id: 'alice',
+          color: null,
+          parent_id: null,
+          predecessor_id: null,
+          predecessor_lag: 0,
+          priority: null,
+          not_before_date: null,
+          not_later_than_date: null,
+          charge_jours: null,
+          position: 0,
+          project_id: 'p1',
+        },
+        {
+          id: 'SUCC',
+          name: 'Succ',
+          kind: 'task',
+          start_date: '2026-06-10',
+          end_date: '2026-06-12',
+          progress: 0,
+          collaborator_id: 'alice',
+          color: null,
+          parent_id: null,
+          predecessor_id: 'PRED',
+          predecessor_lag: 3,
+          priority: null,
+          not_before_date: null,
+          not_later_than_date: null,
+          charge_jours: null,
+          position: 1,
+          project_id: 'p1',
+        },
+      ],
+    })
+    const { calls } = setupFetchMock(state)
+    render(<App />)
+    await waitFor(() => screen.getByTestId('coherence-alert'))
+    fireEvent.click(
+      within(screen.getByTestId('coherence-alert')).getByRole('button', {
+        name: /Replan complet/,
+      }),
+    )
+    const dialog = await screen.findByRole('dialog', {
+      name: /replanification/i,
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Appliquer' }))
+
+    await waitFor(() => {
+      const patches = calls.filter(
+        (c) => c.method === 'PATCH' && c.url.startsWith('/api/tasks/'),
+      )
+      expect(patches.length).toBeGreaterThan(0)
+      for (const p of patches) {
+        const body = JSON.parse(p.body!)
+        // RG-W : charge_jours doit être présent (≥ 1, source de vérité préservée).
+        expect(body.charge_jours).toBeDefined()
+        expect(typeof body.charge_jours).toBe('number')
+        expect(body.charge_jours).toBeGreaterThanOrEqual(1)
+      }
     })
   })
 })

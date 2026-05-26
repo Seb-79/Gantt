@@ -37,6 +37,7 @@ import {
   ensureMemberAllocationsTable,
   ensureProjectMembersTable,
   ensureProjectsMigration,
+  ensureProjectStartDateColumn,
   ensureTaskAssignmentsTable,
   ensureTaskColumns,
   ensureTaskPredecessorsTable,
@@ -95,6 +96,13 @@ export function initDb(dbPath) {
   // et rattache toutes les tâches orphelines au projet "Projet 1" (créé à la
   // volée s'il n'existe pas encore).
   ensureProjectsMigration(db)
+
+  // v2.3 / RG-GANTT-2100 — Ajoute la colonne `project_start_date` sur
+  // `projects` si elle manque, puis initialise sa valeur pour les projets
+  // existants à MIN(tasks.start_date) (ou today si projet vide). Doit
+  // tourner APRÈS ensureProjectsMigration qui s'assure que la table existe
+  // et qu'au moins un projet par défaut est créé.
+  ensureProjectStartDateColumn(db)
 
   // v1.21 — Crée la table task_predecessors (N:M tasks ↔ prédécesseurs) si
   // elle n'existe pas, puis migre une fois pour toutes les anciennes liaisons
@@ -437,7 +445,8 @@ function enrichTasksWithAssignments(db, tasks, currentId) {
 export function getFullState(db, projectId) {
   const projects = db
     .prepare(
-      `SELECT id, name, position FROM projects ORDER BY position ASC, id ASC`,
+      `SELECT id, name, position, project_start_date
+         FROM projects ORDER BY position ASC, id ASC`,
     )
     .all()
   const collaborators = db
@@ -551,7 +560,8 @@ function nextProjectPosition(db) {
 export function listProjects(db) {
   return db
     .prepare(
-      `SELECT id, name, position FROM projects ORDER BY position ASC, id ASC`,
+      `SELECT id, name, position, project_start_date
+         FROM projects ORDER BY position ASC, id ASC`,
     )
     .all()
 }
@@ -566,11 +576,15 @@ export function listProjects(db) {
 export function createProject(db, input) {
   const tx = db.transaction(() => {
     const position = nextProjectPosition(db)
-    db.prepare(`INSERT INTO projects(id, name, position) VALUES (?, ?, ?)`).run(
-      input.id,
-      input.name,
-      position,
-    )
+    // v2.3 / RG-GANTT-2100 — Date de démarrage du projet. Si non fournie par
+    // l'appelant, on prend `today` (format ISO YYYY-MM-DD). Toujours stockée
+    // en base — colonne NOT NULL.
+    const startDate =
+      input.project_start_date || new Date().toISOString().slice(0, 10)
+    db.prepare(
+      `INSERT INTO projects(id, name, position, project_start_date)
+         VALUES (?, ?, ?, ?)`,
+    ).run(input.id, input.name, position, startDate)
     const version = bumpVersion(db)
     const project = db
       .prepare(`SELECT * FROM projects WHERE id = ?`)
@@ -581,19 +595,53 @@ export function createProject(db, input) {
 }
 
 /**
- * Renomme un projet (le seul champ éditable pour l'instant).
+ * Modifie un projet (nom et/ou date de démarrage).
+ *
+ * v2.3 / RG-GANTT-2101 — Accepte `name` et/ou `project_start_date`.
+ *
+ * v2.3 / RG-GANTT-2110 — Validation : la nouvelle `project_start_date` ne
+ * peut pas être postérieure à la `start_date` d'une activité avec
+ * `progress > 0` (en cours ou terminée). Sinon, retourne un échec typé que
+ * le handler HTTP traduira en 400 avec un message clair.
  *
  * @param {import('better-sqlite3').Database} db
  * @param {string} id
- * @param {{name?:string}} patch
- * @returns {{version:number, changed:boolean}}
+ * @param {{name?:string, project_start_date?:string}} patch
+ * @returns {{version:number, changed:boolean, ok?:boolean, code?:string, message?:string, conflictingTask?:object}}
  */
 export function updateProject(db, id, patch) {
   const tx = db.transaction(() => {
     const current = db.prepare(`SELECT * FROM projects WHERE id = ?`).get(id)
     if (!current) return { version: getVersion(db), changed: false }
+    // RG-GANTT-2110 — Validation de la nouvelle date.
+    if (
+      patch.project_start_date &&
+      patch.project_start_date !== current.project_start_date
+    ) {
+      const conflict = db
+        .prepare(
+          `SELECT id, name, start_date FROM tasks
+             WHERE project_id = ? AND kind = 'task' AND progress > 0
+               AND start_date < ?
+             ORDER BY start_date ASC LIMIT 1`,
+        )
+        .get(id, patch.project_start_date)
+      if (conflict) {
+        return {
+          version: getVersion(db),
+          changed: false,
+          ok: false,
+          code: 'PROJECT_START_AFTER_TASK',
+          message: `Impossible de définir la date de démarrage au ${patch.project_start_date} : la tâche « ${conflict.name} » est déjà démarrée le ${conflict.start_date}.`,
+          conflictingTask: conflict,
+        }
+      }
+    }
     const name = patch.name ?? current.name
-    db.prepare(`UPDATE projects SET name = ? WHERE id = ?`).run(name, id)
+    const startDate = patch.project_start_date ?? current.project_start_date
+    db.prepare(
+      `UPDATE projects SET name = ?, project_start_date = ? WHERE id = ?`,
+    ).run(name, startDate, id)
     const version = bumpVersion(db)
     return { version, changed: true }
   })
@@ -1665,7 +1713,7 @@ function ensureCollabIsMember(db, collabId, projectId) {
  *        ont été explicitement fournies par l'appelant).
  * @returns {{charge_jours:number|null, end_date:string}}
  */
-function resolveChargeAndEnd(next, patch, db) {
+function resolveChargeAndEnd(next, patch, db, isUpdate = false) {
   if (next.kind === 'milestone') {
     return { charge_jours: null, end_date: next.start_date }
   }
@@ -1707,6 +1755,17 @@ function resolveChargeAndEnd(next, patch, db) {
     patch &&
     Object.prototype.hasOwnProperty.call(patch, 'end_date') &&
     patch.end_date
+  // v2.2 / RG-W — Cas 3a' : si charge ET end_date sont TOUS DEUX fournis par
+  // le client (signal du Replan ou d'un éditeur qui contrôle les trois),
+  // les deux valeurs sont honorées telles quelles. Pas de back-dérivation,
+  // pas de recalcul. Ce cas court-circuite 3a (qui écraserait end) et 3b
+  // (qui back-dériverait charge — bug B1 historique du Replan).
+  // N'est actif que lors d'un PATCH (isUpdate=true) : à la création, si
+  // charge_jours est fourni, end doit toujours être recalculée (cas 3a normal).
+  if (isUpdate && hasExplicitCharge && hasExplicitEnd) {
+    const c = Math.max(1, Math.floor(Number(patch.charge_jours)))
+    return { charge_jours: c, end_date: patch.end_date }
+  }
   // Cas 3a : charge explicite gagne.
   if (hasExplicitCharge) {
     const c = Math.max(1, Math.floor(Number(patch.charge_jours)))
@@ -2099,7 +2158,7 @@ export function updateTask(db, id, patch) {
     //   • sinon → charge existante conservée, end recalculée depuis start.
     // v2.0 / F2/F6 — `db` + `next.collaborator_ids` permettent au recalcul
     // de consommer la capacité SOMMÉE des collabs jour par jour.
-    const resolved = resolveChargeAndEnd(next, patch, db)
+    const resolved = resolveChargeAndEnd(next, patch, db, true)
     next.charge_jours = resolved.charge_jours
     next.end_date = resolved.end_date
     // v1.24 — Applique la contrainte SNET en dernière étape (la borne basse

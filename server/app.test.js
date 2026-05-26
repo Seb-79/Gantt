@@ -79,7 +79,7 @@ describe('Tâches', () => {
     app = makeApp()
   })
 
-  it('POST tâche', async () => {
+  it('RG-GANTT-0002 — POST tâche', async () => {
     const r = await request(app)
       .post('/api/tasks')
       .send({
@@ -96,7 +96,7 @@ describe('Tâches', () => {
     expect(r.body.task.progress).toBe(25)
   })
 
-  it('POST jalon (end_date forcée)', async () => {
+  it('RG-GANTT-0200 — POST jalon (end_date forcée)', async () => {
     const r = await request(app)
       .post('/api/tasks')
       .send({
@@ -109,7 +109,7 @@ describe('Tâches', () => {
     expect(r.body.task.end_date).toBe('2026-12-01')
   })
 
-  it('POST end_date < start_date → 400', async () => {
+  it('RG-GANTT-0004 — POST end_date < start_date → 400', async () => {
     await request(app)
       .post('/api/tasks')
       .send({
@@ -121,7 +121,7 @@ describe('Tâches', () => {
       .expect(400)
   })
 
-  it('POST progress hors borne → 400', async () => {
+  it('RG-GANTT-0003 — POST progress hors borne → 400', async () => {
     await request(app)
       .post('/api/tasks')
       .send({
@@ -156,7 +156,7 @@ describe('Tâches', () => {
 
   // ---- v1.2 — Prédécesseur ------------------------------------------------
 
-  it('POST avec predecessor_id : start_date forcée à la fin du prédécesseur', async () => {
+  it('RG-GANTT-0104 / RG-GANTT-0401 — POST avec predecessor_id : start_date forcée à la fin du prédécesseur', async () => {
     // t1a finit le 2026-05-29 dans les données démo.
     const r = await request(app)
       .post('/api/tasks')
@@ -298,7 +298,7 @@ describe('Tâches', () => {
     expect(phase.end_date).toBe('2026-09-25')
   })
 
-  it('PATCH definir un predecesseur preserve start_date si elle est posterieure', async () => {
+  it('RG-GANTT-0404 — PATCH definir un predecesseur preserve start_date si elle est posterieure', async () => {
     // t2a commence 2026-07-01 ; t1a finit 2026-05-29. Comme le start_date
     // actuel est DÉJÀ après la fin du prédécesseur, on doit le conserver
     // (l'utilisateur a le droit de décaler volontairement le début).
@@ -353,7 +353,7 @@ describe('Projets', () => {
     }
   })
 
-  it('POST /api/projects crée un projet, GET /api/state?project_id=… le charge vide', async () => {
+  it('RG-GANTT-1104 — POST /api/projects crée un projet, GET /api/state?project_id=… le charge vide', async () => {
     const created = await request(app)
       .post('/api/projects')
       .send({ id: 'p_test', name: 'Mon test' })
@@ -433,7 +433,7 @@ describe('Projets', () => {
     )
   })
 
-  it('DELETE /api/projects/:id supprime le projet et ses tâches (cascade)', async () => {
+  it('RG-GANTT-1105 — DELETE /api/projects/:id supprime le projet et ses tâches (cascade)', async () => {
     // Crée un 2e projet pour pouvoir supprimer le 1er.
     await request(app)
       .post('/api/projects')
@@ -463,7 +463,7 @@ describe('Projets', () => {
     expect(after.body.tasks).toEqual([])
   })
 
-  it('POST /api/tasks rattache la tâche au project_id fourni', async () => {
+  it('RG-GANTT-0002 — POST /api/tasks rattache la tâche au project_id fourni', async () => {
     await request(app)
       .post('/api/projects')
       .send({ id: 'p_other', name: 'Autre' })
@@ -820,7 +820,7 @@ describe('v2.0 / F1 — GET /api/state.current_project_members', () => {
 // =============================================================================
 
 describe('v2.0 / F5 — /api/workload/global', () => {
-  it('GET retourne les activités cross-projet (kind=task, collab non-null)', async () => {
+  it('RG-GANTT-1621 — GET retourne les activités cross-projet (kind=task, collab non-null)', async () => {
     const app = makeApp()
     const r = await request(app).get('/api/workload/global').expect(200)
     expect(Array.isArray(r.body.tasks)).toBe(true)
@@ -831,7 +831,7 @@ describe('v2.0 / F5 — /api/workload/global', () => {
     }
   })
 
-  it('GET /api/state expose all_member_allocations', async () => {
+  it('RG-GANTT-1620 — GET /api/state expose all_member_allocations', async () => {
     const app = makeApp()
     const r = await request(app).get('/api/state').expect(200)
     expect(Array.isArray(r.body.all_member_allocations)).toBe(true)
@@ -846,7 +846,7 @@ describe('v2.0 / F5 — /api/workload/global', () => {
 // non absorbable.
 // =============================================================================
 
-describe('v2.1 / RG-GANTT-1907 — PATCH /api/allocations/:id', () => {
+describe('v2.1 / RG-GANTT-1957 — PATCH /api/allocations/:id', () => {
   let app
   /** Id d'une allocation pré-créée pour les tests. */
   let allocId

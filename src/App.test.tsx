@@ -170,7 +170,7 @@ describe('App — smoke', () => {
     })
   })
 
-  it("peuple le sélecteur de projet à partir de l'API", async () => {
+  it("RG-GANTT-1104 — peuple le sélecteur de projet à partir de l'API", async () => {
     setupFetchMock()
     render(<App />)
     // v2.2 / F3 refondu — Au démarrage on est sur l'onglet Gantt, donc le
@@ -185,7 +185,7 @@ describe('App — smoke', () => {
     ])
   })
 
-  it('changer de projet provoque un GET /api/state?project_id=…', async () => {
+  it('RG-GANTT-1104 — changer de projet provoque un GET /api/state?project_id=…', async () => {
     const { calls } = setupFetchMock()
     render(<App />)
     const trigger = await screen.findByRole('combobox')
@@ -203,7 +203,7 @@ describe('App — smoke', () => {
     })
   })
 
-  it('le polling 5 s déclenche un re-fetch de /api/state', async () => {
+  it('RG-GANTT-0006 — le polling 5 s déclenche un re-fetch de /api/state', async () => {
     const { calls } = setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
@@ -554,7 +554,7 @@ describe('App — Replan (non-régression métier)', () => {
     expect(within(dialog).getByText(/2026-06-01/)).toBeInTheDocument()
   })
 
-  it('Annuler ferme la modal sans envoyer de PATCH', async () => {
+  it('RG-GANTT-0907 — Annuler ferme la modal sans envoyer de PATCH', async () => {
     // Garantit qu'un utilisateur peut prévisualiser SANS engager les
     // modifications. Cf. spec UI « Aperçu puis confirmation ».
     const { calls } = setupFetchMock(mkOverloadedState())
@@ -575,7 +575,7 @@ describe('App — Replan (non-régression métier)', () => {
     ).toBeUndefined()
   })
 
-  it('Appliquer envoie 1 PATCH par tâche déplacée avec les nouvelles dates', async () => {
+  it('RG-GANTT-0907 — Appliquer envoie 1 PATCH par tâche déplacée avec les nouvelles dates', async () => {
     // Garantit que la confirmation envoie effectivement la replanification
     // au serveur (pas d'oubli silencieux côté handler).
     const { calls } = setupFetchMock(mkOverloadedState())
@@ -699,7 +699,7 @@ describe('App — repli des phases (v1.20)', () => {
     })
   }
 
-  it("clic sur le chevron d'une phase masque ses enfants dans la liste", async () => {
+  it("RG-GANTT-0103 / RG-GANTT-0308 — clic sur le chevron d'une phase masque ses enfants dans la liste", async () => {
     // Règle : la phase reste visible (on doit pouvoir la déplier), mais
     // ses enfants disparaissent du panneau gauche ET du planning.
     setupFetchMock(mkStateWithPhase())
@@ -735,7 +735,7 @@ describe('App — repli des phases (v1.20)', () => {
     expect(document.querySelector('button[aria-label="Déplier"]')).toBeTruthy()
   })
 
-  it("l'état de repli est persisté en localStorage", async () => {
+  it("RG-GANTT-0308 — l'état de repli est persisté en localStorage", async () => {
     setupFetchMock(mkStateWithPhase())
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
@@ -759,14 +759,14 @@ describe('App — repli des phases (v1.20)', () => {
 // =============================================================================
 
 describe("App — bandeau d'incohérence (v1.21)", () => {
-  it("n'affiche aucun bandeau quand le projet est cohérent", async () => {
+  it("RG-GANTT-0806 — n'affiche aucun bandeau quand le projet est cohérent", async () => {
     setupFetchMock()
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
     expect(screen.queryByTestId('coherence-alert')).not.toBeInTheDocument()
   })
 
-  it('affiche le bandeau quand une surcharge existe + énumère les 2 boutons', async () => {
+  it('RG-GANTT-0807 — affiche le bandeau quand une surcharge existe + énumère les 2 boutons', async () => {
     setupFetchMock(mkOverloadedState())
     render(<App />)
     await waitFor(() => screen.getByTestId('coherence-alert'))
@@ -781,7 +781,7 @@ describe("App — bandeau d'incohérence (v1.21)", () => {
     ).toBeInTheDocument()
   })
 
-  it('"Replan complet" depuis le bandeau ouvre la modal habituelle', async () => {
+  it('RG-GANTT-0807 — "Replan complet" depuis le bandeau ouvre la modal habituelle', async () => {
     setupFetchMock(mkOverloadedState())
     render(<App />)
     await waitFor(() => screen.getByTestId('coherence-alert'))
@@ -828,7 +828,7 @@ describe("App — auto-replan après modification d'une tâche (v1.22)", () => {
   // Réutilise le scénario de surcharge Alice (`mkOverloadedState` plus haut)
   // : 2 tâches qui se chevauchent sur le même collab → le PATCH d'édition
   // est suivi d'un PATCH sur la tâche poussée par le Replan automatique.
-  it("case cochée par défaut : un Replan suit le PATCH d'édition", async () => {
+  it("RG-GANTT-0909 — case cochée par défaut : un Replan suit le PATCH d'édition", async () => {
     const { calls } = setupFetchMock(mkOverloadedState())
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
@@ -856,7 +856,7 @@ describe("App — auto-replan après modification d'une tâche (v1.22)", () => {
     })
   })
 
-  it("case décochée : aucun replan, seul le PATCH d'édition part", async () => {
+  it("RG-GANTT-0909 — case décochée : aucun replan, seul le PATCH d'édition part", async () => {
     const { calls } = setupFetchMock(mkOverloadedState())
     render(<App />)
     await waitFor(() => screen.getByRole('combobox'))
@@ -900,7 +900,7 @@ describe("App — auto-replan après modification d'une tâche (v1.22)", () => {
 // =============================================================================
 
 describe('App — Replan préserve predecessor_lag (v1.23)', () => {
-  it('chaque PATCH de replan inclut le lag de la tâche déplacée', async () => {
+  it('RG-GANTT-0908 — chaque PATCH de replan inclut le lag de la tâche déplacée', async () => {
     // Scénario simple : Alice a 2 tâches qui se chevauchent. La 2e a un lag=3
     // (sans prédécesseur pour simplifier, mais le PATCH doit malgré tout
     // transporter la valeur stockée — preuve que `submitReplanMoves` ne

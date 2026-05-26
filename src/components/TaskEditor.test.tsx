@@ -54,7 +54,7 @@ describe('TaskEditor — création', () => {
     ).toBeInTheDocument()
   })
 
-  it('refuse la sauvegarde si le nom est vide', () => {
+  it('RG-GANTT-0005 — refuse la sauvegarde si le nom est vide', () => {
     const onSave = vi.fn()
     render(
       <TaskEditor
@@ -71,7 +71,7 @@ describe('TaskEditor — création', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/nom est obligatoire/i)
   })
 
-  it('appelle onSave avec les champs saisis', () => {
+  it('RG-GANTT-0101 — appelle onSave avec les champs saisis (collaborateur unique)', () => {
     const onSave = vi.fn()
     render(
       <TaskEditor
@@ -115,7 +115,7 @@ describe('TaskEditor — édition', () => {
     )
   })
 
-  it('refuse une end_date < start_date', () => {
+  it('RG-GANTT-0004 — refuse une end_date < start_date', () => {
     const onSave = vi.fn()
     render(
       <TaskEditor
@@ -191,7 +191,7 @@ describe('TaskEditor — prédécesseur (v1.22 picker arborescent)', () => {
     fireEvent.click(row)
   }
 
-  it("liste les jalons en plus des tâches dans l'arbre du picker", () => {
+  it("RG-GANTT-0204 / RG-GANTT-0409 — liste les jalons en plus des tâches dans l'arbre du picker", () => {
     const milestone = mkTask({
       id: 'mA',
       name: 'Jalon',
@@ -244,7 +244,7 @@ describe('TaskEditor — prédécesseur (v1.22 picker arborescent)', () => {
     expect(onSave.mock.calls[0][0].predecessors).toEqual([{ id: 'tA', lag: 0 }])
   })
 
-  it('refuse une start_date < borne basse (MAX prédécesseur)', () => {
+  it('RG-GANTT-0401 — refuse une start_date < borne basse (MAX prédécesseur)', () => {
     const onSave = vi.fn()
     render(
       <TaskEditor
@@ -337,7 +337,7 @@ describe('TaskEditor — prédécesseur (v1.22 picker arborescent)', () => {
 })
 
 describe('TaskEditor — kinds spécifiques', () => {
-  it('jalon : fin et avancement désactivés, end_date = start_date au save', () => {
+  it('RG-GANTT-0200 / RG-GANTT-0201 — jalon : fin et avancement désactivés, end_date = start_date au save', () => {
     const onSave = vi.fn()
     render(
       <TaskEditor
@@ -395,7 +395,7 @@ describe('TaskEditor — kinds spécifiques', () => {
     expect(screen.getByLabelText(/Avancement/)).toBeDisabled()
   })
 
-  it("phase : collaborateur et prédécesseur masqués, bandeau d'aide affiché", () => {
+  it("RG-GANTT-0302 / RG-GANTT-0303 — phase : collaborateur et prédécesseur masqués, bandeau d'aide affiché", () => {
     render(
       <TaskEditor
         task={null}

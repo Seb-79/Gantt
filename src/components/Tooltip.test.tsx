@@ -15,7 +15,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import { Tooltip } from './Tooltip'
 
-describe('Tooltip', () => {
+describe('Tooltip (RG-GANTT-2200)', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })

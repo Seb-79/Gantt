@@ -726,7 +726,7 @@ describe("GanttChart — click sur barre du planning ouvre l'éditeur", () => {
     expect(onTaskClick.mock.calls[0][0].id).toBe('t1')
   })
 
-  it('v1.21 — drag vers la GAUCHE (passé) déplace bien la tâche', () => {
+  it('v1.21 / RG-GANTT-0105 — drag vers la GAUCHE (passé) déplace bien la tâche', () => {
     // Non-régression v1.21 : l'utilisateur peut désormais ramener une tâche
     // dans le passé par drag (la règle "rightward only" a été levée). La
     // cohérence sera signalée par le bandeau d'alerte au-dessus du planning.

@@ -1,8 +1,8 @@
 # Règles de gestion — Application Gantt
 
-**Version applicative couverte : v2.0 (F0 + F1 + F2 + F3 + F4 + F5 + F6 — multi-collaborateurs)**
-**Date de dernière mise à jour : 2026-05-19**
-**Couverture de test : 156 / 156 (100 %)**
+**Version applicative couverte : v2.3 (v2.0 F0..F6 + v2.1 F2.9/F4/F5 + v2.2 invariance charge + v2.3 refonte Replan)**
+**Date de dernière mise à jour : 2026-05-26**
+**Couverture de test : voir la « Synthèse de couverture » en fin de document — objectif : 1 RG ↔ ≥ 1 test nommé.**
 
 Ce document est le **référentiel vivant** des règles de gestion métier de
 l'application. Chaque règle porte un identifiant stable de la forme
@@ -1483,7 +1483,11 @@ la charge demandée. L'utilisateur a le choix : étendre l'allocation
 limitante via le dialog dédié, ou aller ajuster manuellement les
 affectations dans l'onglet « Affectation ».
 
-### RG-GANTT-1900
+> _Note de numérotation_ : cette famille a été renumérotée de 1900-1907 vers
+> **1950-1957** (2026-05-26) pour libérer la plage 1900-1910 qui appartient
+> à la Famille 10 (Replanification v2.2/v2.3).
+
+### RG-GANTT-1950
 
 Pour une activité (kind=task) avec une charge `> 0` et au moins un
 collaborateur affecté, on calcule un **shortfall** `missing` =
@@ -1493,11 +1497,12 @@ ouvrés entre `start_date` et `max(end_date)` des allocations existantes.
 Si `missing > 0` (au-delà d'une tolérance numérique de 1e-9), la
 sauvegarde de l'activité est bloquée et un dialog s'ouvre.
 
-**Tests :** `src/lib/utils.test.ts` → « computeAllocationShortfall :
-aucun collab, aucune alloc, 100% suffisant, 2 collabs Q1, trou Q2, démarre
-après fin alloc, 50% insuffisant ».
+**Tests :** `src/lib/utils.test.ts` → bloc `computeAllocationShortfall
+(v2.1 / F2.9 / RG-GANTT-1950 / RG-GANTT-1951 / RG-GANTT-1952)` (7 cas :
+aucun collab, aucune alloc, 100 % suffisant, 2 collabs Q1, trou Q2,
+démarre après fin alloc, 50 % insuffisant).
 
-### RG-GANTT-1901
+### RG-GANTT-1951
 
 La **capacité cumulée** est calculée comme dans `computeEndFromCharge`
 (invariant déjà testé v2.0/F6) — additive sur tous les collabs affectés à
@@ -1505,19 +1510,19 @@ la tâche. Une tâche affectée à 2 collabs dont l'un finit son allocation
 plus tôt peut quand même être absorbée si l'autre couvre la durée
 restante (Q1=A : pas d'alerte tant que le total absorbe).
 
-**Tests :** `src/lib/utils.test.ts` → « Q1 — 2 collabs Alice 1j + Bob 9j
-→ missing = 0 ».
+**Tests :** `src/lib/utils.test.ts` → « RG-GANTT-1951 — Q1 — 2 collabs
+Alice 1j + Bob 9j → missing = 0 ».
 
-### RG-GANTT-1902
+### RG-GANTT-1952
 
 Un **trou d'allocation** au milieu n'est pas en soi un blocage : si la
 charge peut s'absorber sur les jours dispos avant + après le trou, la
 sauvegarde passe (Q2 — pas d'alerte tant que le total absorbe).
 
-**Tests :** `src/lib/utils.test.ts` → « Q2 — trou d'allocation au milieu :
-charge absorbée sur les jours dispos ».
+**Tests :** `src/lib/utils.test.ts` → « RG-GANTT-1952 — Q2 — trou
+d'allocation au milieu : charge absorbée sur les jours dispos ».
 
-### RG-GANTT-1903
+### RG-GANTT-1953
 
 Le dialog `AllocationFixDialog` propose, pour un taux d'extension choisi
 parmi {25, 50, 75, 100}, une **date d'extension auto-calculée** qui est
@@ -1526,10 +1531,11 @@ La date est **éditable** par l'utilisateur (Q3=C), mais bornée par un
 `min` égal à la date proposée (interdit de saisir plus tôt — incohérent
 avec la simulation).
 
-**Tests :** `src/lib/utils.test.ts` → « computeExtensionPlan : 1 collab,
-manque 3j à 100% → PATCH end_date ».
+**Tests :** `src/lib/utils.test.ts` → bloc `computeExtensionPlan
+(v2.1 / F2.9.B / RG-GANTT-1953 / RG-GANTT-1954)` → « 1 collab, manque
+3j à 100 % → PATCH end_date ».
 
-### RG-GANTT-1904
+### RG-GANTT-1954
 
 Q5=C — Quand on étend l'allocation d'un collab :
 
@@ -1539,11 +1545,11 @@ Q5=C — Quand on étend l'allocation d'un collab :
 targetEndDate]` au `pct` cible (préserve l'historique d'allocations à
   d'autres taux).
 
-**Tests :** `src/lib/utils.test.ts` → « Q5=C — changement de % → CREATE
-nouvelle allocation » ; « 1 collab, allocation 100% existante → PATCH
-end_date ».
+**Tests :** `src/lib/utils.test.ts` → « RG-GANTT-1954 — Q5=C — changement
+de % → CREATE nouvelle allocation » ; « RG-GANTT-1954 — 1 collab,
+allocation 100 % existante → PATCH end_date ».
 
-### RG-GANTT-1905
+### RG-GANTT-1955
 
 Q6 — Après l'extension d'allocation, le `end_date` de la tâche est
 **recalculé automatiquement** par `computeEndFromCharge` au moment où le
@@ -1551,11 +1557,11 @@ Q6 — Après l'extension d'allocation, le `end_date` de la tâche est
 préfère figer la fin, il décoche « Replanifier après enregistrement » dans
 le TaskEditor (pattern v1.22 existant).
 
-**Tests :** couvert indirectement par `src/lib/utils.test.ts` →
-`computeEndFromCharge` qui est rappelé côté DAL au `createTask` /
-`updateTask` ; intégration end-to-end pas testée (manipulation UI).
+**Tests :** `src/lib/utils.test.ts` → bloc `computeEndFromCharge
+(v2.0 / v2.1 / RG-GANTT-1955)` ; intégration end-to-end pas testée
+(manipulation UI).
 
-### RG-GANTT-1906
+### RG-GANTT-1956
 
 Le `Replan` global est bloqué dès qu'**au moins une activité** du projet
 courant a un `missing > 0`. Le `ReplanAllocationFixDialog` propose un
@@ -1565,11 +1571,11 @@ décocher » basculent toutes les cases. « Étendre et replanifier » exécute
 en série les extensions cochées, puis relance automatiquement le replan
 une fois le state rafraîchi.
 
-**Tests :** `src/lib/utils.test.ts` → `scanReplanShortfalls` (6 tests :
-phases ignorées, sans collab ignoré, sans charge ignoré, absorbable
-exclu, non absorbable inclus, mix).
+**Tests :** `src/lib/utils.test.ts` → bloc `scanReplanShortfalls
+(v2.1 / F2.9.C / RG-GANTT-1956)` (6 tests : phases ignorées, sans collab
+ignoré, sans charge ignoré, absorbable exclu, non absorbable inclus, mix).
 
-### RG-GANTT-1907
+### RG-GANTT-1957
 
 Endpoint `PATCH /api/allocations/:id` (v2.1 / F2.9) : met à jour une
 période d'allocation existante (partiel — tout champ omis reste
@@ -1578,8 +1584,9 @@ inchangé). Validations dupliquées côté DAL : pct ∈ {25, 50, 75, 100},
 même (projet, collab) — l'id courant est exclu du check d'overlap.
 404 si l'id n'existe pas, 400 sinon avec un `code` applicatif.
 
-**Tests :** `db/index.test.js` → 4 tests `updateMemberAllocation` ;
-`server/app.test.js` → 4 tests d'intégration HTTP (200/404/400/400).
+**Tests :** `db/index.test.js` → 4 tests `updateMemberAllocation`
+(RG-GANTT-1957) ; `server/app.test.js` → bloc `v2.1 / RG-GANTT-1957 —
+PATCH /api/allocations/:id` (4 tests d'intégration HTTP 200/404/400/400).
 
 ---
 
@@ -1771,7 +1778,7 @@ détection ne devrait donc jamais lever d'alerte « surcharge » sur un
 état issu d'un Replan récent.
 
 Le détecteur continue de signaler les autres incohérences :
-prédécesseurs violés (RG-GANTT-0904), priorité violée (RG-GANTT-0608),
+prédécesseurs violés (RG-GANTT-0904), priorité violée (RG-GANTT-0803),
 SNET violé (RG-GANTT-0805), FNLT dépassée (RG-GANTT-1503), prédécesseur
 terminé dans le futur (RG-GANTT-2106).
 
@@ -1865,49 +1872,83 @@ côté client à venir dans la modal Paramètres.
 
 **Tests :** `server/app.test.js` → « PATCH refusé si date > start d'une tâche progress>0 ».
 
-> _Les RG 2101 à 2109 seront ajoutées au fil de l'implémentation des tâches L1.7 à L4 de la refonte v2.3 (cf. spec § 2.4)._
+---
+
+## Famille 22 — Tooltip custom (v2.2)
+
+### RG-GANTT-2200
+
+**(v2.2 / F1)** Le composant `Tooltip` (utilisé pour les info-bulles
+boutons et icônes de l'app) implémente un comportement custom qui remplace
+le `title=` natif HTML (délai d'apparition non contrôlable, disparition
+au moindre mouvement) :
+
+- Apparition après un **délai court** (par défaut 150 ms) au **survol
+  souris** OU au **focus clavier**.
+- Disparition immédiate au `mouseleave` ou au `blur`.
+- Le délai en cours est **annulé** si la souris quitte avant son
+  expiration (pas d'apparition fantôme).
+- Rendu via `createPortal` dans `document.body` pour ne pas être tronqué
+  par un `overflow-hidden` du parent.
+- Style proche d'une bulle macOS native (fond slate-100, bordure
+  slate-300, texte slate-800) — harmonisé avec le reste de l'app.
+
+**Tests :** `src/components/Tooltip.test.tsx` → bloc
+`Tooltip (RG-GANTT-2200)` (6 tests : pas affiché au montage, apparition
+après délai mouseenter, annulation si la souris quitte avant la fin,
+disparition au mouseleave, apparition au focus / disparition au blur,
+respect d'un délai personnalisé).
 
 ---
 
 ## Synthèse de couverture
 
-| Famille                       |  Règles |           Couverture |
-| ----------------------------- | ------: | -------------------: |
-| 1 — Communes                  |       7 |                7 / 7 |
-| 2 — Activités                 |       6 |                6 / 6 |
-| 3 — Jalons                    |       7 |                7 / 7 |
-| 4 — Phases                    |      10 |              10 / 10 |
-| 5 — Prédécesseur et délai     |      10 |              10 / 10 |
-| 6 — Priorité                  |       5 |                5 / 5 |
-| 7 — Surcharge collaborateur   |       7 |                7 / 7 |
-| 8 — SNET                      |      10 |              10 / 10 |
-| 9 — Cohérence                 |       8 |                8 / 8 |
-| 10 — Replanification          |      10 |              10 / 10 |
-| 11 — Calendrier               |       5 |                5 / 5 |
-| 12 — Hiérarchie / Projets     |       8 |                8 / 8 |
-| 12bis — Memberships (v2.0/F1) |       6 |                6 / 6 |
-| 13 — Allocations % (v2.0/F2)  |      10 |              10 / 10 |
-| 14 — Absences (v2.0/F3)       |       7 |                7 / 7 |
-| 15 — FNLT (v2.0/F4)           |       7 |                7 / 7 |
-| 16 — Plan de charge (v2.0/F5) |       7 |                7 / 7 |
-| 17 — Multi-collab (v2.0/F6)   |       7 |                7 / 7 |
-| 18 — Charge stockée (v2.0/F0) |       5 |                5 / 5 |
-| 19 — Allocation absorbante    |       8 |                7 / 8 |
-| (v2.1/F2.9)                   |         |                      |
-| 20 — Grilles éditables        |       7 |                2 / 7 |
-| (v2.1/F4+F5)                  |         |                      |
-| **Total**                     | **157** | **151 / 157 (96 %)** |
+Comptage automatisé par le méta-test `docs/regles-metier.coverage.test.js`
+(quota d'orphelines `MAX_ALLOWED_ORPHANS`). Cible : **0 orpheline**
+(chaque RG documentée doit voir son ID `RG-GANTT-XXXX` apparaître dans le
+nom d'au moins un `it(...)` / `describe(...)` ou dans un commentaire d'un
+fichier `*.test.*`).
 
-**Notes de couverture v2.1 :**
+| Famille                                | Plage                            |  Règles |
+| -------------------------------------- | -------------------------------- | ------: |
+| 1 — Communes                           | 0001..0007                       |       7 |
+| 2 — Activités                          | 0100..0105                       |       6 |
+| 3 — Jalons                             | 0200..0206                       |       7 |
+| 4 — Phases                             | 0300..0309                       |      10 |
+| 5 — Prédécesseur et délai              | 0400..0409                       |      10 |
+| 6 — Priorité                           | 0500..0504                       |       5 |
+| 7 — Surcharge collaborateur            | 0600..0606                       |       7 |
+| 8 — SNET                               | 0700..0709                       |      10 |
+| 9 — Cohérence                          | 0800..0807                       |       8 |
+| 10 — Replanification (v0.x → v2.3)     | 0900..0909, 1900..1910           |      21 |
+| 11 — Calendrier                        | 1000,1001,1003..1005             |       5 |
+| 12 — Hiérarchie / Projets              | 1100..1107                       |       8 |
+| 12bis — Memberships (v2.0/F1)          | 1200..1205                       |       6 |
+| 13 — Allocations % (v2.0/F2)           | 1300..1305,1310..1313            |      10 |
+| 14 — Absences (v2.0/F3)                | 1400..1406                       |       7 |
+| 15 — FNLT (v2.0/F4)                    | 1500..1505,1510                  |       7 |
+| 16 — Plan de charge (v2.0/F5)          | 1600..1602,1610..1611,1620..1621 |       7 |
+| 17 — Multi-collab (v2.0/F6)            | 1700..1706                       |       7 |
+| 19 — Allocation absorbante (v2.1/F2.9) | 1950..1957                       |       8 |
+| 20 — Grilles éditables (v2.1/F4+F5)    | 2000..2006                       |       7 |
+| 21 — Refonte Replan v2.3               | 2100..2110                       |      11 |
+| 22 — Tooltip custom (v2.2)             | 2200                             |       1 |
+| **Total**                              | —                                | **175** |
 
-- Famille 19 — toutes les règles métier (calcul shortfall, extension plan,
-  routes API) sont couvertes par tests unitaires et intégration HTTP.
-  Seule RG-GANTT-1905 (recalcul auto de la fin de tâche post-extension)
-  n'a pas de test end-to-end — c'est `computeEndFromCharge` qui est rejoué
-  côté DAL, déjà testé par ailleurs.
+**Notes de couverture :**
+
+- Famille 10 (Replan v0.x..v2.1) garde la plage 0900..0910. Les RG ajoutées
+  en v2.2/v2.3 (invariance charge, progress=100 lockée, borne basse globale,
+  mode planification anticipée) ont été regroupées sous le sous-titre
+  « Famille 10bis » et conservent leurs IDs 1900..1910.
+- Famille 19 (Allocation absorbante) a été renumérotée de 1900..1907 vers
+  **1950..1957** le 2026-05-26 pour libérer le conflit d'IDs avec la
+  Famille 10bis. Les tests F2.9 ont été renommés en conséquence.
 - Famille 20 — les helpers purs (`rebuildAllocationsForCollab`,
   `useDragPaint`) sont couverts pour leur logique pure ; les interactions
-  souris (clic / drag / drag oblique désactivé / mini-form Période) sont
-  vérifiées visuellement, pas par tests automatisés (manipuler des
-  mousedown/mouseup/mousemove en jsdom est fragile et apporte peu de
-  garantie supplémentaire).
+  souris (clic / drag oblique désactivé / mini-form Période) sont vérifiées
+  visuellement, pas par tests automatisés (manipuler des
+  mousedown/mouseup/mousemove en jsdom est fragile).
+- Famille 22 (Tooltip custom) ne contient qu'une RG, dédiée au comportement
+  d'apparition / disparition / délai d'un tooltip survol/focus. C'est une
+  règle UX promue depuis un commentaire de `Tooltip.tsx` (refonte 2026-05-23).

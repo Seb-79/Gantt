@@ -137,19 +137,19 @@ describe('effectiveTaskColor', () => {
   ]
   const baseTask: Task = mkTask('t1')
 
-  it('priorité couleur custom', () => {
+  it('RG-GANTT-0007 / RG-GANTT-0102 — priorité couleur custom', () => {
     expect(effectiveTaskColor({ ...baseTask, color: '#abcdef' }, collabs)).toBe(
       '#abcdef',
     )
   })
 
-  it('sinon couleur du collab', () => {
+  it('RG-GANTT-0007 / RG-GANTT-0102 — sinon couleur du collab', () => {
     expect(
       effectiveTaskColor({ ...baseTask, collaborator_id: 'c1' }, collabs),
     ).toBe('#ff0000')
   })
 
-  it('sinon défaut', () => {
+  it('RG-GANTT-0007 — sinon défaut', () => {
     expect(effectiveTaskColor(baseTask, collabs)).toBe(DEFAULT_TASK_COLOR)
   })
 })
@@ -164,7 +164,7 @@ describe('makeId', () => {
 })
 
 describe('isWeekendDay', () => {
-  it('détecte samedi et dimanche', () => {
+  it('RG-GANTT-1000 — détecte samedi et dimanche', () => {
     expect(isWeekendDay(isoToDate('2026-05-16'))).toBe(true) // samedi
     expect(isWeekendDay(isoToDate('2026-05-17'))).toBe(true) // dimanche
     expect(isWeekendDay(isoToDate('2026-05-18'))).toBe(false) // lundi
@@ -187,7 +187,7 @@ describe('computeWorkload (v1.16)', () => {
     { id: 'bob', name: 'Bob', color: '#10b981', position: 1 },
   ]
 
-  it('ignore les jalons, phases et tâches sans collaborateur', () => {
+  it('RG-GANTT-0601 / RG-GANTT-0603 — ignore les jalons, phases et tâches sans collaborateur', () => {
     const dates = buildDateRange('2026-05-11', '2026-05-15') // lun → ven
     const tasks: Task[] = [
       mkTask('milestone', {
@@ -214,7 +214,7 @@ describe('computeWorkload (v1.16)', () => {
     expect(wl.get('bob')).toEqual([0, 0, 0, 0, 0])
   })
 
-  it('cumule 1 par tâche-jour ouvré et saute les week-ends', () => {
+  it('RG-GANTT-0600 / RG-GANTT-0602 — cumule 1 par tâche-jour ouvré et saute les week-ends', () => {
     // Tâche Alice du vendredi au lundi : 1 j vendredi, 0 sam/dim, 1 j lundi.
     const dates = buildDateRange('2026-05-15', '2026-05-18')
     const tasks: Task[] = [
@@ -228,7 +228,7 @@ describe('computeWorkload (v1.16)', () => {
     expect(wl.get('alice')).toEqual([1, 0, 0, 1])
   })
 
-  it('détecte la surcharge (2 tâches sur le même jour ouvré)', () => {
+  it('RG-GANTT-0604 — détecte la surcharge (2 tâches sur le même jour ouvré)', () => {
     const dates = buildDateRange('2026-05-11', '2026-05-12') // lun + mar
     const tasks: Task[] = [
       mkTask('t1', {
@@ -248,7 +248,7 @@ describe('computeWorkload (v1.16)', () => {
 })
 
 describe('workloadCellStyle (v1.16)', () => {
-  it('mappe les charges sur les classes du code couleur', () => {
+  it('RG-GANTT-0605 — mappe les charges sur les classes du code couleur', () => {
     expect(workloadCellStyle(0)).toContain('text-slate-300')
     expect(workloadCellStyle(0.25)).toContain('bg-blue-100')
     expect(workloadCellStyle(0.5)).toContain('bg-blue-200')
@@ -259,7 +259,7 @@ describe('workloadCellStyle (v1.16)', () => {
 
   // v1.17 — highlightUnderload : toutes les charges < 1 basculent au jaune
   // (sans toucher aux états plein (= 1) et surcharge (> 1)).
-  it('highlightUnderload → sous-charges en jaune, sans toucher au plein/rouge', () => {
+  it('RG-GANTT-0606 — highlightUnderload → sous-charges en jaune, sans toucher au plein/rouge', () => {
     expect(workloadCellStyle(0, true)).toContain('bg-yellow-200')
     expect(workloadCellStyle(0.5, true)).toContain('bg-yellow-400')
     expect(workloadCellStyle(0.99, true)).toContain('bg-yellow-400')
@@ -388,7 +388,7 @@ describe('windowFromTasks', () => {
   })
 })
 
-describe('addWorkingDays (v1.9)', () => {
+describe('addWorkingDays (v1.9 / RG-GANTT-1005)', () => {
   // Repère : 2026-05-18 est un LUNDI ; 2026-05-22 vendredi ; 23/24 = w-e.
   it('charge=1 → fin = début (1 seul jour ouvré)', () => {
     expect(addWorkingDays('2026-05-18', 1)).toBe('2026-05-18')
@@ -429,7 +429,7 @@ describe('addWorkingDays (v1.9)', () => {
 // vérité). En F0 le calcul est identique à `addWorkingDays` ; les tests
 // servent de filet pour les évolutions F2 (allocations) et F3 (congés)
 // qui changeront l'algo SANS toucher au contrat.
-describe('computeEndFromCharge (v2.0 / v2.1 / RG-GANTT-1905)', () => {
+describe('computeEndFromCharge (v2.0 / v2.1 / RG-GANTT-1955)', () => {
   it('alias d`addWorkingDays en F0 : charge=5 lundi → vendredi', () => {
     expect(computeEndFromCharge('2026-05-18', 5)).toBe('2026-05-22')
   })
@@ -630,7 +630,7 @@ describe('addDaysIso (v1.9)', () => {
   })
 })
 
-describe('snapBackwardToWorkingDay (v1.9)', () => {
+describe('snapBackwardToWorkingDay (v1.9 / RG-GANTT-1004)', () => {
   it('jour ouvré inchangé', () => {
     expect(snapBackwardToWorkingDay('2026-05-18')).toBe('2026-05-18') // lundi
     expect(snapBackwardToWorkingDay('2026-05-22')).toBe('2026-05-22') // vendredi
@@ -659,7 +659,7 @@ describe('daysBetweenIso (v1.9)', () => {
   })
 })
 
-describe('snapForwardToWorkingDay (v1.9)', () => {
+describe('snapForwardToWorkingDay (v1.9 / RG-GANTT-1003)', () => {
   it('jour ouvré inchangé', () => {
     expect(snapForwardToWorkingDay('2026-05-18')).toBe('2026-05-18') // lundi
     expect(snapForwardToWorkingDay('2026-05-22')).toBe('2026-05-22') // vendredi
@@ -790,7 +790,7 @@ describe('replanTasks (v1.18)', () => {
     expect(replanTasks(tasks, '2026-06-08')).toEqual([])
   })
 
-  it('pousse la 2e tâche après la 1re quand elles se chevauchent pour le même collab', () => {
+  it('RG-GANTT-0904 — pousse la 2e tâche après la 1re quand elles se chevauchent pour le même collab', () => {
     // Scénario du brief : Alice est en surcharge 25→29 mai ; la 2e tâche
     // (« Définir le message » 25 mai → 5 juin) doit être décalée pour
     // démarrer dès qu'Alice est libre, soit le 1er juin.
@@ -820,7 +820,7 @@ describe('replanTasks (v1.18)', () => {
     expect(workingDaysBetween(moves[0].newStart, moves[0].newEnd)).toBe(9)
   })
 
-  it('la priorité 1 gagne sur une tâche sans priorité (top-of-list ignoré)', () => {
+  it('RG-GANTT-0504 / RG-GANTT-0901 — la priorité 1 gagne sur une tâche sans priorité (top-of-list ignoré)', () => {
     // B est plus bas dans la liste mais a priorité 1 → B garde sa place,
     // A (sans priorité) est décalée.
     const tasks: Task[] = [
@@ -842,7 +842,7 @@ describe('replanTasks (v1.18)', () => {
     expect(moves[0].newStart).toBe('2026-05-21')
   })
 
-  it('tie-break sur la position dans la liste (top wins)', () => {
+  it('RG-GANTT-0901 — tie-break sur la position dans la liste (top wins)', () => {
     // Aucune priorité saisie, pas de lien : la 1re de la liste gagne.
     const tasks: Task[] = [
       mkTask('TOP', {
@@ -860,7 +860,7 @@ describe('replanTasks (v1.18)', () => {
     expect(moves.map((m) => m.id)).toEqual(['BOTTOM'])
   })
 
-  it('le prédécesseur est prioritaire sur le successeur même si moins prioritaire en numérique', () => {
+  it('RG-GANTT-0902 — le prédécesseur est prioritaire sur le successeur même si moins prioritaire en numérique', () => {
     // A prédécesseur de B. A n'a pas de priorité, B a priorité 1. La topo
     // impose A d'abord ; B est traité après et adapte ses dates.
     const tasks: Task[] = [
@@ -901,7 +901,7 @@ describe('replanTasks (v1.18)', () => {
     expect(replanTasks(tasks, '2026-05-18')).toEqual([])
   })
 
-  it('ignore les jalons et les phases', () => {
+  it('RG-GANTT-0900 — ignore les jalons et les phases', () => {
     const tasks: Task[] = [
       mkTask('phase', {
         kind: 'phase',
@@ -950,7 +950,7 @@ describe('checkCoherence — détection des incohérences', () => {
     expect(checkCoherence(tasks)).toEqual([])
   })
 
-  it('détecte une SURCHARGE entre 2 tâches du même collaborateur', () => {
+  it('RG-GANTT-0800 — détecte une SURCHARGE entre 2 tâches du même collaborateur', () => {
     const tasks: Task[] = [
       mkTask('A', {
         name: 'Audience',
@@ -973,7 +973,7 @@ describe('checkCoherence — détection des incohérences', () => {
     expect(issues[0].message).toMatch(/Audience.*Message|Message.*Audience/)
   })
 
-  it('ne signale PAS deux tâches qui se touchent sans se chevaucher', () => {
+  it('RG-GANTT-0800 — ne signale PAS deux tâches qui se touchent sans se chevaucher', () => {
     // A = lun→ven, B = lundi suivant : pas de chevauchement.
     const tasks: Task[] = [
       mkTask('A', {
@@ -990,7 +990,7 @@ describe('checkCoherence — détection des incohérences', () => {
     expect(checkCoherence(tasks)).toEqual([])
   })
 
-  it('ne signale pas une surcharge entre collabs différents', () => {
+  it('RG-GANTT-0801 — ne signale pas une surcharge entre collabs différents', () => {
     const tasks: Task[] = [
       mkTask('A', {
         collaborator_id: 'c1',
@@ -1006,7 +1006,7 @@ describe('checkCoherence — détection des incohérences', () => {
     expect(checkCoherence(tasks)).toEqual([])
   })
 
-  it('détecte une violation de PRÉDÉCESSEUR (Y avant fin X)', () => {
+  it('RG-GANTT-0802 — détecte une violation de PRÉDÉCESSEUR (Y avant fin X)', () => {
     const tasks: Task[] = [
       mkTask('X', {
         start_date: '2026-05-18',
@@ -1026,7 +1026,7 @@ describe('checkCoherence — détection des incohérences', () => {
     expect(pred?.taskIds[1]).toBe('X')
   })
 
-  it('détecte une violation de PRIORITÉ (faible avant haute, même collab)', () => {
+  it('RG-GANTT-0803 — détecte une violation de PRIORITÉ (faible avant haute, même collab)', () => {
     const tasks: Task[] = [
       mkTask('Important', {
         collaborator_id: 'c1',
@@ -1047,7 +1047,7 @@ describe('checkCoherence — détection des incohérences', () => {
     expect(issues[0].severity).toBe('warning')
   })
 
-  it("n'inflige pas de faux positif quand une seule tâche a une priorité", () => {
+  it("RG-GANTT-0804 — n'inflige pas de faux positif quand une seule tâche a une priorité", () => {
     const tasks: Task[] = [
       mkTask('A', {
         collaborator_id: 'c1',
@@ -1100,7 +1100,7 @@ describe('checkCoherence — détection des incohérences', () => {
 // v1.23 — Jours fériés français + sémantique « lag = délai minimum »
 // =============================================================================
 
-describe('isFrenchHoliday (v1.23)', () => {
+describe('isFrenchHoliday (v1.23 / RG-GANTT-1001)', () => {
   it('Fête nationale fixe : 14/07 chaque année', () => {
     expect(isFrenchHoliday(isoToDate('2026-07-14'))).toBe(true)
     expect(isFrenchHoliday(isoToDate('2027-07-14'))).toBe(true)
@@ -1275,7 +1275,7 @@ describe('v1.24 — RG-GANTT-0206 — effectiveTaskColor ignore le collab pour u
 // libre" ramènent maintenant la tâche à `MAX(projectStartDate, today)` et c'est
 // le comportement attendu. Cf. spec docs/superpowers/specs/2026-05-25-refonte-replan-projet.md.
 
-describe('v1.24 — RG-GANTT-0703 / 0709 — replan respecte la borne basse SNET', () => {
+describe('v1.24 — RG-GANTT-0703 / RG-GANTT-0709 — replan respecte la borne basse SNET', () => {
   // v2.3 — Fige today pour ne pas perturber les fixtures (cf. note dans
   // describe('replanTasks (v1.18)') plus haut).
   beforeEach(() => {
@@ -1339,7 +1339,7 @@ describe('v1.24 — RG-GANTT-0703 / 0709 — replan respecte la borne basse SNET
 })
 
 describe('v1.24 — RG-GANTT-0805 — detectNotBeforeViolations lève une erreur', () => {
-  it('une activité qui démarre avant son SNET déclenche une issue not_before', () => {
+  it('RG-GANTT-0707 — une activité qui démarre avant son SNET déclenche une issue not_before', () => {
     // Scénario : Léa a placé sa tâche au 05/06 mais sa contrainte « Ne doit
     // pas démarrer avant le » est au 15/06. Une incohérence rouge doit
     // apparaître dans le bandeau d'alertes.
@@ -1810,7 +1810,7 @@ describe('workloadCellStyleNormalized (v2.0 / F5)', () => {
 // (TaskEditor) et au blocage de replan (App).
 // =============================================================================
 
-describe('computeAllocationShortfall (v2.1 / F2.9 / RG-GANTT-1900 / RG-GANTT-1901 / RG-GANTT-1902)', () => {
+describe('computeAllocationShortfall (v2.1 / F2.9 / RG-GANTT-1950 / RG-GANTT-1951 / RG-GANTT-1952)', () => {
   // Fixture commune : projet "p", collab "alice".
   const PROJ = 'p'
   const ALICE = 'alice'
@@ -1876,7 +1876,7 @@ describe('computeAllocationShortfall (v2.1 / F2.9 / RG-GANTT-1900 / RG-GANTT-190
     expect(r.lastCoveredDay).toBe('2026-06-05')
   })
 
-  it('Q1 — 2 collabs Alice 1j (alloc finit tôt) + Bob 9j → missing = 0', () => {
+  it('RG-GANTT-1951 — Q1 — 2 collabs Alice 1j (alloc finit tôt) + Bob 9j → missing = 0', () => {
     // Tâche de 10j à partir du 20/07 lundi.
     // Alice : 100% jusqu'au 20/07 inclus → contribue 1 jour.
     // Bob   : 100% du 20/07 au 30/12 → contribue tout le reste.
@@ -1910,7 +1910,7 @@ describe('computeAllocationShortfall (v2.1 / F2.9 / RG-GANTT-1900 / RG-GANTT-190
     // En 9 jours calendaires, lundi 20 → mardi 28 (les week-ends comptent 0).
   })
 
-  it("Q2 — trou d'allocation au milieu : charge absorbée sur les jours dispos", () => {
+  it("RG-GANTT-1952 — Q2 — trou d'allocation au milieu : charge absorbée sur les jours dispos", () => {
     // Camille : 100% du 20/07 au 23/07 (Lun-Jeu, 4j) puis 100% à partir du 01/09.
     // Tâche : 5j à partir du 20/07.
     // → Absorbé : 4j en juillet + 1j le 01/09 = 5j. missing = 0.
@@ -2004,12 +2004,12 @@ describe('computeAllocationShortfall (v2.1 / F2.9 / RG-GANTT-1900 / RG-GANTT-190
 // date cible et les opérations (patch vs create selon Q5=C).
 // =============================================================================
 
-describe('computeExtensionPlan (v2.1 / F2.9.B / RG-GANTT-1903 / RG-GANTT-1904)', () => {
+describe('computeExtensionPlan (v2.1 / F2.9.B / RG-GANTT-1953 / RG-GANTT-1954)', () => {
   const PROJ = 'p'
   const ALICE = 'alice'
   const BOB = 'bob'
 
-  it('1 collab, allocation 100% existante, manque 3j à 100% → PATCH end_date', () => {
+  it('RG-GANTT-1953 — 1 collab, allocation 100% existante, manque 3j à 100% → PATCH end_date', () => {
     const plan = computeExtensionPlan({
       startDate: '2026-07-20', // lundi
       missing: 3,
@@ -2038,7 +2038,7 @@ describe('computeExtensionPlan (v2.1 / F2.9.B / RG-GANTT-1903 / RG-GANTT-1904)',
     expect(plan.feasible).toBe(true)
   })
 
-  it('Q5=C — changement de % → CREATE nouvelle allocation', () => {
+  it('RG-GANTT-1954 — Q5=C — changement de % → CREATE nouvelle allocation', () => {
     // Allocation existante à 100%, on demande une extension à 50%.
     // Q5=C : pct différent → CREATE (pas PATCH).
     const plan = computeExtensionPlan({
@@ -2140,7 +2140,7 @@ describe('computeExtensionPlan (v2.1 / F2.9.B / RG-GANTT-1903 / RG-GANTT-1904)',
 // Vérifie le scan multi-tâches qui prépare le récap du dialog F2.9.D.
 // =============================================================================
 
-describe('scanReplanShortfalls (v2.1 / F2.9.C / RG-GANTT-1906)', () => {
+describe('scanReplanShortfalls (v2.1 / F2.9.C / RG-GANTT-1956)', () => {
   const PROJ = 'p'
   const ALICE = 'alice'
 

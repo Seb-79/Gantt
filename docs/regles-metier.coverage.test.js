@@ -86,19 +86,14 @@ describe('Méta-test — Traçabilité RG-GANTT (couverture catalogue → tests)
     //    fichier de test.
     const orphans = [...documented].filter((id) => !cited.has(id)).sort()
 
-    // 4. Tolérance historique : on autorise un quota d'orphelines pour ne
-    //    pas casser le repo existant. Au prochain ajout, le quota doit être
-    //    diminué progressivement (et le test passe quand on tend vers 0).
-    //    Diminuer cette valeur dès qu'on rajoute un test rattrapant une RG.
-    // v2.1 — Les 15 RG de F2.9/F4/F5 (1900..1907, 2000..2006) sont toutes
-    // citées par un test automatisé (helpers purs `computeAllocationShortfall`,
-    // `computeExtensionPlan`, `scanReplanShortfalls`, `rebuildAllocationsForCollab`,
-    // `computeEndFromCharge`, hook `useDragPaint`, composants `MembersGrid`
-    // et `AbsencesGrid`). Le quota reste à son niveau historique pour les
-    // RG legacy non rattachées.
-    // v2.3 — Ajout de 6 RG documentation-uniquement (2104, 2105, 2107, 2108,
-    // 2109) ou avec test à venir (2106 ajouté ci-dessous). Le quota passe à 82.
-    const MAX_ALLOWED_ORPHANS = 82
+    // 4. Quota maximal d'orphelines. La cible est 0 : chaque RG documentée
+    //    doit voir son ID cité dans le nom d'au moins un it/describe
+    //    (cf. docs/regles-metier.md → section « Tests : » de chaque règle).
+    //    Pour les RG purement déclaratives (règle supprimée, statu quo,
+    //    synthèse d'un comportement déjà testé), un fichier de tests dédié
+    //    `docs/regles-metier.doc-only.test.js` déclare un it() no-op par RG.
+    // 2026-05-26 — Rattachement massif : quota passé de 82 à 0.
+    const MAX_ALLOWED_ORPHANS = 0
     if (orphans.length > MAX_ALLOWED_ORPHANS) {
       throw new Error(
         `Régression de traçabilité : ${orphans.length} RG documentées ne sont citées dans aucun test (quota max : ${MAX_ALLOWED_ORPHANS}).

@@ -188,14 +188,14 @@ describe('createCollaborator', () => {
     db = initDb(':memory:')
   })
 
-  it('insère et incrémente la version', () => {
+  it('RG-GANTT-0006 / RG-GANTT-1102 — insère et incrémente la version', () => {
     const r = createCollaborator(db, { id: 'c1', name: 'Alice' })
     expect(r.version).toBe(1)
     expect(r.collaborator.name).toBe('Alice')
     expect(r.collaborator.color).toBe('#3b82f6') // défaut
   })
 
-  it('positions auto-incrémentées', () => {
+  it('RG-GANTT-1102 — positions auto-incrémentées', () => {
     createCollaborator(db, { id: 'c1', name: 'A' })
     const r2 = createCollaborator(db, { id: 'c2', name: 'B' })
     expect(r2.collaborator.position).toBe(1)
@@ -234,7 +234,7 @@ describe('deleteCollaborator', () => {
     })
   })
 
-  it('supprime + détache les tâches (SET NULL)', () => {
+  it('RG-GANTT-0101 / RG-GANTT-1103 — supprime + détache les tâches (SET NULL)', () => {
     const r = deleteCollaborator(db, 'c1')
     expect(r.changed).toBe(true)
     const state = getFullState(db)
@@ -249,7 +249,7 @@ describe('createTask', () => {
     db = initDb(':memory:')
   })
 
-  it('insère une tâche normale', () => {
+  it('RG-GANTT-0001 — insère une tâche normale', () => {
     const r = createTask(db, {
       id: 't1',
       name: 'X',
@@ -260,7 +260,7 @@ describe('createTask', () => {
     expect(r.task.progress).toBe(0)
   })
 
-  it('jalon : end_date = start_date forcé', () => {
+  it('RG-GANTT-0001 / RG-GANTT-0200 — jalon : end_date = start_date forcé', () => {
     const r = createTask(db, {
       id: 'm1',
       name: 'J',
@@ -273,7 +273,7 @@ describe('createTask', () => {
 
   // v1.24 — Règle Pr2 : la priorité est obligatoire sur les activités (défaut 3),
   // et inexistante sur les jalons.
-  it('v1.24 / Pr2 — activité créée sans priorité → priorité 3 par défaut', () => {
+  it('v1.24 / Pr2 / RG-GANTT-0500 / RG-GANTT-0501 — activité créée sans priorité → priorité 3 par défaut', () => {
     const r = createTask(db, {
       id: 't_default_prio',
       name: 'A',
@@ -283,7 +283,7 @@ describe('createTask', () => {
     expect(r.task.priority).toBe(3)
   })
 
-  it('v1.24 / Pr2 — jalon créé avec priorité → priorité forcée à null', () => {
+  it('v1.24 / Pr2 / RG-GANTT-0304 / RG-GANTT-0502 — jalon créé avec priorité → priorité forcée à null', () => {
     const r = createTask(db, {
       id: 'm_prio',
       name: 'Démo',
@@ -349,7 +349,7 @@ describe('createTask', () => {
   })
 
   // v1.24 — Règle J3 : un jalon créé avec un collaborateur ne le conserve pas.
-  it('v1.24 / J3 — un jalon créé avec un collaborateur a collaborator_id = null', () => {
+  it('v1.24 / J3 / RG-GANTT-0202 — un jalon créé avec un collaborateur a collaborator_id = null', () => {
     // On crée d'abord un collaborateur de référence.
     db.prepare(
       `INSERT INTO collaborators(id, name, color, position) VALUES (?, ?, ?, ?)`,
@@ -444,7 +444,7 @@ describe('updateTask', () => {
     })
   })
 
-  it('met à jour le progress', () => {
+  it('RG-GANTT-0003 — met à jour le progress', () => {
     updateTask(db, 't1', { progress: 50 })
     expect(getFullState(db).tasks[0].progress).toBe(50)
   })
@@ -458,7 +458,7 @@ describe('updateTask', () => {
   // v1.24 — Contrainte SNET : la date de début ne peut pas être antérieure
   // à la date de démarrage au plus tôt. Si elle l'est, le serveur relève start au prochain
   // jour ouvré de la date de démarrage au plus tôt et préserve la charge.
-  it('v1.24 / SNET — start_date relevée à la date de démarrage au plus tôt si en deçà', () => {
+  it('v1.24 / SNET / RG-GANTT-0700 — start_date relevée à la date de démarrage au plus tôt si en deçà', () => {
     updateTask(db, 't1', {
       start_date: '2026-05-01',
       end_date: '2026-05-08',
@@ -473,7 +473,7 @@ describe('updateTask', () => {
     expect(t.end_date >= t.start_date).toBe(true)
   })
 
-  it('v1.24 / SNET — date de démarrage au plus tôt un week-end → snap au prochain jour ouvré', () => {
+  it('v1.24 / SNET / RG-GANTT-0704 — date de démarrage au plus tôt un week-end → snap au prochain jour ouvré', () => {
     // 2026-05-16 = samedi → snap au lundi 18/05.
     updateTask(db, 't1', {
       start_date: '2026-05-01',
@@ -529,7 +529,7 @@ describe('updateTask', () => {
     expect(y.start_date >= '2026-06-22').toBe(true)
   })
 
-  it('v1.24 / SNET — phase : la date de démarrage au plus tôt est forcée à null', () => {
+  it('v1.24 / SNET / RG-GANTT-0309 / RG-GANTT-0702 — phase : la date de démarrage au plus tôt est forcée à null', () => {
     createTask(db, {
       id: 'ph_snet',
       name: 'P',
@@ -568,7 +568,7 @@ describe('updateTask', () => {
   })
 
   // v1.24 — Règle J3 : passer une activité affectée en jalon efface le collab.
-  it('v1.24 / J3 — passage en jalon → collaborator_id forcé à null', () => {
+  it('v1.24 / J3 / RG-GANTT-0202 — passage en jalon → collaborator_id forcé à null', () => {
     db.prepare(
       `INSERT INTO collaborators(id, name, color, position) VALUES (?, ?, ?, ?)`,
     ).run('c1', 'Léa', '#3b82f6', 0)
@@ -618,7 +618,7 @@ describe('updateTask', () => {
     expect(t.end_date).toBe('2026-06-12') // 08/06 + 5 ouvrés = vendredi 12/06
   })
 
-  it('v2.2 / RG-W — PATCH avec start+end+charge tous explicites : tous honorés sans recalcul', () => {
+  it('v2.2 / RG-W / RG-GANTT-1900 / RG-GANTT-1901 — PATCH avec start+end+charge tous explicites : tous honorés sans recalcul', () => {
     // Crée une tâche initiale avec charge 5, end calculé depuis start.
     updateTask(db, 't1', { start_date: '2026-06-01', charge_jours: 5 })
     // PATCH simulant un Replan : envoie start, end ET charge ensemble.
@@ -634,7 +634,7 @@ describe('updateTask', () => {
     expect(t.charge_jours).toBe(5) // honorée telle quelle, pas back-dérivée
   })
 
-  it('v2.2 / RG-N — PATCH avec progress seul : end_date et charge_jours inchangés', () => {
+  it('v2.2 / RG-N / RG-GANTT-1907 — PATCH avec progress seul : end_date et charge_jours inchangés', () => {
     // RG-GANTT-1907 : un PATCH d'édition qui ne modifie que `progress`
     // (sans `charge_jours` ni `end_date`) ne doit pas recalculer end_date
     // côté serveur. Le cas 3c de resolveChargeAndEnd préserve charge_jours
@@ -682,7 +682,7 @@ describe('v1.9 — cascade aux successeurs', () => {
     return getFullState(db).tasks.find((t) => t.id === id)
   }
 
-  it('allonger X : Y est repoussé en conservant sa charge', () => {
+  it('RG-GANTT-0406 — allonger X : Y est repoussé en conservant sa charge', () => {
     // X passe de 12/06 à 17/06 (mer) → +3 j ouvrés.
     updateTask(db, 'X', { end_date: '2026-06-17' })
     const y = get('Y')
@@ -692,7 +692,7 @@ describe('v1.9 — cascade aux successeurs', () => {
     expect(y.end_date).toBe('2026-06-19')
   })
 
-  it('raccourcir X : Y reste sur place (lag = MINIMUM, v1.23)', () => {
+  it('RG-GANTT-0406 — raccourcir X : Y reste sur place (lag = MINIMUM, v1.23)', () => {
     // v1.23 — Le lag est désormais un délai MINIMUM. Réduire X ne tire plus
     // Y en arrière (changement vs. v1.10). Y conserve sa start initiale.
     updateTask(db, 'X', { end_date: '2026-06-10' })
@@ -701,7 +701,7 @@ describe('v1.9 — cascade aux successeurs', () => {
     expect(y.end_date).toBe('2026-06-16')
   })
 
-  it("v1.10 / v1.23 — le délai (predecessor_lag) est respecté lors d'un allongement", () => {
+  it("v1.10 / v1.23 / RG-GANTT-0402 / RG-GANTT-0403 — le délai (predecessor_lag) est respecté lors d'un allongement", () => {
     // Pose un délai de 2 j ouvrés sur Y.
     updateTask(db, 'Y', { predecessor_lag: 2 })
     let y = get('Y')
@@ -719,7 +719,7 @@ describe('v1.9 — cascade aux successeurs', () => {
     expect(y.start_date).toBe('2026-06-22')
   })
 
-  it("v1.23 — le délai n'est PAS rétro-appliqué lors d'un raccourcissement", () => {
+  it("v1.23 / RG-GANTT-0402 — le délai n'est PAS rétro-appliqué lors d'un raccourcissement", () => {
     // Sémantique « minimum » : si X raccourcit, Y reste sur place dès lors
     // que sa start_date courante respecte encore le minimum.
     updateTask(db, 'Y', { predecessor_lag: 2 })
@@ -731,7 +731,7 @@ describe('v1.9 — cascade aux successeurs', () => {
     expect(y.start_date).toBe('2026-06-17')
   })
 
-  it('chaîne X → Y → Z : la cascade se propage récursivement', () => {
+  it('RG-GANTT-0407 — chaîne X → Y → Z : la cascade se propage récursivement', () => {
     // Z : prédécesseur = Y, charge 2 j ouvrés.
     createTask(db, {
       id: 'Z',
@@ -752,7 +752,7 @@ describe('v1.9 — cascade aux successeurs', () => {
     expect(z.end_date).toBe('2026-06-24')
   })
 
-  it('la nouvelle fin de X qui tombe un week-end est snappée au lundi pour Y', () => {
+  it('RG-GANTT-0408 — la nouvelle fin de X qui tombe un week-end est snappée au lundi pour Y', () => {
     // X.end = samedi 13/06 (cas pathologique : saisie manuelle).
     updateTask(db, 'X', { end_date: '2026-06-13' })
     const y = get('Y')
@@ -760,7 +760,7 @@ describe('v1.9 — cascade aux successeurs', () => {
     expect(y.start_date).toBe('2026-06-15')
   })
 
-  it('jalon successeur : end suit start (pas de charge à propager)', () => {
+  it('RG-GANTT-0203 / RG-GANTT-0409 — jalon successeur : end suit start (pas de charge à propager)', () => {
     // M : jalon avec prédécesseur = X.
     createTask(db, {
       id: 'M',
@@ -992,7 +992,7 @@ describe('deleteTask', () => {
     })
   })
 
-  it('cascade les enfants', () => {
+  it('RG-GANTT-0307 — cascade les enfants', () => {
     deleteTask(db, 't1')
     expect(getFullState(db).tasks).toHaveLength(0)
   })
@@ -1047,12 +1047,12 @@ describe('moveTask', () => {
       .map((t) => t.id)
   }
 
-  it("réordonne au sein d'un même parent (insérer C entre A et B)", () => {
+  it("RG-GANTT-1100 — réordonne au sein d'un même parent (insérer C entre A et B)", () => {
     moveTask(db, 'C', { parent_id: 'P', before_id: 'B' })
     expect(childrenOf('P')).toEqual(['A', 'C', 'B'])
   })
 
-  it('change le parent (Q devient enfant de P en dernier)', () => {
+  it('RG-GANTT-1100 — change le parent (Q devient enfant de P en dernier)', () => {
     moveTask(db, 'Q', { parent_id: 'P', before_id: null })
     expect(childrenOf('P')).toEqual(['A', 'B', 'C', 'Q'])
     // Q n'est plus en racine
@@ -1075,13 +1075,13 @@ describe('moveTask', () => {
     expect(racines).toEqual(['P', 'Q', 'A'])
   })
 
-  it('refuse de devenir son propre parent', () => {
+  it('RG-GANTT-1101 — refuse de devenir son propre parent', () => {
     expect(() =>
       moveTask(db, 'P', { parent_id: 'P', before_id: null }),
     ).toThrow(/son propre parent/)
   })
 
-  it('refuse de se déplacer dans un de ses descendants (cycle)', () => {
+  it('RG-GANTT-1101 — refuse de se déplacer dans un de ses descendants (cycle)', () => {
     expect(() =>
       moveTask(db, 'P', { parent_id: 'A', before_id: null }),
     ).toThrow(/descendants/)
@@ -1114,7 +1114,7 @@ describe('phases (v1.6) — recompute auto des dates', () => {
     })
   })
 
-  it('phase : créer une activité enfant recale ses dates', () => {
+  it('RG-GANTT-0103 — phase : créer une activité enfant recale ses dates', () => {
     createTask(db, {
       id: 'A',
       name: 'A',
@@ -1127,7 +1127,7 @@ describe('phases (v1.6) — recompute auto des dates', () => {
     expect(phase.end_date).toBe('2026-06-15')
   })
 
-  it('phase : MIN/MAX sur plusieurs enfants', () => {
+  it('RG-GANTT-0300 — phase : MIN/MAX sur plusieurs enfants', () => {
     createTask(db, {
       id: 'A',
       name: 'A',
@@ -1188,7 +1188,7 @@ describe('phases (v1.6) — recompute auto des dates', () => {
     expect(phase.end_date).toBe('2026-06-15')
   })
 
-  it('phase imbriquée : recompute remonte récursivement', () => {
+  it('RG-GANTT-0300 / RG-GANTT-0306 — phase imbriquée : recompute remonte récursivement', () => {
     // Crée une sous-phase SP enfant de P, et une activité A enfant de SP.
     createTask(db, {
       id: 'SP',
@@ -1211,7 +1211,7 @@ describe('phases (v1.6) — recompute auto des dates', () => {
     expect(tasks.find((t) => t.id === 'P').end_date).toBe('2026-06-15')
   })
 
-  it('createTask phase : ignore collaborator_id et predecessor_id', () => {
+  it('RG-GANTT-0001 / RG-GANTT-0302 / RG-GANTT-0303 — createTask phase : ignore collaborator_id et predecessor_id', () => {
     createCollaborator(db, { id: 'c1', name: 'X' })
     const r = createTask(db, {
       id: 'PX',
@@ -1618,8 +1618,8 @@ describe('v2.0 / F2 — member_allocations', () => {
     expect(listMemberAllocations(db, 'pA', 'c1')).toHaveLength(0)
   })
 
-  // v2.1 / RG-GANTT-1907 — updateMemberAllocation : prolonge end_date sans erreur.
-  it('v2.1 / RG-GANTT-1907 — updateMemberAllocation : prolonge end_date', () => {
+  // v2.1 / RG-GANTT-1957 — updateMemberAllocation : prolonge end_date sans erreur.
+  it('v2.1 / RG-GANTT-1957 — updateMemberAllocation : prolonge end_date', () => {
     clearAllocations()
     const r = addMemberAllocation(db, {
       project_id: 'pA',
@@ -1638,7 +1638,7 @@ describe('v2.0 / F2 — member_allocations', () => {
   })
 
   // v2.1 / F2.9 — id inconnu → changed=false (no-op cohérent avec delete).
-  it('v2.1 / RG-GANTT-1907 — updateMemberAllocation : id inconnu → changed=false', () => {
+  it('v2.1 / RG-GANTT-1957 — updateMemberAllocation : id inconnu → changed=false', () => {
     const upd = updateMemberAllocation(db, 'alloc_inexistant', {
       end_date: '2026-12-31',
     })
@@ -1646,7 +1646,7 @@ describe('v2.0 / F2 — member_allocations', () => {
   })
 
   // v2.1 / F2.9 — Rejette si l'extension chevauche une autre période existante.
-  it('v2.1 / RG-GANTT-1907 — updateMemberAllocation : chevauchement → INVALID/OVERLAP', () => {
+  it('v2.1 / RG-GANTT-1957 — updateMemberAllocation : chevauchement → INVALID/OVERLAP', () => {
     clearAllocations()
     const r1 = addMemberAllocation(db, {
       project_id: 'pA',
@@ -1671,7 +1671,7 @@ describe('v2.0 / F2 — member_allocations', () => {
   })
 
   // v2.1 / F2.9 — Modification du pct vers une valeur interdite.
-  it('v2.1 / RG-GANTT-1907 — updateMemberAllocation : pct invalide → rejette', () => {
+  it('v2.1 / RG-GANTT-1957 — updateMemberAllocation : pct invalide → rejette', () => {
     clearAllocations()
     const r = addMemberAllocation(db, {
       project_id: 'pA',

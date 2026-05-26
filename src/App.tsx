@@ -48,6 +48,7 @@ import {
   MAX_DAY_WIDTH,
   MIN_DAY_WIDTH,
   rebuildAllocationsForCollab,
+  computeReplanResult,
   replanTasks,
   scanReplanShortfalls,
   sortTasksHierarchically,
@@ -416,6 +417,37 @@ export default function App() {
     if (!state || !state.current_project_id) return null
     return state.projects.find((p) => p.id === state.current_project_id) || null
   }, [state])
+
+  /**
+   * v2.3 / RG-GANTT-2104 — Stratégie « replan à la volée » (§ 4 de la spec).
+   *
+   * À chaque rendu, on recalcule en mémoire la timeline effective produite
+   * par le moteur Replan (sans persistance) et on la met à disposition des
+   * composants qui en dépendent (WorkloadChart, CoherenceAlert).
+   *
+   * Coût négligeable (~5-15 ms pour un projet typique) car mémoïsé par
+   * useMemo : recalculé UNIQUEMENT quand les inputs changent. Aucun appel
+   * réseau.
+   *
+   * Avantage : pas de désynchronisation possible entre l'état affiché et
+   * ce que produirait un Replan. Le Plan de charge reflète toujours la
+   * réalité du placement moteur, sans fausse surcharge par chevauchement
+   * visuel des plages [start, end].
+   */
+  const engineTimeline = useMemo(() => {
+    if (!state || !currentProject) return undefined
+    const ignoreToday = state.current_project_id
+      ? getAdvancePlanning(state.current_project_id)
+      : false
+    const result = computeReplanResult(
+      orderedTasks,
+      currentProject.project_start_date,
+      state.member_allocations,
+      state.collaborator_absences,
+      { ignoreToday },
+    )
+    return result.timeline
+  }, [state, currentProject, orderedTasks])
 
   /**
    * v1.4 — Au premier chargement de l'état, recale la fenêtre de visualisation
@@ -1815,6 +1847,11 @@ export default function App() {
                 globalTasks={effectiveGlobalTasks}
                 highlightUnderload={highlightUnderload}
                 onShiftWindow={shiftWindow}
+                // v2.3 / RG-GANTT-2104 — Timeline effective du moteur Replan
+                // (calculée à la volée par useMemo, cf. `engineTimeline` plus
+                // haut). En scope 'current', WorkloadChart la consomme comme
+                // source de vérité — fini les fausses surcharges visuelles.
+                engineTimeline={engineTimeline}
               />
             )}
             {view === 'members' && projectSelection.mode === 'single' && (

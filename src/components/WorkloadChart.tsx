@@ -32,6 +32,7 @@ import {
   isNonWorkingDay,
   workloadCellStyleNormalized,
 } from '../lib/utils'
+import type { TimelineEntry } from '../lib/utils'
 import { useHorizontalPan } from '../lib/useHorizontalPan'
 import type {
   Collaborator,
@@ -92,6 +93,16 @@ interface Props {
    * plan de charge. Même sémantique que dans GanttChart.
    */
   onShiftWindow?: (days: number) => void
+  /**
+   * v2.3 / RG-GANTT-2104 — Timeline effective produite par le moteur Replan
+   * (`computeReplanResult`). Si fournie, sert de source de vérité pour le
+   * Plan de charge : chaque tâche est peinte sur SES créneaux effectivement
+   * consommés par le moteur, et non sur sa plage `[start_date, end_date]`
+   * brute. Évite les fausses surcharges par chevauchement visuel.
+   *
+   * Optionnel : si `undefined`, fallback v2.2 (lecture par plage).
+   */
+  engineTimeline?: Map<string, TimelineEntry[]>
 }
 
 /**
@@ -112,6 +123,7 @@ export default function WorkloadChart({
   globalTasks,
   highlightUnderload = false,
   onShiftWindow,
+  engineTimeline,
 }: Props) {
   // v2.0 / F5 — Sélectionne la source de tâches selon le périmètre.
   //   • current → on regarde uniquement le projet courant (allocations &
@@ -199,6 +211,12 @@ export default function WorkloadChart({
     // jours concernés (cohérent avec le moteur de calcul de fin).
     // v2.0 / F5 — `tasksToShow` et `effectiveAllocations` varient selon
     // `scope` (current vs global) pour fournir le bon périmètre.
+    // v2.3 / RG-GANTT-2104 — En mode `current`, si l'appelant fournit la
+    // timeline effective du moteur (`engineTimeline`), elle est passée à
+    // `computeWorkload` qui peint la charge sur les créneaux réellement
+    // consommés. Évite la fausse surcharge par chevauchement visuel.
+    // En mode `global` on garde le comportement F1/F5 (lecture par plage)
+    // car la timeline n'est calculée que pour le projet courant.
     () =>
       computeWorkload(
         tasksToShow,
@@ -206,8 +224,17 @@ export default function WorkloadChart({
         dates,
         effectiveAllocations,
         absences,
+        scope === 'current' ? engineTimeline : undefined,
       ),
-    [tasksToShow, collaborators, dates, effectiveAllocations, absences],
+    [
+      tasksToShow,
+      collaborators,
+      dates,
+      effectiveAllocations,
+      absences,
+      scope,
+      engineTimeline,
+    ],
   )
 
   /**

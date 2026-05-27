@@ -2,9 +2,16 @@
 # =============================================================================
 # Pre-commit hook — Gantt
 # =============================================================================
-# Lance lint-staged (eslint --fix + prettier sur les fichiers stagés) puis la
-# suite de tests. Bloque le commit si un test échoue.
+# Lance dans l'ordre (échec rapide) :
+#   1. lint-staged (eslint --fix + prettier sur les fichiers stagés)
+#   2. typecheck (`tsc -b`) — rattrape les erreurs TS que vitest ignore
+#      (drift de types, props obsolètes, fixtures désynchronisées). Ajouté
+#      le 2026-05-26 après que le CI a remonté des erreurs TS préexistantes
+#      qui passaient en local car `npm test` (vitest) ne fait pas de
+#      typecheck strict. ~1.2 s sur ce repo.
+#   3. npm test (vitest) — suite complète.
+# Bloque le commit dès qu'une étape échoue.
 # Bypass possible avec `git commit --no-verify` en cas d'urgence.
 # =============================================================================
 
-npx lint-staged && npm test
+npx lint-staged && npm run typecheck && npm test

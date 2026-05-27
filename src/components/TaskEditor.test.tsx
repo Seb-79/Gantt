@@ -376,17 +376,14 @@ describe('TaskEditor — kinds spécifiques', () => {
   it("v2.2 / RG-U — kind='phase' : champ Avancement désactivé (lecture dérivée)", () => {
     render(
       <TaskEditor
-        open
-        mode="create"
         task={null}
-        defaultStart="2026-06-01"
-        defaultEnd="2026-06-30"
+        defaults={{ start_date: '2026-06-01', end_date: '2026-06-30' }}
         collaborators={[]}
         memberIds={[]}
         memberAllocations={[]}
         tasks={[]}
-        onCancel={() => {}}
         onSave={() => {}}
+        onClose={() => {}}
       />,
     )
     fireEvent.change(screen.getByLabelText(/Type/), {

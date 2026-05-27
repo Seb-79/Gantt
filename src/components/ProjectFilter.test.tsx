@@ -18,9 +18,9 @@ import { ProjectFilter } from './ProjectFilter'
 import type { Project, ProjectSelection } from '../lib/types'
 
 const PROJECTS: Project[] = [
-  { id: 'p1', name: 'Projet 1', position: 0 },
-  { id: 'p2', name: 'Projet 2', position: 1 },
-  { id: 'p3', name: 'Projet 3', position: 2 },
+  { id: 'p1', name: 'Projet 1', position: 0, project_start_date: '2026-01-01' },
+  { id: 'p2', name: 'Projet 2', position: 1, project_start_date: '2026-01-01' },
+  { id: 'p3', name: 'Projet 3', position: 2, project_start_date: '2026-01-01' },
 ]
 
 /** Helper : monte le composant avec une sélection initiale et un callback mocké. */

@@ -30,9 +30,14 @@ const CATALOGUE = fs.readFileSync(
   'utf-8',
 )
 
-/** Vérifie que l'ID `rgId` est défini comme un titre `### RG-GANTT-XXXX`. */
+/**
+ * Vérifie que l'ID `rgId` est défini comme un titre Markdown dans le
+ * catalogue (entre 1 et 4 dièses, peu importe le niveau choisi). Tolère
+ * une restructuration future qui passerait les titres de H3 à H2 ou H4
+ * sans changer le contenu.
+ */
 function expectDocumented(rgId) {
-  expect(CATALOGUE).toMatch(new RegExp(`### ${rgId}\\b`))
+  expect(CATALOGUE).toMatch(new RegExp(`(?:^|\\n)#{1,4} ${rgId}\\b`))
 }
 
 describe('RG documentation-only — Famille 10 (Replan)', () => {

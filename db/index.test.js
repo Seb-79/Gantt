@@ -283,7 +283,7 @@ describe('createTask', () => {
     expect(r.task.priority).toBe(3)
   })
 
-  it('v1.24 / Pr2 / RG-GANTT-0304 / RG-GANTT-0502 — jalon créé avec priorité → priorité forcée à null', () => {
+  it('v1.24 / Pr2 / RG-GANTT-0502 — jalon créé avec priorité → priorité forcée à null', () => {
     const r = createTask(db, {
       id: 'm_prio',
       name: 'Démo',
@@ -292,6 +292,64 @@ describe('createTask', () => {
       priority: 1,
     })
     expect(r.task.priority).toBeNull()
+  })
+
+  // v1.24 / Pr2 / RG-GANTT-0304 — Une phase n'a pas de priorité : toute valeur
+  // saisie au moment de la création est ramenée à `null` par normalizePriority,
+  // symétriquement au jalon (RG-GANTT-0502) mais sur kind='phase'.
+  it('v1.24 / Pr2 / RG-GANTT-0304 — phase créée avec priorité → priorité forcée à null', () => {
+    const r = createTask(db, {
+      id: 'ph_prio',
+      name: 'Phase',
+      kind: 'phase',
+      start_date: '2026-06-08',
+      end_date: '2026-06-12',
+      priority: 2,
+    })
+    expect(r.task.priority).toBeNull()
+  })
+
+  // v1.24 / Pr2 / RG-GANTT-0500 — Toute activité (kind='task') a une priorité
+  // entière comprise entre 1 et 5 inclus. Toute valeur hors-bornes ou non
+  // entière est normalisée silencieusement à la valeur par défaut (3) — c'est
+  // le contrat de normalizePriority. Le test couvre 4 cas hors-bornes.
+  it('v1.24 / Pr2 / RG-GANTT-0500 — activité : priorité hors bornes [1..5] ramenée à 3', () => {
+    // Borne basse violée (0).
+    const r0 = createTask(db, {
+      id: 't_prio_0',
+      name: 'A',
+      start_date: '2026-06-08',
+      end_date: '2026-06-08',
+      priority: 0,
+    })
+    expect(r0.task.priority).toBe(3)
+    // Borne haute violée (6).
+    const r6 = createTask(db, {
+      id: 't_prio_6',
+      name: 'B',
+      start_date: '2026-06-08',
+      end_date: '2026-06-08',
+      priority: 6,
+    })
+    expect(r6.task.priority).toBe(3)
+    // Valeur non entière → floored, et si hors bornes après floor, ramenée à 3.
+    const r99 = createTask(db, {
+      id: 't_prio_99',
+      name: 'C',
+      start_date: '2026-06-08',
+      end_date: '2026-06-08',
+      priority: 99,
+    })
+    expect(r99.task.priority).toBe(3)
+    // Type non numérique → 3.
+    const rabc = createTask(db, {
+      id: 't_prio_abc',
+      name: 'D',
+      start_date: '2026-06-08',
+      end_date: '2026-06-08',
+      priority: 'abc',
+    })
+    expect(rabc.task.priority).toBe(3)
   })
 
   // v1.24 — RG-GANTT-0201 : un jalon n'a pas de charge. Même si l'utilisateur

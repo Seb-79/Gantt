@@ -233,7 +233,7 @@ Une phase n'a pas de prédécesseur ni de délai associés.
 
 Une phase n'a pas de priorité.
 
-**Tests :** `db/index.test.js` → « v1.24 / Pr2 — jalon créé avec priorité → priorité forcée à null » (étendu aux phases via normalizePriority).
+**Tests :** `db/index.test.js` → « v1.24 / Pr2 / RG-GANTT-0304 — phase créée avec priorité → priorité forcée à null ».
 
 ### RG-GANTT-0305
 
@@ -362,9 +362,11 @@ référence à ses successeurs.
 ### RG-GANTT-0500
 
 **(v1.24, Pr2)** Toute activité a une priorité entière comprise entre
-**1 et 5**, où 1 est la plus prioritaire et 5 la moins.
+**1 et 5**, où 1 est la plus prioritaire et 5 la moins. Toute valeur
+hors bornes (0, 6, 99, non numérique, NaN) est silencieusement
+**normalisée à 3** par `normalizePriority` côté DAL.
 
-**Tests :** `db/index.test.js` → « v1.24 / Pr2 — activité créée sans priorité → priorité 3 par défaut ».
+**Tests :** `db/index.test.js` → « v1.24 / Pr2 / RG-GANTT-0500 — activité : priorité hors bornes [1..5] ramenée à 3 » (4 cas hors bornes).
 
 ### RG-GANTT-0501
 
@@ -1779,7 +1781,7 @@ détection ne devrait donc jamais lever d'alerte « surcharge » sur un
 
 Le détecteur continue de signaler les autres incohérences :
 prédécesseurs violés (RG-GANTT-0904), priorité violée (RG-GANTT-0803),
-SNET violé (RG-GANTT-0805), FNLT dépassée (RG-GANTT-1503), prédécesseur
+SNET violé (RG-GANTT-0805), FNLT dépassée (RG-GANTT-1510), prédécesseur
 terminé dans le futur (RG-GANTT-2106).
 
 **Tests :** `utils.test.ts` → tests existants `detectOverloads` (rétrocompat) ; câblage UI à venir.

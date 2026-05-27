@@ -2336,6 +2336,13 @@ export interface CoherenceIssue {
   taskIds: string[]
   /** Message lisible (français), prêt à afficher dans l'UI. */
   message: string
+  /** v2.3 (2026-05-27) — `false` quand un Replan ne peut PAS résoudre cette
+   *  incohérence (typiquement : au moins une des tâches en conflit a
+   *  `progress = 100` donc elle est figée par le moteur). Le bandeau masque
+   *  alors le bouton Replan si TOUTES les issues affichées ont ce flag à
+   *  `false`. Absent ou `true` = corrigeable par Replan (comportement par
+   *  défaut, rétrocompatible). */
+  fixableByReplan?: boolean
 }
 
 /**
@@ -2452,6 +2459,15 @@ function detectPredecessorViolations(tasks: Task[]): CoherenceIssue[] {
  * v1.21 — Détecte la violation de priorité entre 2 tâches d'un même
  * collaborateur, sous la convention « priorité numérique la plus basse =
  * la plus prioritaire ». Renvoie `null` quand la paire est saine.
+ *
+ * v2.3 (2026-05-27) — Cas particulier : si AU MOINS UNE des deux tâches a
+ * `progress = 100` (terminée), le moteur Replan ne la déplace pas (cf.
+ * `computeReplanResult` : skip + `prefillCompletedIntervals`). Lancer un
+ * Replan ne changera donc rien à l'ordre chronologique observé. On garde
+ * malgré tout l'incohérence dans le bandeau (l'utilisateur doit la corriger
+ * à la main) mais avec un message explicite et `fixableByReplan = false`
+ * pour que `CoherenceAlert` masque le bouton Replan quand c'est le seul
+ * type d'issue présent.
  */
 function priorityIssueForPair(a: Task, b: Task): CoherenceIssue | null {
   if (a.priority == null || b.priority == null) return null
@@ -2459,6 +2475,22 @@ function priorityIssueForPair(a: Task, b: Task): CoherenceIssue | null {
   const high = a.priority < b.priority ? a : b
   const low = high === a ? b : a
   if (low.start_date >= high.start_date) return null
+  // v2.3 (2026-05-27) — Détection du cas « tâche figée » : si la haute prio
+  // OU la basse prio est terminée à 100 %, le Replan est sans effet sur ce
+  // conflit. On change la formulation pour orienter l'utilisateur vers la
+  // vraie correction (dates ou progress de la tâche figée).
+  const highCompleted = (high.progress ?? 0) === 100
+  const lowCompleted = (low.progress ?? 0) === 100
+  if (highCompleted || lowCompleted) {
+    const completed = highCompleted ? high : low
+    return {
+      kind: 'priority',
+      severity: 'warning',
+      taskIds: [high.id, low.id],
+      message: `Priorité : « ${low.name} » (P${low.priority}) commence avant « ${high.name} » (P${high.priority}). « ${completed.name} » est terminée (100 %) et figée par le Replan ; corrigez ses dates ou son progress si l'ordre attendu n'est pas respecté.`,
+      fixableByReplan: false,
+    }
+  }
   return {
     kind: 'priority',
     severity: 'warning',

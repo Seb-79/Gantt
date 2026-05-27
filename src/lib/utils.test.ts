@@ -1045,6 +1045,37 @@ describe('checkCoherence — détection des incohérences', () => {
     expect(issues).toHaveLength(1)
     expect(issues[0].kind).toBe('priority')
     expect(issues[0].severity).toBe('warning')
+    // v2.3 (2026-05-27) — Sans tâche terminée à 100 %, l'issue est corrigeable
+    // par Replan : on s'assure que le flag reste absent (= true par défaut).
+    expect(issues[0].fixableByReplan).toBeUndefined()
+  })
+
+  it('RG-GANTT-0805 (v2.3, 2026-05-27) — priorité avec tâche terminée : message dédié + fixableByReplan=false', () => {
+    // Cas réel : « Définir le message » (P1) est terminée (progress=100), donc
+    // figée par le moteur ; « Voix off » (P3) est placée avant elle par le
+    // Replan car le créneau est libre avant le bloc figé. L'alerte doit
+    // exister mais signaler que le Replan ne peut rien y faire.
+    const tasks: Task[] = [
+      mkTask('Définir le message', {
+        collaborator_id: 'c1',
+        priority: 1,
+        progress: 100,
+        start_date: '2026-06-05',
+        end_date: '2026-06-12',
+      }),
+      mkTask('Voix off', {
+        collaborator_id: 'c1',
+        priority: 3,
+        progress: 0,
+        start_date: '2026-06-01',
+        end_date: '2026-06-01',
+      }),
+    ]
+    const issues = checkCoherence(tasks).filter((i) => i.kind === 'priority')
+    expect(issues).toHaveLength(1)
+    expect(issues[0].fixableByReplan).toBe(false)
+    expect(issues[0].message).toContain('terminée')
+    expect(issues[0].message).toContain('Définir le message')
   })
 
   it("RG-GANTT-0804 — n'inflige pas de faux positif quand une seule tâche a une priorité", () => {

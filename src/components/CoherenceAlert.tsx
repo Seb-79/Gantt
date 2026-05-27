@@ -7,6 +7,11 @@
 // v2.2 — RG-GANTT-0905 (Replan partiel) abandonnée : un seul bouton « Replan
 // complet » qui replanifie l'intégralité du projet.
 //
+// v2.3 (2026-05-27) — Le bouton « Replan complet » est masqué quand TOUTES les
+// issues affichées ont `fixableByReplan === false` (typiquement : conflit de
+// priorité impliquant une tâche terminée à 100 % donc figée par le moteur).
+// Évite de proposer un Replan qui n'aurait aucun effet.
+//
 // Le bandeau disparaît automatiquement quand `issues.length === 0`.
 // =============================================================================
 
@@ -25,12 +30,19 @@ interface Props {
  *   • rouge (erreur)   si au moins une issue `severity === 'error'`
  *   • orange (warning) sinon (priorité seule).
  *
+ * v2.3 (2026-05-27) — Masque le bouton Replan quand AUCUNE issue affichée
+ * n'est corrigeable par Replan (toutes ont `fixableByReplan === false`).
+ *
  * @param issues    Issues à afficher (Vide → rend `null`).
  * @param onReplan  Handler du bouton « Replan complet ».
  */
 export default function CoherenceAlert({ issues, onReplan }: Props) {
   if (issues.length === 0) return null
   const hasError = issues.some((i) => i.severity === 'error')
+  // v2.3 (2026-05-27) — Le bouton n'a de sens que s'il existe au moins une
+  // issue que le Replan peut potentiellement corriger. Une issue sans flag
+  // explicite est considérée corrigeable (rétrocompat).
+  const showReplanButton = issues.some((i) => i.fixableByReplan !== false)
   // Palette : rouge si au moins une erreur, orange sinon.
   const palette = hasError
     ? {
@@ -82,16 +94,18 @@ export default function CoherenceAlert({ issues, onReplan }: Props) {
             ))}
           </ul>
         </div>
-        <div className="flex flex-col gap-1 shrink-0">
-          <button
-            type="button"
-            className="h-7 px-2 text-xs rounded border border-slate-300 bg-white hover:bg-slate-100 whitespace-nowrap"
-            onClick={onReplan}
-            title="Replanifier l'intégralité du projet"
-          >
-            🔄 Replan complet
-          </button>
-        </div>
+        {showReplanButton && (
+          <div className="flex flex-col gap-1 shrink-0">
+            <button
+              type="button"
+              className="h-7 px-2 text-xs rounded border border-slate-300 bg-white hover:bg-slate-100 whitespace-nowrap"
+              onClick={onReplan}
+              title="Replanifier l'intégralité du projet"
+            >
+              🔄 Replan complet
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

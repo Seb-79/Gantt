@@ -38,6 +38,7 @@ import { ProjectFilter } from './components/ProjectFilter'
 // de l'app. Voir src/lib/dialogs.ts pour le détail.
 import { askAlert, askConfirm, askPrompt } from './lib/dialogs'
 import { getAdvancePlanning } from './lib/storage'
+import { useAlertDisplay } from './lib/useAlertDisplay'
 import {
   checkCoherence,
   clampDayWidth,
@@ -411,6 +412,11 @@ export default function App() {
     () => checkCoherence(orderedTasks),
     [orderedTasks],
   )
+
+  // v2.4 — État d'affichage du bandeau de cohérence, mémorisé par projet
+  // (cf. useAlertDisplay). `applyAlertDisplay` met à jour + persiste.
+  const { display: alertDisplay, setDisplay: applyAlertDisplay } =
+    useAlertDisplay(state?.current_project_id)
 
   /** Objet du projet courant (résolu depuis `state.projects`). */
   const currentProject = useMemo(() => {
@@ -967,6 +973,10 @@ export default function App() {
           }
         }
         await fetchState()
+        // v2.4 — Un Replan vient d'être appliqué : le bandeau de cohérence
+        // doit réapparaître déplié, même s'il avait été replié ou acquitté
+        // pour ce projet.
+        applyAlertDisplay('expanded')
       } catch (err) {
         console.error('[replan]', err)
         setStatus('error')
@@ -975,7 +985,7 @@ export default function App() {
         )
       }
     },
-    [fetchState],
+    [fetchState, applyAlertDisplay],
   )
 
   /**
@@ -1804,7 +1814,11 @@ export default function App() {
             {view === 'gantt' && (
               <CoherenceAlert
                 issues={coherenceIssues}
+                display={alertDisplay}
                 onReplan={() => handleOpenReplan()}
+                onCollapse={() => applyAlertDisplay('collapsed')}
+                onExpand={() => applyAlertDisplay('expanded')}
+                onAcknowledge={() => applyAlertDisplay('acknowledged')}
               />
             )}
             {/* v2.0 / F1 — Trois vues désormais : 'gantt', 'workload' ou

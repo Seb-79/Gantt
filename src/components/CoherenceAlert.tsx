@@ -16,12 +16,21 @@
 // =============================================================================
 
 import type { CoherenceIssue } from '../lib/utils'
+import type { AlertDisplay } from '../lib/storage'
 
 interface Props {
   /** Incohérences à afficher (cf. `checkCoherence`). Vide → bandeau caché. */
   issues: CoherenceIssue[]
+  /** État d'affichage courant (mémorisé par projet, cf. `getAlertDisplay`). */
+  display: AlertDisplay
   /** Lance un Replan (toutes les tâches sont candidates au déplacement). */
   onReplan: () => void
+  /** Replie le bandeau en pastille ⚠️ (état 'collapsed'). */
+  onCollapse: () => void
+  /** Déplie le bandeau depuis la pastille (état 'expanded'). */
+  onExpand: () => void
+  /** Acquitte l'alerte : la masque entièrement (état 'acknowledged'). */
+  onAcknowledge: () => void
 }
 
 /**
@@ -33,11 +42,29 @@ interface Props {
  * v2.3 (2026-05-27) — Masque le bouton Replan quand AUCUNE issue affichée
  * n'est corrigeable par Replan (toutes ont `fixableByReplan === false`).
  *
- * @param issues    Issues à afficher (Vide → rend `null`).
- * @param onReplan  Handler du bouton « Replan complet ».
+ * v2.4 — Masquage par état (`display`), mémorisé par projet :
+ *   • 'acknowledged' → rend `null` (acquitté).
+ *   • 'collapsed'    → pastille ⚠️ cliquable (rouvre le bandeau).
+ *   • 'expanded'     → bandeau complet + contrôles « replier » / « acquitter ».
+ * Un Replan exécuté repasse l'état à 'expanded' (géré côté `App`).
+ *
+ * @param issues         Issues à afficher (Vide → rend `null`).
+ * @param display        État d'affichage courant.
+ * @param onReplan       Handler du bouton « Replan complet ».
+ * @param onCollapse     Replie en pastille.
+ * @param onExpand       Déplie depuis la pastille.
+ * @param onAcknowledge  Acquitte (masque tout).
  */
-export default function CoherenceAlert({ issues, onReplan }: Props) {
-  if (issues.length === 0) return null
+export default function CoherenceAlert({
+  issues,
+  display,
+  onReplan,
+  onCollapse,
+  onExpand,
+  onAcknowledge,
+}: Props) {
+  // Rien à signaler, ou alerte acquittée → aucun rendu.
+  if (issues.length === 0 || display === 'acknowledged') return null
   const hasError = issues.some((i) => i.severity === 'error')
   // v2.3 (2026-05-27) — Le bouton n'a de sens que s'il existe au moins une
   // issue que le Replan peut potentiellement corriger. Une issue sans flag
@@ -55,6 +82,33 @@ export default function CoherenceAlert({ issues, onReplan }: Props) {
         header: 'text-amber-800',
         bullet: 'text-amber-600',
       }
+
+  // État 'collapsed' : on ne montre qu'une pastille ⚠️ avec le compteur. Un
+  // clic la rouvre (onExpand). La couleur suit la sévérité comme le bandeau.
+  if (display === 'collapsed') {
+    const pill = hasError
+      ? 'border-red-300 bg-red-50 text-red-800 hover:bg-red-100'
+      : 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+    return (
+      <button
+        type="button"
+        data-testid="coherence-alert-pill"
+        onClick={onExpand}
+        title="Afficher les incohérences détectées"
+        aria-label={`${issues.length} incohérence${
+          issues.length > 1 ? 's' : ''
+        } détectée${issues.length > 1 ? 's' : ''} — afficher`}
+        className={[
+          'mb-3 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold shadow-sm',
+          pill,
+        ].join(' ')}
+      >
+        <span aria-hidden="true">⚠️</span>
+        <span>{issues.length}</span>
+      </button>
+    )
+  }
+
   return (
     <div
       role="alert"
@@ -94,8 +148,8 @@ export default function CoherenceAlert({ issues, onReplan }: Props) {
             ))}
           </ul>
         </div>
-        {showReplanButton && (
-          <div className="flex flex-col gap-1 shrink-0">
+        <div className="flex flex-col gap-1 shrink-0">
+          {showReplanButton && (
             <button
               type="button"
               className="h-7 px-2 text-xs rounded border border-slate-300 bg-white hover:bg-slate-100 whitespace-nowrap"
@@ -104,8 +158,31 @@ export default function CoherenceAlert({ issues, onReplan }: Props) {
             >
               🔄 Replan complet
             </button>
+          )}
+          {/* v2.4 — Contrôles de masquage. « Replier » → pastille ⚠️ ;
+              « Acquitter » → masque tout. L'état est mémorisé par projet et
+              redéployé au prochain Replan (géré côté App). */}
+          <div className="flex gap-1">
+            <button
+              type="button"
+              className="h-7 flex-1 px-2 text-xs rounded border border-slate-300 bg-white hover:bg-slate-100 whitespace-nowrap"
+              onClick={onCollapse}
+              title="Replier en icône"
+              aria-label="Replier l'alerte en icône"
+            >
+              – Replier
+            </button>
+            <button
+              type="button"
+              className="h-7 flex-1 px-2 text-xs rounded border border-slate-300 bg-white hover:bg-slate-100 whitespace-nowrap"
+              onClick={onAcknowledge}
+              title="Acquitter l'alerte (la masquer jusqu'au prochain Replan)"
+              aria-label="Acquitter l'alerte"
+            >
+              ✕ Acquitter
+            </button>
           </div>
-        )}
+        </div>
       </div>
     </div>
   )

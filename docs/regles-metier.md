@@ -1475,6 +1475,22 @@ affectations existantes sont ainsi préservées sans intervention.
 
 **Tests :** `db/index.test.js` → « migration auto-pop depuis tasks.collaborator_id ».
 
+### RG-GANTT-1707
+
+Le plan de charge en **mode global** (cross-projet) doit refléter la même
+charge multi-collaborateur que le mode projet. L'endpoint
+`/api/workload/global` expose donc, pour chaque activité, la liste complète
+`collaborators[]` lue depuis `task_assignments` (et plus seulement le champ
+legacy `tasks.collaborator_id`). Sans cela, une tâche affectée à plusieurs
+collaborateurs ne peignait sa charge que sur le 1er d'entre eux en vue
+globale, alors qu'elle apparaissait correctement répartie en vue projet
+(qui lit `/api/state`, lequel joint déjà `task_assignments`). Une tâche
+sans aucun collaborateur affecté (ni legacy ni multi-collab) est exclue du
+résultat (elle ne contribue à aucune ligne du plan de charge). _(v2.3,
+2026-05-28.)_
+
+**Tests :** `server/app.test.js` → « expose la liste multi-collab (collaborators[]) ».
+
 ---
 
 ## Famille 19 — Allocation absorbante (v2.1 / F2.9)

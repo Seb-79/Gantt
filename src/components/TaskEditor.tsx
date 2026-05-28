@@ -123,10 +123,6 @@ export default function TaskEditor({
    *  Source de vérité = `collaborators[]` côté Task ; fallback sur l'alias
    *  legacy `collaborator_id` pour les tâches d'avant F6. */
   const [collabIds, setCollabIds] = useState<string[]>([])
-  /** v2.0 / F6 — Id en cours de sélection dans la dropdown d'ajout (vide tant
-   *  qu'aucun nouveau collab n'est choisi). Distinct de `collabIds` qui est
-   *  la liste actuellement affectée. */
-  const [picked, setPicked] = useState<string>('')
   const [parentId, setParentId] = useState<string>('')
   /** v1.22 — Liste multi-prédécesseurs (1 entrée = 1 lien avec son lag).
    *  Remplace l'ancien couple `predecessorId` / `lag` (mono-pred). La date de
@@ -190,7 +186,6 @@ export default function TaskEditor({
     // v2.0 / F6 — Init de la liste multi-collab via helper unifié
     // (priorité `collaborators[]`, fallback `collaborator_id` legacy).
     setCollabIds(taskCollabIds(src))
-    setPicked('')
     setParentId(src.parent_id || '')
     // v1.22 — Liste de prédécesseurs : privilégie le nouveau format
     // `predecessors[]` ; retombe sur l'alias mono-pred `predecessor_id` /
@@ -936,11 +931,27 @@ export default function TaskEditor({
                       </div>
                     )}
                     {addableCollaborators.length > 0 && (
-                      <div className="mt-1 flex gap-1">
+                      <div className="mt-1">
+                        {/* v2.3 (2026-05-28) — Auto-ajout au select : dès que
+                            l'utilisateur choisit un collaborateur dans la
+                            dropdown, il passe en chip sans étape intermédiaire.
+                            Le bouton « + » a été retiré : trop facile à oublier
+                            (le collaborateur restait dans `picked` mais hors
+                            de `collabIds`, donc absent du PATCH au save). */}
                         <select
-                          className="flex-1 block border border-slate-300 rounded px-2 py-1"
-                          value={picked}
-                          onChange={(e) => setPicked(e.target.value)}
+                          className="block w-full border border-slate-300 rounded px-2 py-1"
+                          value=""
+                          onChange={(e) => {
+                            const cId = e.target.value
+                            if (!cId) return
+                            setCollabIds((ids) =>
+                              ids.includes(cId) ? ids : [...ids, cId],
+                            )
+                            // Reset implicite : `value=""` est contrôlé donc
+                            // le select repasse à « — ajouter — » au prochain
+                            // render.
+                          }}
+                          title="Choisissez pour affecter directement"
                         >
                           <option value="">— ajouter —</option>
                           {addableCollaborators.map((c) => (
@@ -949,21 +960,6 @@ export default function TaskEditor({
                             </option>
                           ))}
                         </select>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (!picked) return
-                            setCollabIds((ids) =>
-                              ids.includes(picked) ? ids : [...ids, picked],
-                            )
-                            setPicked('')
-                          }}
-                          disabled={!picked}
-                          className="px-2 rounded bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed"
-                          title="Ajouter ce collaborateur à la tâche"
-                        >
-                          +
-                        </button>
                       </div>
                     )}
                     {memberIds && eligibleCollaborators.length === 0 && (

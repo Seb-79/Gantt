@@ -820,15 +820,55 @@ describe('v2.0 / F1 — GET /api/state.current_project_members', () => {
 // =============================================================================
 
 describe('v2.0 / F5 — /api/workload/global', () => {
-  it('RG-GANTT-1621 — GET retourne les activités cross-projet (kind=task, collab non-null)', async () => {
+  it('RG-GANTT-1621 — GET retourne les activités cross-projet (kind=task, au moins un collab affecté)', async () => {
     const app = makeApp()
     const r = await request(app).get('/api/workload/global').expect(200)
     expect(Array.isArray(r.body.tasks)).toBe(true)
-    // Tous les retours doivent être des activités assignées.
+    // v2.3 (2026-05-28) — Le filtre métier autorise désormais soit le legacy
+    // `collaborator_id`, soit la présence d'au moins UNE entrée dans
+    // `collaborators[]` (multi-collab via task_assignments).
     for (const t of r.body.tasks) {
       expect(t.kind).toBe('task')
-      expect(t.collaborator_id).not.toBeNull()
+      const hasCollab =
+        t.collaborator_id ||
+        (Array.isArray(t.collaborators) && t.collaborators.length > 0)
+      expect(hasCollab).toBeTruthy()
     }
+  })
+
+  it('RG-GANTT-1707 (v2.3, 2026-05-28) — expose la liste multi-collab (collaborators[])', async () => {
+    // Repro : ajoute une 2e affectation à une tâche existante via PATCH
+    // multi-collab. L'endpoint global doit ensuite renvoyer la tâche avec
+    // les DEUX collaborateurs dans `collaborators[]` (avant la correction,
+    // seul le legacy `collaborator_id` était visible → le 2e collab était
+    // invisible en plan de charge global, alors qu'il l'était en mode
+    // projet — incohérence à l'origine de ce ticket).
+    const app = makeApp()
+    const state = await request(app).get('/api/state').expect(200)
+    const taskWithCollab = state.body.tasks.find(
+      (t) => t.kind === 'task' && t.collaborator_id,
+    )
+    expect(taskWithCollab).toBeTruthy()
+    // Trouve un 2e collaborateur différent du 1er. La membership projet est
+    // auto-soignée par le DAL (`ensureCollabIsMember`) au PATCH multi-collab,
+    // donc inutile de la pré-créer ici.
+    const otherMember = state.body.collaborators
+      .map((c) => c.id)
+      .find((id) => id !== taskWithCollab.collaborator_id)
+    expect(otherMember).toBeTruthy()
+    // Affecte les deux collabs à la tâche (multi-collab).
+    await request(app)
+      .patch(`/api/tasks/${taskWithCollab.id}`)
+      .send({
+        collaborator_ids: [taskWithCollab.collaborator_id, otherMember],
+      })
+      .expect(200)
+    const r = await request(app).get('/api/workload/global').expect(200)
+    const updated = r.body.tasks.find((t) => t.id === taskWithCollab.id)
+    expect(updated).toBeTruthy()
+    expect(Array.isArray(updated.collaborators)).toBe(true)
+    const ids = updated.collaborators.map((c) => c.id).sort()
+    expect(ids).toEqual([taskWithCollab.collaborator_id, otherMember].sort())
   })
 
   it('RG-GANTT-1620 — GET /api/state expose all_member_allocations', async () => {

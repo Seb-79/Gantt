@@ -41,6 +41,7 @@ import {
   getFullState,
   getVersion,
   listAbsences,
+  listGlobalWorkloadTasks,
   listMemberAllocations,
   listProjectMembers,
   listProjects,
@@ -148,16 +149,12 @@ export function createApp(db, { requestLog = true } = {}) {
   app.get(
     '/api/workload/global',
     safeRoute((_req, res) => {
-      const tasks = db
-        .prepare(
-          `SELECT id, name, kind, start_date, end_date,
-                  collaborator_id, project_id, charge_jours
-             FROM tasks
-             WHERE kind = 'task' AND collaborator_id IS NOT NULL
-             ORDER BY project_id ASC, position ASC, id ASC`,
-        )
-        .all()
-      res.json({ tasks })
+      // v2.3 (2026-05-28) — Délègue à `listGlobalWorkloadTasks` qui joint
+      // `task_assignments` et expose `collaborators[]`. Avant, l'endpoint
+      // renvoyait uniquement le legacy `collaborator_id`, ce qui rendait
+      // invisible la charge multi-collab dans le plan de charge global
+      // (par ex. : tâche affectée à Alice + Benoît → seule Alice était peinte).
+      res.json({ tasks: listGlobalWorkloadTasks(db) })
     }),
   )
 

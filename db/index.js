@@ -417,25 +417,40 @@ function enrichTasksWithPredecessors(db, tasks, currentId) {
  * et enrichit chaque tâche en place avec `collaborators[]`. Tableau toujours
  * présent (vide pour jalons/phases). Extrait pour limiter la complexité
  * cognitive de `getFullState`.
+ *
+ * v2.3 (2026-05-28) — `currentId` accepte désormais `null` (= mode global,
+ * tous projets confondus). Indispensable pour `/api/workload/global` qui
+ * sinon n'expose que le legacy `collaborator_id` et perd silencieusement
+ * les affectations multi-collab (RG-GANTT-1707).
  */
 function enrichTasksWithAssignments(db, tasks, currentId) {
   const assignmentsByTask = new Map()
-  if (currentId) {
-    const rows = db
-      .prepare(
-        `SELECT a.task_id, a.collaborator_id
-           FROM task_assignments a
-           JOIN tasks t ON t.id = a.task_id
-           WHERE t.project_id = ?
-           ORDER BY a.collaborator_id ASC`,
-      )
-      .all(currentId)
-    for (const r of rows) {
-      if (!assignmentsByTask.has(r.task_id)) {
-        assignmentsByTask.set(r.task_id, [])
-      }
-      assignmentsByTask.get(r.task_id).push({ id: r.collaborator_id })
+  // v2.3 (2026-05-28) — Mode global : on lit toutes les affectations sans
+  // filtrer par projet. Sans cette branche, les tâches en `tasks` mais hors
+  // du projet courant héritaient d'un `collaborators: []` vide, faussant
+  // tout calcul cross-projet.
+  const rows = currentId
+    ? db
+        .prepare(
+          `SELECT a.task_id, a.collaborator_id
+             FROM task_assignments a
+             JOIN tasks t ON t.id = a.task_id
+             WHERE t.project_id = ?
+             ORDER BY a.collaborator_id ASC`,
+        )
+        .all(currentId)
+    : db
+        .prepare(
+          `SELECT task_id, collaborator_id
+             FROM task_assignments
+             ORDER BY collaborator_id ASC`,
+        )
+        .all()
+  for (const r of rows) {
+    if (!assignmentsByTask.has(r.task_id)) {
+      assignmentsByTask.set(r.task_id, [])
     }
+    assignmentsByTask.get(r.task_id).push({ id: r.collaborator_id })
   }
   for (const t of tasks) {
     t.collaborators = assignmentsByTask.get(t.id) || []
@@ -537,6 +552,46 @@ export function getFullState(db, projectId) {
 // -----------------------------------------------------------------------------
 // PROJETS (v1.8)
 // -----------------------------------------------------------------------------
+
+/**
+ * v2.3 (2026-05-28) — Renvoie l'ensemble des activités (`kind = 'task'`) de
+ * TOUS les projets, enrichies avec leur liste multi-collab `collaborators[]`
+ * lue depuis `task_assignments`. Sert `/api/workload/global` (vue plan de
+ * charge cross-projet).
+ *
+ * Le filtre métier « tâche affichable en mode global » = au moins UN collab
+ * affecté (legacy `collaborator_id` OU `collaborators[]` non vide).
+ * Sans ce filtre, les tâches orphelines (collab vide) pollueraient le calcul
+ * de surcharge — `computeWorkload` les ignorerait de toute façon, mais
+ * autant alléger le payload réseau au passage.
+ *
+ * Le payload reste volontairement minimal (id, nom, kind, dates, charge,
+ * collabs, project_id) : c'est tout ce dont `computeWorkload` a besoin
+ * côté client. On évite ainsi de dupliquer les couleurs / prédécesseurs /
+ * priorités qui ne sont pas consommés par le mode global.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @returns {Array<object>} Liste plate des activités cross-projet.
+ */
+export function listGlobalWorkloadTasks(db) {
+  const tasks = db
+    .prepare(
+      `SELECT id, name, kind, start_date, end_date,
+              collaborator_id, project_id, charge_jours
+         FROM tasks
+         WHERE kind = 'task'
+         ORDER BY project_id ASC, position ASC, id ASC`,
+    )
+    .all()
+  // currentId = null → enrichit avec TOUTES les affectations cross-projet.
+  enrichTasksWithAssignments(db, tasks, null)
+  // Ne renvoie que les tâches avec au moins un collab affecté (legacy ou
+  // multi-collab). Une tâche sans aucun collab ne contribue à aucune ligne
+  // du plan de charge → autant ne pas l'inclure.
+  return tasks.filter(
+    (t) => t.collaborator_id || (t.collaborators && t.collaborators.length > 0),
+  )
+}
 
 /**
  * Calcule la prochaine position libre pour un nouveau projet (= MAX + 1).

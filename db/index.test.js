@@ -188,11 +188,19 @@ describe('createCollaborator', () => {
     db = initDb(':memory:')
   })
 
-  it('RG-GANTT-0006 / RG-GANTT-1102 — insère et incrémente la version', () => {
+  it('RG-GANTT-0006 / RG-GANTT-1102 — insère et incrémente la version à CHAQUE modification', () => {
     const r = createCollaborator(db, { id: 'c1', name: 'Alice' })
     expect(r.version).toBe(1)
     expect(r.collaborator.name).toBe('Alice')
     expect(r.collaborator.color).toBe('#3b82f6') // défaut
+    // RG-GANTT-0006 : l'incrément n'est pas un one-shot — chaque mutation
+    // suivante bump à nouveau le compteur (c'est lui que le polling 5 s
+    // observe pour déclencher un re-fetch). On vérifie donc une 2e puis une
+    // 3e modification.
+    const r2 = createCollaborator(db, { id: 'c2', name: 'Bob' })
+    expect(r2.version).toBe(2)
+    const r3 = updateCollaborator(db, 'c1', { name: 'Alice 2' })
+    expect(r3.version).toBe(3)
   })
 
   it('RG-GANTT-1102 — positions auto-incrémentées', () => {
@@ -350,6 +358,33 @@ describe('createTask', () => {
       priority: 'abc',
     })
     expect(rabc.task.priority).toBe(3)
+  })
+
+  // v1.24 / Pr2 / RG-GANTT-0500 — Cas pass-through (contre-épreuve de la
+  // normalisation) : une priorité valide est conservée telle quelle, et une
+  // valeur dans les bornes mais non entière est plancherée (floor). Verrouille
+  // le fait que normalizePriority ne ramène PAS tout à 3 aveuglément.
+  it('v1.24 / Pr2 / RG-GANTT-0500 — activité : priorité valide conservée (1..5) + floor des décimales', () => {
+    // Bornes valides conservées telles quelles.
+    for (const p of [1, 2, 4, 5]) {
+      const r = createTask(db, {
+        id: `t_prio_ok_${p}`,
+        name: `P${p}`,
+        start_date: '2026-06-08',
+        end_date: '2026-06-08',
+        priority: p,
+      })
+      expect(r.task.priority).toBe(p)
+    }
+    // Décimale dans les bornes → plancherée (2.7 → 2), pas ramenée à 3.
+    const rDec = createTask(db, {
+      id: 't_prio_dec',
+      name: 'Dec',
+      start_date: '2026-06-08',
+      end_date: '2026-06-08',
+      priority: 2.7,
+    })
+    expect(rDec.task.priority).toBe(2)
   })
 
   // v1.24 — RG-GANTT-0201 : un jalon n'a pas de charge. Même si l'utilisateur

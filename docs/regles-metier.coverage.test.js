@@ -54,10 +54,15 @@ function findTestFiles(dir) {
 /**
  * Extrait toutes les RG-GANTT-XXXX uniques d'un texte (markdown ou code).
  * Tolère 3 ou 4 chiffres pour les hypothétiques RG futures.
+ *
+ * Le `(?!\d)` final empêche qu'un ID malformé à 5+ chiffres (typo, ex.
+ * `RG-GANTT-19000`) soit silencieusement tronqué à `RG-GANTT-1900` puis
+ * compté comme un ID canonique cité. Un tel ID ne matchera tout simplement
+ * pas → il sera vu comme un fantôme par le 2e méta-test (anti faute de frappe).
  */
 function extractRgIds(text) {
   const set = new Set()
-  const re = /RG-GANTT-\d{3,4}/g
+  const re = /RG-GANTT-\d{3,4}(?!\d)/g
   let m
   while ((m = re.exec(text)) !== null) set.add(m[0])
   return set

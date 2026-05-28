@@ -31,13 +31,18 @@ const CATALOGUE = fs.readFileSync(
 )
 
 /**
- * Vérifie que l'ID `rgId` est défini comme un titre Markdown dans le
- * catalogue (entre 1 et 4 dièses, peu importe le niveau choisi). Tolère
- * une restructuration future qui passerait les titres de H3 à H2 ou H4
- * sans changer le contenu.
+ * Vérifie que l'ID `rgId` est défini comme un **titre H3** (`### RG-GANTT-XXXX`)
+ * en début de ligne dans le catalogue — le niveau canonique de toutes les RG.
+ *
+ * On s'en tient strictement à `### ` (et non `#{1,4}`) pour deux raisons :
+ *   1. Anti faux-positif : un exemple Markdown collé dans un bloc de code
+ *      (fence ```) avec une ligne `# RG-GANTT-XXXX` ne doit PAS faire croire
+ *      que la règle est documentée.
+ *   2. Toutes les RG du catalogue sont des H3 ; un changement de niveau serait
+ *      une anomalie qu'on VEUT détecter, pas tolérer.
  */
 function expectDocumented(rgId) {
-  expect(CATALOGUE).toMatch(new RegExp(`(?:^|\\n)#{1,4} ${rgId}\\b`))
+  expect(CATALOGUE).toMatch(new RegExp(`(?:^|\\n)### ${rgId}\\b`))
 }
 
 describe('RG documentation-only — Famille 10 (Replan)', () => {
@@ -47,10 +52,6 @@ describe('RG documentation-only — Famille 10 (Replan)', () => {
 
   it('RG-GANTT-1905 — supprimée en v2.3 (remplacée par RG-GANTT-1903 redéfinie)', () => {
     expectDocumented('RG-GANTT-1905')
-  })
-
-  it('RG-GANTT-1906 — RG-M info silencieuse : pas d`alerte si progress=100 avec today < end_date', () => {
-    expectDocumented('RG-GANTT-1906')
   })
 
   it('RG-GANTT-1908 — RG-O : edit manuel charge_jours sur progress>0 = charge totale révisée', () => {

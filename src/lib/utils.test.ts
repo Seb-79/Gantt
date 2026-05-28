@@ -1702,6 +1702,42 @@ describe('v2.3 / RG-GANTT-2106 — prédécesseur terminé dans le futur', () =>
 })
 
 // =============================================================================
+// v2.2 / RG-M (RG-GANTT-1906) — Activité finie en avance = info silencieuse
+// =============================================================================
+// Une activité à progress=100 dont la fin annoncée est dans le futur
+// (today < end_date) ne déclenche AUCUNE alerte de cohérence : c'est un état
+// normal (« finie en avance »), pas une incohérence. La tâche reste lockée
+// par RG-GANTT-1902 côté Replan, mais checkCoherence n'a rien à signaler tant
+// qu'aucune AUTRE règle (surcharge, prédécesseur, SNET, FNLT) n'est violée.
+
+describe('v2.2 / RG-GANTT-1906 — activité finie en avance : aucune alerte', () => {
+  let dateNowSpy: ReturnType<typeof vi.spyOn> | null = null
+  beforeEach(() => {
+    const fixed = new Date('2026-06-10T00:00:00.000Z').getTime()
+    dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(fixed)
+  })
+  afterEach(() => {
+    dateNowSpy?.mockRestore()
+  })
+
+  it('v2.2 / RG-GANTT-1906 — progress=100 + today < end_date → checkCoherence ne lève rien', () => {
+    // Activité terminée (progress=100) dont la fin annoncée (2026-08-15) est
+    // postérieure à today (2026-06-10). Sans collaborateur surchargé, sans
+    // prédécesseur ni SNET/FNLT, aucune incohérence ne doit remonter.
+    const tasks: Task[] = [
+      mkTask('A', {
+        name: 'Finie en avance',
+        progress: 100,
+        start_date: '2026-08-01',
+        end_date: '2026-08-15',
+        charge_jours: 10,
+      }),
+    ]
+    expect(checkCoherence(tasks)).toHaveLength(0)
+  })
+})
+
+// =============================================================================
 // v2.0 / F5 — Capacité totale + seuils normalisés
 // =============================================================================
 

@@ -786,6 +786,8 @@ prévue » — la date est cohérente par construction.
 avec `today < end_date` (« finie en avance ») ne déclenche aucune
 alerte. La tâche reste lockée par RG-GANTT-1902.
 
+**Tests :** `utils.test.ts` → « v2.2 / RG-GANTT-1906 — progress=100 + today < end_date → checkCoherence ne lève rien ».
+
 ### RG-GANTT-1907
 
 **(v2.3 — RG-N redéfinie — édition manuelle d'une activité)**
@@ -1970,3 +1972,11 @@ fichier `*.test.*`).
 - Famille 22 (Tooltip custom) ne contient qu'une RG, dédiée au comportement
   d'apparition / disparition / délai d'un tooltip survol/focus. C'est une
   règle UX promue depuis un commentaire de `Tooltip.tsx` (refonte 2026-05-23).
+- **Ancienne « Famille 18 — Charge stockée (v2.0/F0) »** (présente dans une
+  synthèse antérieure avec 5 règles) **a été retirée le 2026-05-26 car c'était
+  un fantôme de comptage** : aucune RG `### RG-GANTT-18XX` n'a jamais été
+  rédigée dans le catalogue. Le comportement « charge_jours stockée, source
+  de vérité de la durée » qu'elle prétendait couvrir est en réalité porté par
+  **RG-GANTT-0100** (Famille 2 — Activités), déjà comptée. Aucune règle n'a
+  donc été perdue : le total passe mécaniquement de l'ancien décompte gonflé
+  à 175 réelles.

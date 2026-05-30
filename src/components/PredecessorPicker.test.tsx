@@ -48,7 +48,10 @@ const allTasks: Task[] = [
 ]
 
 describe('PredecessorPicker — chips', () => {
-  it('affiche "Aucun prédécesseur" quand la liste est vide', () => {
+  it('liste vide : aucune chip, mais le déclencheur « — ajouter — » est présent', () => {
+    // v2.5 — Harmonisation avec l'ajout d'un collaborateur : pas de texte
+    // « Aucun prédécesseur » ; la zone de chips est simplement vide et le
+    // déclencheur (sosie du select « — ajouter — ») reste affiché.
     render(
       <PredecessorPicker
         task={null}
@@ -57,7 +60,10 @@ describe('PredecessorPicker — chips', () => {
         onChange={() => {}}
       />,
     )
-    expect(screen.getByText(/Aucun prédécesseur/)).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /ajouter un prédécesseur/i }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('— ajouter —')).toBeInTheDocument()
   })
 
   it('affiche une chip par prédécesseur (avec son lag)', () => {
@@ -126,7 +132,9 @@ describe('PredecessorPicker — popover (arbre)', () => {
         onChange={() => {}}
       />,
     )
-    fireEvent.click(screen.getByText('+ Ajouter un prédécesseur'))
+    fireEvent.click(
+      screen.getByRole('button', { name: /ajouter un prédécesseur/i }),
+    )
     // L'arbre est rendu : on retrouve les tâches.
     expect(screen.getByPlaceholderText(/Rechercher/)).toBeInTheDocument()
     expect(screen.getByText('Tâche A')).toBeInTheDocument()
@@ -142,7 +150,9 @@ describe('PredecessorPicker — popover (arbre)', () => {
         onChange={onChange}
       />,
     )
-    fireEvent.click(screen.getByText('+ Ajouter un prédécesseur'))
+    fireEvent.click(
+      screen.getByRole('button', { name: /ajouter un prédécesseur/i }),
+    )
     const phaseRow = document.querySelector('[data-task-id="ph1"]')!
     expect(phaseRow.getAttribute('aria-disabled')).toBe('true')
     fireEvent.click(phaseRow)
@@ -159,7 +169,9 @@ describe('PredecessorPicker — popover (arbre)', () => {
         onChange={onChange}
       />,
     )
-    fireEvent.click(screen.getByText('+ Ajouter un prédécesseur'))
+    fireEvent.click(
+      screen.getByRole('button', { name: /ajouter un prédécesseur/i }),
+    )
     const selfRow = document.querySelector('[data-task-id="tD"]')!
     expect(selfRow.getAttribute('aria-disabled')).toBe('true')
   })
@@ -178,7 +190,9 @@ describe('PredecessorPicker — popover (arbre)', () => {
         onChange={() => {}}
       />,
     )
-    fireEvent.click(screen.getByText('+ Ajouter un prédécesseur'))
+    fireEvent.click(
+      screen.getByRole('button', { name: /ajouter un prédécesseur/i }),
+    )
     expect(
       document
         .querySelector('[data-task-id="tA"]')!
@@ -195,7 +209,9 @@ describe('PredecessorPicker — popover (arbre)', () => {
         onChange={() => {}}
       />,
     )
-    fireEvent.click(screen.getByText('+ Ajouter un prédécesseur'))
+    fireEvent.click(
+      screen.getByRole('button', { name: /ajouter un prédécesseur/i }),
+    )
     const row = document.querySelector('[data-task-id="tA"]')!
     expect(row.getAttribute('aria-disabled')).toBe('true')
     expect(within(row as HTMLElement).getByText('✓')).toBeInTheDocument()
@@ -211,7 +227,9 @@ describe('PredecessorPicker — popover (arbre)', () => {
         onChange={onChange}
       />,
     )
-    fireEvent.click(screen.getByText('+ Ajouter un prédécesseur'))
+    fireEvent.click(
+      screen.getByRole('button', { name: /ajouter un prédécesseur/i }),
+    )
     fireEvent.click(document.querySelector('[data-task-id="tA"]')!)
     expect(onChange).toHaveBeenCalledWith([{ id: 'tA', lag: 0 }])
   })
@@ -225,7 +243,9 @@ describe('PredecessorPicker — popover (arbre)', () => {
         onChange={() => {}}
       />,
     )
-    fireEvent.click(screen.getByText('+ Ajouter un prédécesseur'))
+    fireEvent.click(
+      screen.getByRole('button', { name: /ajouter un prédécesseur/i }),
+    )
     fireEvent.change(screen.getByPlaceholderText(/Rechercher/), {
       target: { value: 'jalon' },
     })
@@ -243,7 +263,9 @@ describe('PredecessorPicker — popover (arbre)', () => {
         onChange={() => {}}
       />,
     )
-    fireEvent.click(screen.getByText('+ Ajouter un prédécesseur'))
+    fireEvent.click(
+      screen.getByRole('button', { name: /ajouter un prédécesseur/i }),
+    )
     expect(screen.getByPlaceholderText(/Rechercher/)).toBeInTheDocument()
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByPlaceholderText(/Rechercher/)).not.toBeInTheDocument()

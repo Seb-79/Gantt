@@ -181,7 +181,9 @@ describe('TaskEditor — prédécesseur (v1.22 picker arborescent)', () => {
 
   /** Ouvre le popover du PredecessorPicker (bouton « + Ajouter… »). */
   function openPicker() {
-    fireEvent.click(screen.getByText('+ Ajouter un prédécesseur'))
+    fireEvent.click(
+      screen.getByRole('button', { name: /ajouter un prédécesseur/i }),
+    )
   }
 
   /** Clique dans le popover sur la ligne d'id donné pour l'ajouter. */
@@ -578,7 +580,9 @@ describe('v1.24 — RG-GANTT-0400 — anti-cycle sur le picker prédécesseur', 
         onClose={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getByText('+ Ajouter un prédécesseur'))
+    fireEvent.click(
+      screen.getByRole('button', { name: /ajouter un prédécesseur/i }),
+    )
     // Le parent (lui-même), l'enfant et le petit-enfant sont aria-disabled.
     for (const id of ['p', 'c', 'gc']) {
       const row = document.querySelector(`[data-task-id="${id}"]`)!
@@ -615,7 +619,9 @@ describe('v1.24 — RG-GANTT-0305 — le picker prédécesseur grise les phases'
         onClose={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getByText('+ Ajouter un prédécesseur'))
+    fireEvent.click(
+      screen.getByRole('button', { name: /ajouter un prédécesseur/i }),
+    )
     const phaseRow = document.querySelector('[data-task-id="ph1"]')!
     const taskRow = document.querySelector('[data-task-id="t_other"]')!
     expect(phaseRow.getAttribute('aria-disabled')).toBe('true')

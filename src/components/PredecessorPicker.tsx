@@ -221,63 +221,77 @@ export default function PredecessorPicker({
 
   return (
     <div ref={rootRef} className="relative">
-      {/* -- Liste des chips ---------------------------------------------- */}
-      <div className="flex flex-wrap items-center gap-1.5 min-h-[34px] border border-slate-200 rounded p-1.5 bg-white">
-        {value.length === 0 && (
-          <span className="text-xs text-slate-400 italic">
-            Aucun prédécesseur
-          </span>
-        )}
-        {value.map((p) => {
-          const t = byId.get(p.id)
-          if (!t) return null
-          return (
-            <span
-              key={p.id}
-              className="inline-flex items-center gap-1 bg-slate-100 border border-slate-300 rounded px-1.5 py-0.5 text-xs"
-            >
-              <span title={`Tâche : ${t.name}`}>
-                {t.kind === 'milestone' ? '◆ ' : ''}
-                {t.name}
+      {/* -- Chips des prédécesseurs sélectionnés -------------------------- */}
+      {/* v2.5 — Harmonisation avec l'ajout d'un collaborateur : les chips
+          FLOTTENT (pas de cadre englobant), forme arrondie identique à
+          `CollabChip`. La chip reste plus riche : elle conserve l'éditeur de
+          délai (« + 0 j ») et le ✕. Pas de texte « Aucun prédécesseur » quand
+          la liste est vide (la zone est simplement absente, comme pour les
+          collaborateurs). */}
+      {value.length > 0 && (
+        <div className="mb-1 flex flex-wrap gap-1">
+          {value.map((p) => {
+            const t = byId.get(p.id)
+            if (!t) return null
+            return (
+              <span
+                key={p.id}
+                className="inline-flex items-center gap-1 rounded-full bg-slate-100 border border-slate-300 pl-2 pr-1 py-0.5 text-xs"
+              >
+                <span className="font-medium" title={`Tâche : ${t.name}`}>
+                  {t.kind === 'milestone' ? '◆ ' : ''}
+                  {t.name}
+                </span>
+                <label
+                  className="flex items-center gap-0.5 text-slate-500"
+                  title="Délai (jours ouvrés) entre la fin du prédécesseur et le début de cette tâche."
+                >
+                  <span className="text-[10px]">+</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={p.lag}
+                    onChange={(e) => updateLag(p.id, e.target.value)}
+                    className="w-10 border border-slate-300 rounded px-1 py-0 text-xs"
+                    aria-label={`Délai du prédécesseur ${t.name}`}
+                  />
+                  <span className="text-[10px]">j</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => removePredecessor(p.id)}
+                  className="ml-0.5 text-slate-500 hover:text-red-600 leading-none"
+                  aria-label={`Retirer le prédécesseur ${t.name}`}
+                  title="Retirer ce prédécesseur"
+                >
+                  ✕
+                </button>
               </span>
-              <label
-                className="flex items-center gap-0.5 text-slate-500"
-                title="Délai (jours ouvrés) entre la fin du prédécesseur et le début de cette tâche."
-              >
-                <span className="text-[10px]">+</span>
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={p.lag}
-                  onChange={(e) => updateLag(p.id, e.target.value)}
-                  className="w-10 border border-slate-300 rounded px-1 py-0 text-xs"
-                  aria-label={`Délai du prédécesseur ${t.name}`}
-                />
-                <span className="text-[10px]">j</span>
-              </label>
-              <button
-                type="button"
-                onClick={() => removePredecessor(p.id)}
-                className="text-slate-400 hover:text-red-600 leading-none"
-                aria-label={`Retirer le prédécesseur ${t.name}`}
-                title="Retirer ce prédécesseur"
-              >
-                ✕
-              </button>
-            </span>
-          )
-        })}
-        <button
-          ref={anchorRef}
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="ml-auto text-xs text-blue-700 hover:underline px-1.5 py-0.5"
-          title="Ouvrir l'arbre pour ajouter un prédécesseur"
-        >
-          + Ajouter un prédécesseur
-        </button>
-      </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* -- Déclencheur : sosie du <select> « — ajouter — » -------------- */}
+      {/* v2.5 — Même contrôle visuel que le select d'ajout d'un collaborateur
+          (bordure + chevron, pleine largeur). En l'ouvrant, le popover ci-dessous
+          affiche la recherche + l'arbre indenté. */}
+      <button
+        ref={anchorRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-label="Ajouter un prédécesseur"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="flex w-full items-center justify-between border border-slate-300 rounded px-2 py-1 text-xs text-slate-500 bg-white"
+        title="Ouvrir l'arbre pour ajouter un prédécesseur"
+      >
+        <span>— ajouter —</span>
+        <span className="text-slate-400" aria-hidden>
+          ▾
+        </span>
+      </button>
 
       {/* -- Popover de l'arbre ------------------------------------------- */}
       {/* v2.1 / F2 — Rendu via createPortal sur document.body avec position

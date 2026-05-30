@@ -80,3 +80,17 @@ describe('RG documentation-only — Famille 21 (Refonte Replan v2.3)', () => {
     expectDocumented('RG-GANTT-2109')
   })
 })
+
+describe('RG documentation-only — Famille 23 (Morcellement v2.5)', () => {
+  // RG-GANTT-2300, 2301 et 2303 sont couvertes par des tests métier nommés
+  // dans `src/lib/utils.test.ts` et `src/App.test.tsx`. Les deux RG ci-dessous
+  // synthétisent des comportements structurels (format de timeline, rendu
+  // visuel) déjà exercés indirectement : on matérialise le lien ici.
+  it('RG-GANTT-2302 — timeline moteur émise par jour réellement travaillé (grille jours possédés)', () => {
+    expectDocumented('RG-GANTT-2302')
+  })
+
+  it('RG-GANTT-2304 — Gantt : barre-enveloppe avec jours creux hachurés (renderHollowDays)', () => {
+    expectDocumented('RG-GANTT-2304')
+  })
+})

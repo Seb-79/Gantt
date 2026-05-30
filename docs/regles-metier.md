@@ -1921,6 +1921,82 @@ respect d'un délai personnalisé).
 
 ---
 
+### RG-GANTT-2300
+
+**(v2.5 / Morcellement)** Le moteur Replan place la charge d'une activité en
+**tissant autour des obstacles** : il consomme les jours-ouvrés-équivalents à
+partir de la borne basse au plus tôt en **sautant** les jours sans capacité
+(week-end / férié / congé / hors-allocation) **ET** les jours déjà pris par une
+autre activité du même collaborateur. Les jours travaillés peuvent donc être
+**non contigus**, ce qui **minimise la date de fin** — objectif premier du
+Replan (analogie « GPS : le chemin le plus court »). En multi-collaborateur, un
+jour n'est retenu que s'il est libre pour tous les affectés (capacité additive).
+
+**Tests :** `src/lib/utils.test.ts` → bloc `RG-GANTT-2300 — placement tissé`
+(tisse autour d'un jour obstacle pour finir plus tôt ; multi-collab).
+
+---
+
+### RG-GANTT-2301
+
+**(v2.5 / Morcellement)** Le tissage ne crée **jamais de trou inutile** :
+quand le placement contigu finit aussi tôt que le placement tissé (aucun
+obstacle dans la fenêtre), les jours travaillés restent contigus. Un trou
+n'apparaît que lorsqu'il fait gagner des jours sur la date de fin.
+
+**Tests :** `src/lib/utils.test.ts` → `RG-GANTT-2301 — aucun trou quand le bloc
+contigu finit aussi tôt`.
+
+---
+
+### RG-GANTT-2302
+
+**(v2.5 / Morcellement)** La timeline effective exposée par le moteur
+(`computeReplanResult().timeline`, consommée par le Plan de charge et la
+détection de surcharge) émet **une entrée par jour réellement travaillé**
+(`[jour, jour]`) au lieu d'un bloc contigu `[start, end]`. La grille interne du
+moteur est un ensemble de **jours possédés** par collaborateur (`Set<jour>`),
+pré-rempli par les activités terminées (obstacles que le moteur contourne mais
+ne déplace jamais).
+
+**Tests :** `src/lib/utils.test.ts` → bloc `RG-GANTT-2300 — placement tissé` et
+`RG-GANTT-2303 — surcharge sur jours travaillés` (la timeline jour-par-jour est
+vérifiée via les dates proposées et l'absence de fausse surcharge).
+
+---
+
+### RG-GANTT-2303
+
+**(v2.5 / Morcellement)** La **surcharge** se mesure désormais sur les **jours
+réellement travaillés** (timeline moteur), pas sur le chevauchement naïf des
+enveloppes `[start, end]`. Deux activités dont les enveloppes se chevauchent
+mais dont les jours travaillés sont **disjoints** (morcellement) ne déclenchent
+**aucune** surcharge. Conséquence : une surcharge signalée par le bandeau de
+cohérence (cf. RG-GANTT-0807) correspond à un **conflit non résolvable par
+Replan** — typiquement deux activités **terminées** (`progress=100`, verrouillées)
+qui partagent un jour travaillé. Les conflits entre activités mobiles sont
+résolus silencieusement par le tissage au prochain Replan.
+
+**Tests :** `src/lib/utils.test.ts` → bloc `RG-GANTT-2303 — surcharge sur jours
+travaillés` ; `src/App.test.tsx` → `RG-GANTT-0807` (fixture de surcharge non
+résolvable : deux activités terminées qui se chevauchent).
+
+---
+
+### RG-GANTT-2304
+
+**(v2.5 / Morcellement)** Dans le diagramme de Gantt, une activité morcelée est
+affichée comme **une seule barre-enveloppe** `[1er jour travaillé, dernier jour
+travaillé]`, à l'intérieur de laquelle les **jours creux** (jours ouvrés non
+travaillés parce qu'un obstacle les occupait) sont **hachurés en gris**. Repère
+visuel pur (sans interaction), calé sur la timeline moteur. La date de début de
+l'activité morcelée est son **1er jour réellement travaillé**.
+
+**Tests :** `src/components/GanttChart.tsx` (rendu `renderHollowDays`, vérifié
+visuellement) ; logique de placement couverte par RG-GANTT-2300..2302.
+
+---
+
 ## Synthèse de couverture
 
 Comptage automatisé par le méta-test `docs/regles-metier.coverage.test.js`
@@ -1953,7 +2029,8 @@ fichier `*.test.*`).
 | 20 — Grilles éditables (v2.1/F4+F5)    | 2000..2006                       |       7 |
 | 21 — Refonte Replan v2.3               | 2100..2110                       |      11 |
 | 22 — Tooltip custom (v2.2)             | 2200                             |       1 |
-| **Total**                              | —                                | **175** |
+| 23 — Morcellement (v2.5)               | 2300..2304                       |       5 |
+| **Total**                              | —                                | **180** |
 
 **Notes de couverture :**
 

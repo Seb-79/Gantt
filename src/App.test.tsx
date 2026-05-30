@@ -484,6 +484,113 @@ function mkOverloadedState(): GanttState {
   })
 }
 
+/**
+ * v2.5 / RG-GANTT-2303 — Scénario de surcharge RÉELLEMENT non résolvable par
+ * Replan : deux activités TERMINÉES (`progress=100`) du même collab qui se
+ * chevauchent sur des jours travaillés communs. Le moteur ne peut pas les
+ * déplacer (verrouillées), donc le conflit subsiste → le bandeau s'affiche.
+ *
+ * On ajoute une 3ᵉ activité MOBILE (`Tournage`, progress 0) dont les dates
+ * stockées sont sous-optimales : un Replan complet produit donc au moins un
+ * déplacement, ce qui permet à la modale d'aperçu de s'ouvrir (test du flux
+ * « Replan complet » depuis le bandeau).
+ */
+function mkUnresolvableOverloadState(): GanttState {
+  return mkState({
+    projects: [
+      {
+        id: 'p1',
+        name: 'Projet 1',
+        position: 0,
+        project_start_date: '2026-05-15',
+      },
+      {
+        id: 'p2',
+        name: 'Projet 2',
+        position: 1,
+        project_start_date: '2026-05-15',
+      },
+    ],
+    collaborators: [
+      { id: 'alice', name: 'Alice', color: '#3b82f6', position: 0 },
+    ],
+    tasks: [
+      // Terminée : occupe Alice 15→29 mai (jours travaillés figés).
+      {
+        id: 't1a',
+        name: 'Recherche audience',
+        kind: 'task',
+        start_date: '2026-05-15',
+        end_date: '2026-05-29',
+        progress: 100,
+        collaborator_id: 'alice',
+        color: null,
+        parent_id: null,
+        predecessor_id: null,
+        predecessor_lag: 0,
+        priority: null,
+        not_before_date: null,
+        not_later_than_date: null,
+        charge_jours: null,
+        position: 0,
+        project_id: 'p1',
+      },
+      // Terminée : chevauche « Recherche audience » sur 25→29 mai → conflit
+      // de jours travaillés que le Replan ne peut pas résoudre.
+      {
+        id: 't1b',
+        name: 'Définir le message',
+        kind: 'task',
+        start_date: '2026-05-25',
+        end_date: '2026-06-05',
+        progress: 100,
+        collaborator_id: 'alice',
+        color: null,
+        parent_id: null,
+        predecessor_id: null,
+        predecessor_lag: 0,
+        priority: null,
+        not_before_date: null,
+        not_later_than_date: null,
+        charge_jours: null,
+        position: 1,
+        project_id: 'p1',
+      },
+      // Mobile : dates stockées sous-optimales → produit un move au Replan.
+      {
+        id: 't1c',
+        name: 'Tournage',
+        kind: 'task',
+        start_date: '2026-06-15',
+        end_date: '2026-06-15',
+        progress: 0,
+        collaborator_id: 'alice',
+        color: null,
+        parent_id: null,
+        predecessor_id: null,
+        predecessor_lag: 0,
+        priority: 3,
+        not_before_date: null,
+        not_later_than_date: null,
+        charge_jours: 3,
+        position: 2,
+        project_id: 'p1',
+      },
+    ],
+    current_project_members: ['alice'],
+    member_allocations: [
+      {
+        id: 'alloc-alice-p1',
+        project_id: 'p1',
+        collaborator_id: 'alice',
+        start_date: '2020-01-01',
+        end_date: '2099-12-31',
+        allocation_pct: 100,
+      },
+    ],
+  })
+}
+
 describe('App — Replan (non-régression métier)', () => {
   // v2.3 — Fige today à 2026-05-01 pour que la borne basse globale du Replan
   // (MAX(projectStartDate, today, ...)) ne tire pas les fixtures historiques
@@ -759,6 +866,18 @@ describe('App — repli des phases (v1.20)', () => {
 // =============================================================================
 
 describe("App — bandeau d'incohérence (v1.21)", () => {
+  // v2.5 — Fige today à 2026-05-15 pour que la borne basse globale du Replan
+  // (RG-GANTT-1903) ne déplace pas les fixtures de mai-juin 2026 selon le
+  // today système, et que la 3ᵉ tâche mobile produise un move déterministe.
+  let dateNowSpy: ReturnType<typeof vi.spyOn> | null = null
+  beforeEach(() => {
+    const fixedNow = new Date('2026-05-15T00:00:00.000Z').getTime()
+    dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(fixedNow)
+  })
+  afterEach(() => {
+    dateNowSpy?.mockRestore()
+  })
+
   it("RG-GANTT-0806 — n'affiche aucun bandeau quand le projet est cohérent", async () => {
     setupFetchMock()
     render(<App />)
@@ -767,7 +886,7 @@ describe("App — bandeau d'incohérence (v1.21)", () => {
   })
 
   it('RG-GANTT-0807 — affiche le bandeau quand une surcharge existe + énumère les 2 boutons', async () => {
-    setupFetchMock(mkOverloadedState())
+    setupFetchMock(mkUnresolvableOverloadState())
     render(<App />)
     await waitFor(() => screen.getByTestId('coherence-alert'))
     const alert = screen.getByTestId('coherence-alert')
@@ -782,7 +901,7 @@ describe("App — bandeau d'incohérence (v1.21)", () => {
   })
 
   it('RG-GANTT-0807 — "Replan complet" depuis le bandeau ouvre la modal habituelle', async () => {
-    setupFetchMock(mkOverloadedState())
+    setupFetchMock(mkUnresolvableOverloadState())
     render(<App />)
     await waitFor(() => screen.getByTestId('coherence-alert'))
     fireEvent.click(

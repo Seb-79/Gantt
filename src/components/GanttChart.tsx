@@ -25,6 +25,7 @@ import {
   groupByWeek,
   isFrenchHoliday,
   isNonWorkingDay,
+  isoToDate,
   rangeToWidth,
   snapBackwardToWorkingDay,
   snapForwardToWorkingDay,
@@ -36,6 +37,7 @@ import { useLinkDrag } from '../lib/useLinkDrag'
 // v2.0 — Confirm custom (remplace window.confirm + en-tête « localhost… »).
 import { askConfirm } from '../lib/dialogs'
 import type { Collaborator, Task } from '../lib/types'
+import type { TimelineEntry } from '../lib/utils'
 // v2.0 / Refacto (c) — Markers extraits dans GanttMarkers.tsx (étiquettes
 // de dates, triangles SNET / FNLT). Fonctions de rendu pures sans state.
 import {
@@ -232,6 +234,14 @@ interface Props {
    * @param targetId  Id de la tâche successeur (pointe de la flèche).
    */
   onDeleteLink?: (sourceId: string, targetId: string) => void
+  /**
+   * v2.5 / RG-GANTT-2304 — Timeline effective produite par le moteur Replan
+   * (jours réellement travaillés par tâche, cf. `computeReplanResult`). Si
+   * fournie, les jours de l'enveloppe `[start, end]` d'une activité qui ne
+   * sont PAS travaillés (morcellement autour des obstacles) sont grisés /
+   * hachurés à l'intérieur de la barre. Si absente, aucun grisé (rétrocompat).
+   */
+  engineTimeline?: Map<string, TimelineEntry[]>
 }
 
 /**
@@ -255,6 +265,7 @@ export default function GanttChart({
   onToggleCollapse,
   onCreateLink,
   onDeleteLink,
+  engineTimeline,
 }: Props) {
   // v1.23 — Hook qui pilote le drag-to-link (création de lien à la souris).
   // Activé uniquement si le parent fournit `onCreateLink` ; sinon les handles
@@ -273,6 +284,21 @@ export default function GanttChart({
     }
     return set
   }, [allTasks, tasks])
+  // v2.5 / RG-GANTT-2304 — Jours réellement travaillés par tâche (depuis la
+  // timeline moteur). Sert à griser les jours « creux » de l'enveloppe d'une
+  // activité morcelée. Indexé par id de tâche → Set des jours ISO travaillés.
+  const workedDaysByTask = useMemo(() => {
+    const map = new Map<string, Set<string>>()
+    if (!engineTimeline) return map
+    for (const entries of engineTimeline.values()) {
+      for (const e of entries) {
+        const set = map.get(e.taskId) ?? new Set<string>()
+        set.add(e.start)
+        map.set(e.taskId, set)
+      }
+    }
+    return map
+  }, [engineTimeline])
   // v1.19 — Pan horizontal à la souris (cf. useHorizontalPan). Branché sur
   // le panneau scrollable de droite. Mousedown sur une BARRE est intercepté
   // par handleBarMouseDown via stopPropagation → aucune collision avec le
@@ -867,6 +893,17 @@ export default function GanttChart({
                         dateRightOffset,
                       )}
 
+                  {/* v2.5 / RG-GANTT-2304 — Jours « creux » d'une activité
+                    morcelée : à l'intérieur de l'enveloppe [start, end], on
+                    hachure les jours ouvrés que le moteur n'a PAS travaillés
+                    (obstacles contournés). Repère visuel pur, sans interaction. */}
+                  {renderHollowDays(
+                    t,
+                    windowStart,
+                    dayWidth,
+                    workedDaysByTask.get(t.id),
+                  )}
+
                   {/* v1.24 — Repère SNET « Ne doit pas démarrer avant le ».
                     Petit triangle gris discret affiché sous la ligne de la
                     tâche concernée (activités et jalons uniquement). Aucun
@@ -1281,6 +1318,56 @@ function PredecessorArrows({
  * @param showBarNames v1.13 — Si true, écrit le nom de la tâche dans la barre.
  * @param onTaskClick  v1.19.2 — Callback ouverture de l'éditeur sur clic.
  */
+/**
+ * v2.5 / RG-GANTT-2304 — Hachure les jours « creux » d'une activité morcelée :
+ * jours ouvrés situés dans l'enveloppe `[start_date, end_date]` que le moteur
+ * Replan n'a PAS travaillés (parce qu'un obstacle les occupait). Repère visuel
+ * pur (pointer-events-none) calé sur la géométrie de la barre (top:4, hauteur
+ * ROW_HEIGHT-8). Renvoie `null` si aucun jour creux (pas de timeline, jalon/
+ * phase, ou activité contiguë).
+ *
+ * @param task        Tâche à inspecter (seules les `kind='task'` sont traitées).
+ * @param windowStart Borne gauche du calendrier (YYYY-MM-DD).
+ * @param dayWidth    Largeur d'un jour en pixels.
+ * @param workedDays  Jours ISO réellement travaillés (depuis la timeline moteur).
+ */
+function renderHollowDays(
+  task: Task,
+  windowStart: string,
+  dayWidth: number,
+  workedDays: Set<string> | undefined,
+): React.ReactNode {
+  if (task.kind !== 'task' || !workedDays || workedDays.size === 0) return null
+  const cells: React.ReactNode[] = []
+  let cur = task.start_date
+  // Borne anti-boucle : largement au-delà d'une enveloppe réaliste.
+  let safety = 4000
+  while (cur <= task.end_date && safety-- > 0) {
+    const isHollow = !isNonWorkingDay(isoToDate(cur)) && !workedDays.has(cur)
+    if (isHollow) {
+      cells.push(
+        <div
+          key={cur}
+          className="absolute pointer-events-none rounded-[1px]"
+          style={{
+            left: dateToX(cur, windowStart, dayWidth) + 1,
+            top: 4,
+            width: Math.max(1, dayWidth - 2),
+            height: ROW_HEIGHT - 8,
+            // Hachures diagonales grises discrètes = jour non travaillé.
+            backgroundImage:
+              'repeating-linear-gradient(45deg, rgba(100,116,139,0.35) 0, rgba(100,116,139,0.35) 2px, transparent 2px, transparent 5px)',
+            zIndex: 2,
+          }}
+          title={`${task.name} — jour non travaillé (replanifié autour d'un obstacle)`}
+        />,
+      )
+    }
+    cur = addDaysIso(cur, 1)
+  }
+  return cells.length > 0 ? <>{cells}</> : null
+}
+
 function renderBar(
   task: Task,
   windowStart: string,

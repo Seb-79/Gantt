@@ -10,6 +10,7 @@ import {
   computeAllocationShortfall,
   computeExtensionPlan,
   computeEndFromCharge,
+  computeReplanResult,
   rebuildAllocationsForCollab,
   scanReplanShortfalls,
   checkCoherence,
@@ -72,6 +73,22 @@ function mkTask(id: string, overrides: Partial<Task> = {}): Task {
     end_date: '2026-01-02',
     ...overrides,
   })
+}
+
+/**
+ * v2.5 — Helper partagé : allocation 100 % sur toute l'année 2026 pour un
+ * collab donné sur le projet `p1`. Factorisé pour éviter la duplication entre
+ * les blocs de tests du morcellement (sonarjs/no-identical-functions).
+ */
+function mkAlloc100(id: string, collab: string): MemberAllocation {
+  return {
+    id,
+    project_id: 'p1',
+    collaborator_id: collab,
+    start_date: '2026-01-01',
+    end_date: '2026-12-31',
+    allocation_pct: 100,
+  }
 }
 
 describe('isoToDate / dateToIso', () => {
@@ -2916,5 +2933,184 @@ describe('v2.2 / RG-V — mode Planification anticipée', () => {
     // Reste à faire = 10 * 0.5 = 5 j → end = 01/06 + 5 wd = 05/06.
     expect(moves[0].newEnd).toBe('2026-06-05')
     expect(moves[0].charge_jours).toBe(10) // charge totale préservée (RG-INV)
+  })
+})
+
+// =============================================================================
+// v2.5 / RG-GANTT-2300..2202 — Placement TISSÉ (morcellement autour des obstacles)
+//   Le Replan consomme les jours libres au plus tôt en sautant les jours sans
+//   capacité ET les jours déjà pris, afin de minimiser la date de FIN.
+// =============================================================================
+
+describe('v2.5 / RG-GANTT-2300 — placement tissé (morcellement)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-01T00:00:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('RG-GANTT-2300 — tisse autour d’un jour obstacle pour finir plus tôt', () => {
+    const tasks: Task[] = [
+      // Obstacle terminé occupant le mercredi 10/06.
+      mkTask('obstacle', {
+        progress: 100,
+        start_date: '2026-06-10',
+        end_date: '2026-06-10',
+        charge_jours: 1,
+        collaborator_id: 'c1',
+        project_id: 'p1',
+      }),
+      // Activité 3 j-charge à placer : 08, 09, (10 sauté), 11 → fin le 11.
+      mkTask('T', {
+        progress: 0,
+        start_date: '2026-06-08',
+        end_date: '2026-06-08',
+        charge_jours: 3,
+        collaborator_id: 'c1',
+        project_id: 'p1',
+        priority: 3,
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-06-08', [mkAlloc100('a1', 'c1')], [])
+    const mT = moves.find((m) => m.id === 'T')
+    expect(mT).toBeDefined()
+    expect(mT!.newStart).toBe('2026-06-08')
+    expect(mT!.newEnd).toBe('2026-06-11')
+  })
+
+  it('RG-GANTT-2301 — aucun trou quand le bloc contigu finit aussi tôt', () => {
+    // Aucun obstacle : 3 j-charge depuis le 08/06 → 08, 09, 10 contigus.
+    const tasks: Task[] = [
+      mkTask('T', {
+        progress: 0,
+        start_date: '2026-06-08',
+        end_date: '2026-06-08',
+        charge_jours: 3,
+        collaborator_id: 'c1',
+        project_id: 'p1',
+        priority: 3,
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-06-08', [mkAlloc100('a1', 'c1')], [])
+    const mT = moves.find((m) => m.id === 'T')
+    expect(mT).toBeDefined()
+    expect(mT!.newStart).toBe('2026-06-08')
+    expect(mT!.newEnd).toBe('2026-06-10') // contigu, pas de trou
+  })
+
+  it('RG-GANTT-2300 — multi-collab : tisse autour du jour pris par l’obstacle', () => {
+    // T affectée à c1 ET c2 ; un obstacle terminé occupe c1 le 10/06.
+    // Le jour 10 doit être sauté (c1 pris), travail les 08, 09, 11.
+    const tasks: Task[] = [
+      mkTask('obstacle', {
+        progress: 100,
+        start_date: '2026-06-10',
+        end_date: '2026-06-10',
+        charge_jours: 1,
+        collaborator_id: 'c1',
+        project_id: 'p1',
+      }),
+      mkTask('T', {
+        progress: 0,
+        start_date: '2026-06-08',
+        end_date: '2026-06-08',
+        charge_jours: 6, // 3 j-charge à 2 collabs (Σ=2/jour) → 3 jours travaillés
+        collaborator_id: 'c1',
+        collaborators: [{ id: 'c1' }, { id: 'c2' }],
+        project_id: 'p1',
+        priority: 3,
+      }),
+    ]
+    const moves = replanTasks(
+      tasks,
+      '2026-06-08',
+      [mkAlloc100('a1', 'c1'), mkAlloc100('a2', 'c2')],
+      [],
+    )
+    const mT = moves.find((m) => m.id === 'T')
+    expect(mT).toBeDefined()
+    // Σ capacité = 2/jour → 6 j-charge = 3 jours : 08, 09, (10 sauté), 11.
+    expect(mT!.newStart).toBe('2026-06-08')
+    expect(mT!.newEnd).toBe('2026-06-11')
+  })
+})
+
+// =============================================================================
+// v2.5 / RG-GANTT-2303 — Surcharge calculée sur les JOURS RÉELLEMENT TRAVAILLÉS
+//   Deux enveloppes qui se chevauchent visuellement mais dont les jours
+//   travaillés sont disjoints ne créent AUCUNE surcharge.
+// =============================================================================
+
+describe('v2.5 / RG-GANTT-2303 — surcharge sur jours travaillés (timeline moteur)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-01T00:00:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('RG-GANTT-2303 — enveloppes qui se chevauchent mais jours disjoints → 0 surcharge', () => {
+    // Deux tâches du même collab avec des enveloppes STOCKÉES qui se
+    // chevauchent (08→11 chacune). Le moteur les tisse séquentiellement :
+    // A → 08,09 puis B → 10,11. Jours disjoints → pas de vraie surcharge.
+    const tasks: Task[] = [
+      mkTask('A', {
+        progress: 0,
+        start_date: '2026-06-08',
+        end_date: '2026-06-11',
+        charge_jours: 2,
+        collaborator_id: 'c1',
+        project_id: 'p1',
+        priority: 3,
+        position: 0,
+      }),
+      mkTask('B', {
+        progress: 0,
+        start_date: '2026-06-08',
+        end_date: '2026-06-11',
+        charge_jours: 2,
+        collaborator_id: 'c1',
+        project_id: 'p1',
+        priority: 3,
+        position: 1,
+      }),
+    ]
+    // Sans timeline : les enveloppes 08→11 se chevauchent → fausse surcharge.
+    const naive = checkCoherence(tasks).filter((i) => i.kind === 'overload')
+    expect(naive.length).toBe(1)
+    // Avec la timeline moteur (jours travaillés disjoints) → 0 surcharge.
+    const { timeline } = computeReplanResult(
+      tasks,
+      '2026-06-08',
+      [mkAlloc100('a1', 'c1')],
+      [],
+    )
+    const real = checkCoherence(tasks, timeline).filter(
+      (i) => i.kind === 'overload',
+    )
+    expect(real).toEqual([])
+  })
+
+  it('RG-GANTT-2303 — deux tâches partageant un jour travaillé → surcharge', () => {
+    // Sans timeline (rétrocompat) : chevauchement d'enveloppes = surcharge.
+    const tasks: Task[] = [
+      mkTask('A', {
+        start_date: '2026-06-08',
+        end_date: '2026-06-10',
+        collaborator_id: 'c1',
+        project_id: 'p1',
+      }),
+      mkTask('B', {
+        start_date: '2026-06-09',
+        end_date: '2026-06-11',
+        collaborator_id: 'c1',
+        project_id: 'p1',
+      }),
+    ]
+    const overloads = checkCoherence(tasks).filter((i) => i.kind === 'overload')
+    expect(overloads.length).toBe(1)
   })
 })

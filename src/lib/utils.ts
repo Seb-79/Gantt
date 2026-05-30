@@ -1720,44 +1720,108 @@ export interface ReplanMove {
 }
 
 /**
- * v1.18 — Cherche la première date de début ≥ `earliestStart` telle que
- * l'intervalle de travail `[start ; addWorkingDays(start, charge)]` ne
- * chevauche AUCUN intervalle déjà occupé par le collaborateur.
+ * v2.5 / RG-GANTT-2300 — Place une charge en TISSANT autour des obstacles.
  *
- * Les intervalles sont fournis sous la forme `[start_iso, end_iso]` (bornes
- * INCLUSIVES). On considère qu'il y a chevauchement dès que les deux
- * intervalles ont au moins un jour en commun.
+ * Consomme `charge` jours-ouvrés-équivalents à partir de `earliest`, en SAUTANT
+ * les jours sans capacité (week-end / férié / congé / hors-allocation) ET les
+ * jours déjà pris par une autre tâche (`timeline`). Les jours travaillés
+ * peuvent donc être NON CONTIGUS : cela minimise la date de fin (l'objectif du
+ * Replan). Chaque jour retenu est marqué comme pris pour tous les collabs
+ * affectés (mutation de `timeline`).
  *
- * @param intervals     Intervalles déjà fixés pour le collaborateur.
- * @param earliestStart Borne basse (souvent : `current_start` ou contrainte
- *                      de prédécesseur), déjà snappée jour ouvré.
- * @param charge        Durée en jours OUVRÉS de la tâche à placer.
- * @returns             1er jour ouvré disponible (ISO YYYY-MM-DD).
+ * Capacité du jour :
+ *   • avec allocations (multi-collab additif F6) → Σ getDailyAllocation,
+ *   • sans contexte d'allocation (F0, rétrocompat) → 1 par jour ouvré.
+ *
+ * @returns { start, end, days } — 1er et dernier jour travaillé (inclus) + la
+ *          liste ordonnée des jours travaillés. Si aucun jour disponible n'est
+ *          trouvé dans la fenêtre de scan, `start`/`end` retombent sur
+ *          `earliest` et `days` est vide.
  */
-function findFreeSlot(
-  intervals: Array<[string, string]>,
-  earliestStart: string,
-  charge: number,
-): string {
-  let candidate = snapForwardToWorkingDay(earliestStart)
-  // On ré-itère tant qu'on déplace : pousser au-delà d'un intervalle peut
-  // tomber sur un autre intervalle plus loin (intervalles non triés ici,
-  // mais le caller les tient triés ; la boucle est bornée par leur nombre).
-  let moved = true
-  while (moved) {
-    moved = false
-    const candidateEnd = addWorkingDays(candidate, charge)
-    for (const [iStart, iEnd] of intervals) {
-      // Chevauchement = NON (candidateEnd < iStart OU candidate > iEnd).
-      if (candidateEnd >= iStart && candidate <= iEnd) {
-        // Pousse au 1er jour ouvré APRÈS la fin de l'intervalle bloquant.
-        candidate = snapForwardToWorkingDay(addDaysIso(iEnd, 1))
-        moved = true
-        break
-      }
-    }
+/**
+ * v2.5 — Vrai si `dayIso` est déjà pris pour AU MOINS UN des collabs affectés
+ * (obstacle dans la grille `timeline`). Extrait de `placeChargeWeaving` pour
+ * limiter sa complexité cognitive.
+ */
+function isDayBlocked(
+  timeline: Map<string, Set<string>>,
+  collabIds: string[],
+  dayIso: string,
+): boolean {
+  for (const cId of collabIds) {
+    if (timeline.get(cId)?.has(dayIso)) return true
   }
-  return candidate
+  return false
+}
+
+/**
+ * v2.5 — Capacité d'un jour pour le tissage : Σ allocations des collabs si un
+ * contexte d'allocation est fourni (multi-collab additif F6), sinon 1 par jour
+ * ouvré (F0, rétrocompat). Extrait de `placeChargeWeaving`.
+ */
+function weavingDayCapacity(
+  dayIso: string,
+  collabIds: string[],
+  allocations: MemberAllocation[],
+  absences: CollaboratorAbsence[],
+  projectId: string | null,
+  useAllocations: boolean,
+): number {
+  if (useAllocations && projectId) {
+    let cap = 0
+    for (const cId of collabIds) {
+      cap += getDailyAllocation(dayIso, allocations, projectId, cId, absences)
+    }
+    return cap
+  }
+  return isNonWorkingDay(isoToDate(dayIso)) ? 0 : 1
+}
+
+function placeChargeWeaving(
+  earliest: string,
+  charge: number,
+  collabIds: string[],
+  timeline: Map<string, Set<string>>,
+  allocations: MemberAllocation[],
+  absences: CollaboratorAbsence[],
+  projectId: string | null,
+): { start: string; end: string; days: string[] } {
+  const needed = Math.max(1, charge)
+  // F0 (rétrocompat) : sans allocations / sans collab / sans projet, chaque
+  // jour ouvré vaut 1 (sémantique « charge = N jours ouvrés »).
+  const useAllocations =
+    allocations.length > 0 && collabIds.length > 0 && !!projectId
+  const days: string[] = []
+  let consumed = 0
+  let firstWorked: string | null = null
+  let lastWorked = earliest
+  let cur = earliest
+  // Garde-fou : 10 000 jours ≈ 27 ans, largement suffisant.
+  const maxScan = Math.max(needed * 30, 10000)
+  for (let i = 0; i < maxScan; i++) {
+    // Jour libre (pas un obstacle) ET avec de la capacité → on le consomme.
+    const cap = isDayBlocked(timeline, collabIds, cur)
+      ? 0
+      : weavingDayCapacity(
+          cur,
+          collabIds,
+          allocations,
+          absences,
+          projectId,
+          useAllocations,
+        )
+    if (cap > 0) {
+      consumed += cap
+      if (firstWorked === null) firstWorked = cur
+      lastWorked = cur
+      days.push(cur)
+      markDayTaken(timeline, collabIds, cur)
+      // Tolérance numérique (cumul de fractions 0.25/0.5/0.75/1.0).
+      if (consumed >= needed - 1e-9) break
+    }
+    cur = addDaysIso(cur, 1)
+  }
+  return { start: firstWorked ?? earliest, end: lastWorked, days }
 }
 
 /**
@@ -1869,21 +1933,51 @@ function buildReplanOrder(tasks: Task[]): Task[] {
  * avec les tâches TERMINÉES (`progress = 100`). Ces tâches sont des obstacles
  * que le Replan doit contourner mais ne déplace JAMAIS.
  *
- * Reprend le rôle structurel de l'ancienne `prefillLockedIntervals` du mode
- * partial abandonné (RG-GANTT-0906), avec un filtre différent : `progress = 100`
- * au lieu de `!concernedIds.has(id)`.
+ * v2.5 / RG-GANTT-2302 — La timeline est désormais une grille de JOURS possédés
+ * (`Set<string>` par collab) au lieu d'intervalles. Chaque jour ouvré de
+ * `[start, end]` de la tâche terminée est marqué comme pris, et la liste de ses
+ * jours travaillés est enregistrée dans `workedDays` (pour le plan de charge).
  */
-function prefillCompletedIntervals(
+function prefillCompletedDays(
   tasks: Task[],
-  timeline: Map<string, Array<[string, string]>>,
+  timeline: Map<string, Set<string>>,
+  workedDays: Map<string, string[]>,
 ): void {
   for (const t of tasks) {
     if (t.kind !== 'task') continue
     if (t.progress !== 100) continue
     const collabIds = taskCollabIds(t)
-    for (const cId of collabIds) {
-      pushTimelineInterval(timeline, cId, t.start_date, t.end_date)
+    if (collabIds.length === 0) continue
+    const days: string[] = []
+    let cur = t.start_date
+    while (cur <= t.end_date) {
+      if (!isNonWorkingDay(isoToDate(cur))) {
+        days.push(cur)
+        markDayTaken(timeline, collabIds, cur)
+      }
+      cur = addDaysIso(cur, 1)
     }
+    workedDays.set(t.id, days)
+  }
+}
+
+/**
+ * v2.5 / RG-GANTT-2302 — Marque un jour comme pris pour tous les collabs
+ * affectés dans la grille `timeline` (Set<string> par collab). Factorisé pour
+ * `prefillCompletedDays` et `placeChargeWeaving`.
+ */
+function markDayTaken(
+  timeline: Map<string, Set<string>>,
+  collabIds: string[],
+  dayIso: string,
+): void {
+  for (const cId of collabIds) {
+    let set = timeline.get(cId)
+    if (!set) {
+      set = new Set<string>()
+      timeline.set(cId, set)
+    }
+    set.add(dayIso)
   }
 }
 
@@ -1985,45 +2079,30 @@ function predecessorLowerBound(
 }
 
 /**
- * v1.18 — Ajoute un intervalle à la timeline d'un collaborateur, en
- * conservant l'ordre croissant des starts. Comparaison lexicographique sur
- * ISO YYYY-MM-DD (équivalent au tri chronologique).
+ * v1.21 / v2.5 — Place UNE tâche dans la timeline (grille de jours possédés),
+ * met à jour `proposed`, `timeline` et `workedDays`. Extrait pour limiter la
+ * complexité cognitive de `replanTasks` (cf. sonarjs/cognitive-complexity).
  *
- * @param timeline       Map id-collab → liste d'intervalles `[start, end]`.
- * @param collabId       Collaborateur à mettre à jour.
- * @param start          Début de l'intervalle (jour ouvré).
- * @param end            Fin de l'intervalle (jour ouvré, incluse).
- */
-function pushTimelineInterval(
-  timeline: Map<string, Array<[string, string]>>,
-  collabId: string,
-  start: string,
-  end: string,
-): void {
-  const intervals = timeline.get(collabId) || []
-  intervals.push([start, end])
-  intervals.sort((a, b) => a[0].localeCompare(b[0]))
-  timeline.set(collabId, intervals)
-}
-
-/**
- * v1.21 — Place UNE tâche dans le timeline en cherchant le 1er créneau libre,
- * met à jour `proposed` et `timeline`. Extrait pour limiter la complexité
- * cognitive de `replanTasks` (cf. sonarjs/cognitive-complexity).
+ * v2.5 / RG-GANTT-2300..2202 — Le placement TISSE désormais la charge autour
+ * des obstacles (`placeChargeWeaving`) : les jours travaillés peuvent être non
+ * contigus, ce qui minimise la date de fin. `start` = 1er jour travaillé (sauf
+ * activité en cours, dont le début reste figé — RG-GANTT-2103).
  *
- * @param t          Tâche à placer (kind='task' garanti par le caller).
- * @param tasksById  Index id → tâche du projet.
- * @param proposed   Dates déjà proposées (sera mutée).
- * @param timeline   Map id-collab → intervalles fixés (sera mutée).
+ * @param t           Tâche à placer (kind='task' garanti par le caller).
+ * @param tasksById   Index id → tâche du projet.
+ * @param proposed    Dates déjà proposées (sera mutée).
+ * @param timeline    Grille jours possédés par collab (sera mutée).
+ * @param workedDays  Map id-tâche → jours réellement travaillés (sera mutée).
  */
 function placeTaskInTimeline(
   t: Task,
   tasksById: Map<string, Task>,
   proposed: Map<string, { start: string; end: string }>,
-  timeline: Map<string, Array<[string, string]>>,
+  timeline: Map<string, Set<string>>,
   allocations: MemberAllocation[],
   absences: CollaboratorAbsence[],
   projectStartDate: string,
+  workedDays: Map<string, string[]>,
   options: { ignoreToday?: boolean } = {},
 ): void {
   // v2.0 — Charge totale lue depuis `task.charge_jours` (source de vérité).
@@ -2038,21 +2117,17 @@ function placeTaskInTimeline(
     Math.ceil(totalCharge * (1 - progressFrac)),
   )
   // v2.3 / RG-GANTT-2103 (Option γ) — Pour une activité en cours
-  // (0 < progress < 100), `start_date` est FIGÉE à sa valeur historique :
-  // le Replan ne la recalcule pas, il ne touche qu'à `end_date`. La
-  // consommation du reste à faire démarre à `MAX(today, start_date)` —
-  // on ne consomme jamais dans le passé.
-  //
-  // Pour une activité jamais démarrée (progress = 0), `start_date` est
-  // recalculée à la borne basse globale (RG-GANTT-1903).
-  let earliest: string
+  // (0 < progress < 100), `start_date` est FIGÉE à sa valeur historique : le
+  // Replan ne la recalcule pas, la consommation du reste à faire repart de
+  // cette date. Pour une activité jamais démarrée (progress = 0), le scan
+  // repart de la borne basse globale (RG-GANTT-1903).
+  let scanStart: string
+  let forcedStart: string | null = null
   if (progressFrac > 0) {
-    // Activité en cours : start figée. Consommation à partir de MAX(today, start_date).
-    const today = todayIso()
-    earliest = t.start_date > today ? t.start_date : today
+    scanStart = t.start_date
+    forcedStart = t.start_date
   } else {
-    // Activité jamais démarrée : start au plus tôt selon la borne basse globale.
-    earliest = computeReplanEarliestStart(
+    scanStart = computeReplanEarliestStart(
       t,
       tasksById,
       proposed,
@@ -2061,39 +2136,20 @@ function placeTaskInTimeline(
     )
   }
   const collabIds = taskCollabIds(t)
-  let newStart = earliest
-  for (const cId of collabIds) {
-    const intervals = timeline.get(cId) || []
-    const candidate = findFreeSlot(intervals, earliest, effectiveCharge)
-    if (candidate > newStart) newStart = candidate
-  }
-  // v2.3 / RG-GANTT-2103 — Si la tâche est en cours, on contraint newStart
-  // à rester égal à la start_date figée (le moteur peut avoir trouvé un
-  // créneau plus tardif à cause d'obstacles, mais la barre démarre toujours
-  // historiquement). Dans ce cas, on accepte que la consommation effective
-  // démarre plus tard (la timeline reflétera cela).
-  if (progressFrac > 0) {
-    newStart = t.start_date
-  }
-  // v2.0 / F2 — La fin est calculée en consommant la capacité quotidienne
-  // (allocation %) du collab sur le projet.
-  // v2.0 / F3 — Les absences personnelles diminuent cette capacité jour par
-  // jour (lecture multiplicative).
-  // v2.0 / F6 — En multi-collab, la capacité du jour est la SOMME des
-  // contributions de tous les affectés (Q12a additif uniforme).
-  // v2.2 / RG-C — La consommation porte sur `effectiveCharge` (reste à faire).
-  const newEnd = computeEndFromCharge(newStart, effectiveCharge, {
-    projectId: t.project_id,
-    collaboratorId: t.collaborator_id,
-    collaboratorIds: collabIds.length > 0 ? collabIds : undefined,
+  // v2.5 / RG-GANTT-2300 — Tissage : consomme `effectiveCharge` en sautant les
+  // jours sans capacité ET les jours déjà pris (mutation de `timeline`).
+  const placement = placeChargeWeaving(
+    scanStart,
+    effectiveCharge,
+    collabIds,
+    timeline,
     allocations,
     absences,
-  })
-  proposed.set(t.id, { start: newStart, end: newEnd })
-  // v2.0 / F6 — Bloque le créneau dans la timeline de CHAQUE collab affecté.
-  for (const cId of collabIds) {
-    pushTimelineInterval(timeline, cId, newStart, newEnd)
-  }
+    t.project_id,
+  )
+  const newStart = forcedStart ?? placement.start
+  proposed.set(t.id, { start: newStart, end: placement.end })
+  workedDays.set(t.id, placement.days)
 }
 
 /**
@@ -2163,25 +2219,30 @@ export interface ReplanResult {
  * cohérence parfaite avec le moteur. Fonction pure (idempotente).
  */
 /**
- * v2.3 / RG-GANTT-2104 — Construit la timeline enrichie (`taskId` + plage)
- * à partir des dates proposées par le moteur. Extrait pour limiter la
- * complexité cognitive de `computeReplanResult`. Tri stable par start.
+ * v2.3 / RG-GANTT-2104 — Construit la timeline enrichie consommée par le Plan
+ * de charge et la détection de surcharge.
+ *
+ * v2.5 / RG-GANTT-2302 — Avec le morcellement, une tâche n'occupe plus un bloc
+ * contigu : on émet UNE entrée par JOUR réellement travaillé (`[d, d]`), pris
+ * dans `workedDays`. Ainsi deux enveloppes qui se chevauchent visuellement mais
+ * dont les jours travaillés sont disjoints ne créent aucune fausse surcharge.
+ * Fallback (cas défensif, tâche non placée) : jours ouvrés de l'enveloppe
+ * proposée. Tri stable par start.
  */
 function buildEnrichedTimeline(
   tasks: Task[],
   proposed: Map<string, { start: string; end: string }>,
+  workedDays: Map<string, string[]>,
 ): Map<string, TimelineEntry[]> {
   const timeline = new Map<string, TimelineEntry[]>()
   for (const t of tasks) {
     if (t.kind !== 'task') continue
     const collabIds = taskCollabIds(t)
     if (collabIds.length === 0) continue
-    const p = proposed.get(t.id)
-    const start = p?.start ?? t.start_date
-    const end = p?.end ?? t.end_date
+    const days = workedDays.get(t.id) ?? envelopeWorkingDays(t, proposed)
     for (const cId of collabIds) {
       const list = timeline.get(cId) ?? []
-      list.push({ taskId: t.id, start, end })
+      for (const d of days) list.push({ taskId: t.id, start: d, end: d })
       timeline.set(cId, list)
     }
   }
@@ -2190,6 +2251,27 @@ function buildEnrichedTimeline(
     timeline.set(cId, list)
   }
   return timeline
+}
+
+/**
+ * v2.5 — Jours ouvrés de l'enveloppe proposée `[start, end]` d'une tâche.
+ * Fallback de `buildEnrichedTimeline` pour les tâches qui n'ont pas de jours
+ * travaillés enregistrés (ne devrait pas arriver dans le flux normal).
+ */
+function envelopeWorkingDays(
+  t: Task,
+  proposed: Map<string, { start: string; end: string }>,
+): string[] {
+  const p = proposed.get(t.id)
+  const start = p?.start ?? t.start_date
+  const end = p?.end ?? t.end_date
+  const days: string[] = []
+  let cur = start
+  while (cur <= end) {
+    if (!isNonWorkingDay(isoToDate(cur))) days.push(cur)
+    cur = addDaysIso(cur, 1)
+  }
+  return days
 }
 
 export function computeReplanResult(
@@ -2208,13 +2290,14 @@ export function computeReplanResult(
     proposed.set(t.id, { start: t.start_date, end: t.end_date })
   }
 
-  // Timeline interne (pour le moteur, format [start, end]).
-  const timelineRaw = new Map<string, Array<[string, string]>>()
-  prefillCompletedIntervals(tasks, timelineRaw)
+  // v2.5 / RG-GANTT-2302 — Timeline interne = grille de JOURS possédés par
+  // collab (`Set<string>`). Les tâches terminées pré-remplissent la grille.
+  const timelineRaw = new Map<string, Set<string>>()
+  const workedDays = new Map<string, string[]>()
+  prefillCompletedDays(tasks, timelineRaw, workedDays)
 
-  // v2.3 — Pour exposer la timeline « consommation effective », on note quel
-  // créneau correspond à quelle tâche. On reconstruit la map taskId → entry
-  // en parallèle.
+  // Place chaque tâche (hors terminées) en tissant autour des obstacles ;
+  // `workedDays` accumule les jours réellement travaillés par tâche.
   for (const t of order) {
     if (t.progress === 100) continue
     placeTaskInTimeline(
@@ -2225,14 +2308,14 @@ export function computeReplanResult(
       allocations,
       absences,
       projectStartDate,
+      workedDays,
       { ignoreToday },
     )
   }
 
-  // v2.3 / RG-GANTT-2104 — Reconstruit la timeline enrichie (`taskId` + plage)
-  // à partir de `proposed`. Extrait dans un helper pour limiter la
-  // complexité cognitive de `computeReplanResult`.
-  const timeline = buildEnrichedTimeline(tasks, proposed)
+  // v2.3 / RG-GANTT-2104 + v2.5 / RG-GANTT-2302 — Timeline enrichie : une entrée
+  // par jour réellement travaillé (consommation effective).
+  const timeline = buildEnrichedTimeline(tasks, proposed, workedDays)
 
   return { moves: buildReplanMoves(order, proposed), timeline }
 }
@@ -2398,7 +2481,84 @@ function findOverloadPairs(list: Task[]): CoherenceIssue[] {
   return issues
 }
 
-function detectOverloads(tasks: Task[]): CoherenceIssue[] {
+/**
+ * v2.5 / RG-GANTT-2303 — Recherche les surcharges à partir de la timeline
+ * moteur (jours réellement travaillés). Une surcharge = deux tâches du même
+ * collab partageant AU MOINS UN jour travaillé. Le morcellement fait que des
+ * enveloppes `[start,end]` peuvent se chevaucher sans aucun jour commun : on
+ * ne lève alors plus de fausse surcharge.
+ *
+ * @param entries   Entrées de timeline d'UN collab (une par jour travaillé).
+ * @param taskById  Index id → tâche (pour les libellés du message).
+ */
+/**
+ * v2.5 — Collecte les clés de paires `idA|idB` (ids triés) en conflit pour un
+ * collab : deux tâches partageant un même jour travaillé. Dédupliquées via un
+ * `Set`. Extrait pour limiter la complexité de `findOverloadPairsFromTimeline`.
+ */
+function collectConflictPairKeys(entries: TimelineEntry[]): Set<string> {
+  // Jour → ids des tâches travaillées ce jour-là par ce collab.
+  const byDay = new Map<string, Set<string>>()
+  for (const e of entries) {
+    const set = byDay.get(e.start) ?? new Set<string>()
+    set.add(e.taskId)
+    byDay.set(e.start, set)
+  }
+  const keys = new Set<string>()
+  for (const ids of byDay.values()) {
+    if (ids.size < 2) continue
+    const arr = [...ids].sort()
+    for (let i = 0; i < arr.length; i++) {
+      for (let j = i + 1; j < arr.length; j++) {
+        keys.add(`${arr[i]}|${arr[j]}`)
+      }
+    }
+  }
+  return keys
+}
+
+function findOverloadPairsFromTimeline(
+  entries: TimelineEntry[],
+  taskById: Map<string, Task>,
+): CoherenceIssue[] {
+  const issues: CoherenceIssue[] = []
+  for (const key of collectConflictPairKeys(entries)) {
+    const [idA, idB] = key.split('|')
+    const a = taskById.get(idA)
+    const b = taskById.get(idB)
+    if (!a || !b) continue
+    issues.push({
+      kind: 'overload',
+      severity: 'error',
+      taskIds: [a.id, b.id],
+      message: `Surcharge : « ${a.name} » et « ${b.name} » se chevauchent sur le même collaborateur.`,
+    })
+  }
+  return issues
+}
+
+/**
+ * v2.5 / RG-GANTT-2303 — Détection de surcharge basée sur la timeline moteur
+ * (jours réellement travaillés). Extrait de `detectOverloads` pour limiter sa
+ * complexité cognitive.
+ */
+function detectOverloadsFromTimeline(
+  tasks: Task[],
+  engineTimeline: Map<string, TimelineEntry[]>,
+): CoherenceIssue[] {
+  const taskById = new Map(tasks.map((t) => [t.id, t]))
+  const issues: CoherenceIssue[] = []
+  for (const entries of engineTimeline.values()) {
+    issues.push(...findOverloadPairsFromTimeline(entries, taskById))
+  }
+  return issues
+}
+
+/**
+ * v1.21 (rétrocompat) — Détection de surcharge par chevauchement d'enveloppes
+ * `[start_date, end_date]`, regroupées par collaborateur.
+ */
+function detectOverloadsFromEnvelopes(tasks: Task[]): CoherenceIssue[] {
   const byCollab = groupTasksByCollab(tasks)
   const issues: CoherenceIssue[] = []
   for (const list of byCollab.values()) {
@@ -2406,6 +2566,18 @@ function detectOverloads(tasks: Task[]): CoherenceIssue[] {
     issues.push(...findOverloadPairs(list))
   }
   return issues
+}
+
+function detectOverloads(
+  tasks: Task[],
+  engineTimeline?: Map<string, TimelineEntry[]>,
+): CoherenceIssue[] {
+  // v2.5 / RG-GANTT-2303 — Si la timeline moteur est fournie, la surcharge se
+  // mesure sur les jours réellement travaillés (consommation effective), pas
+  // sur le chevauchement naïf des enveloppes `[start_date, end_date]`.
+  return engineTimeline
+    ? detectOverloadsFromTimeline(tasks, engineTimeline)
+    : detectOverloadsFromEnvelopes(tasks)
 }
 
 /**
@@ -2462,7 +2634,7 @@ function detectPredecessorViolations(tasks: Task[]): CoherenceIssue[] {
  *
  * v2.3 (2026-05-27) — Cas particulier : si AU MOINS UNE des deux tâches a
  * `progress = 100` (terminée), le moteur Replan ne la déplace pas (cf.
- * `computeReplanResult` : skip + `prefillCompletedIntervals`). Lancer un
+ * `computeReplanResult` : skip + `prefillCompletedDays`). Lancer un
  * Replan ne changera donc rien à l'ordre chronologique observé. On garde
  * malgré tout l'incohérence dans le bandeau (l'utilisateur doit la corriger
  * à la main) mais avec un message explicite et `fixableByReplan = false`
@@ -2628,9 +2800,12 @@ function detectPredecessorTerminatedInFuture(tasks: Task[]): CoherenceIssue[] {
   return issues
 }
 
-export function checkCoherence(tasks: Task[]): CoherenceIssue[] {
+export function checkCoherence(
+  tasks: Task[],
+  engineTimeline?: Map<string, TimelineEntry[]>,
+): CoherenceIssue[] {
   return [
-    ...detectOverloads(tasks),
+    ...detectOverloads(tasks, engineTimeline),
     ...detectPredecessorViolations(tasks),
     ...detectPriorityViolations(tasks),
     ...detectNotBeforeViolations(tasks),

@@ -402,17 +402,6 @@ export default function App() {
     [orderedTasks, collapsedPhases],
   )
 
-  /**
-   * v1.21 — Audit de cohérence du projet courant. Recalculé à chaque
-   * changement de `orderedTasks` (drag, save, polling). Pur, déterministe,
-   * < 1 ms à l'échelle d'un projet. Quand la liste est vide, le bandeau
-   * `CoherenceAlert` se cache automatiquement.
-   */
-  const coherenceIssues = useMemo(
-    () => checkCoherence(orderedTasks),
-    [orderedTasks],
-  )
-
   // v2.4 — État d'affichage du bandeau de cohérence, mémorisé par projet
   // (cf. useAlertDisplay). `applyAlertDisplay` met à jour + persiste.
   const { display: alertDisplay, setDisplay: applyAlertDisplay } =
@@ -454,6 +443,21 @@ export default function App() {
     )
     return result.timeline
   }, [state, currentProject, orderedTasks])
+
+  /**
+   * v1.21 — Audit de cohérence du projet courant. Recalculé à chaque
+   * changement de `orderedTasks` (drag, save, polling). Pur, déterministe,
+   * < 1 ms à l'échelle d'un projet. Quand la liste est vide, le bandeau
+   * `CoherenceAlert` se cache automatiquement.
+   *
+   * v2.5 / RG-GANTT-2303 — On passe la timeline moteur pour que la détection
+   * de surcharge porte sur les jours RÉELLEMENT travaillés (morcellement) et
+   * non sur le chevauchement naïf des enveloppes `[start, end]`.
+   */
+  const coherenceIssues = useMemo(
+    () => checkCoherence(orderedTasks, engineTimeline),
+    [orderedTasks, engineTimeline],
+  )
 
   /**
    * v1.4 — Au premier chargement de l'état, recale la fenêtre de visualisation
@@ -1842,6 +1846,10 @@ export default function App() {
                 onShiftWindow={shiftWindow}
                 collapsedPhases={collapsedPhases}
                 onToggleCollapse={toggleCollapse}
+                // v2.5 / RG-GANTT-2304 — Timeline moteur pour griser les jours
+                // creux des activités morcelées (jours non travaillés dans
+                // l'enveloppe [start, end]).
+                engineTimeline={engineTimeline}
               />
             )}
             {view === 'workload' && (

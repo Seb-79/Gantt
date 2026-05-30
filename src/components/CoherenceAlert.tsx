@@ -94,10 +94,10 @@ export default function CoherenceAlert({
         type="button"
         data-testid="coherence-alert-pill"
         onClick={onExpand}
-        title="Afficher les incohérences détectées"
-        aria-label={`${issues.length} incohérence${
+        title="Afficher les points d'attention détectés"
+        aria-label={`${issues.length} point${
           issues.length > 1 ? 's' : ''
-        } détectée${issues.length > 1 ? 's' : ''} — afficher`}
+        } d'attention détecté${issues.length > 1 ? 's' : ''} — afficher`}
         className={[
           'mb-3 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold shadow-sm',
           pill,
@@ -112,7 +112,7 @@ export default function CoherenceAlert({
   return (
     <div
       role="alert"
-      aria-label="Incohérences détectées"
+      aria-label="Points d'attention détectés"
       className={[
         'mb-3 rounded-lg border px-3 py-2 text-sm shadow-sm',
         palette.wrapper,
@@ -125,8 +125,8 @@ export default function CoherenceAlert({
         </span>
         <div className="flex-1 min-w-0">
           <div className={['font-semibold mb-1', palette.header].join(' ')}>
-            {issues.length} incohérence{issues.length > 1 ? 's' : ''} détectée
-            {issues.length > 1 ? 's' : ''} dans le planning
+            {issues.length} point{issues.length > 1 ? 's' : ''} d'attention
+            détecté{issues.length > 1 ? 's' : ''} dans le planning
           </div>
           {/* Liste des messages. Limitée visuellement à 5 lignes via
               max-h + overflow pour ne pas bouffer la place du Gantt sur les

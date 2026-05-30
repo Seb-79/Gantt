@@ -302,6 +302,55 @@ describe('createTask', () => {
     expect(r.task.priority).toBeNull()
   })
 
+  // v2.6 / RG-GANTT-0207 — Jalon imposé : le flag milestone_imposed est
+  // persisté et relu (booléen) à la création.
+  it('v2.6 / RG-GANTT-0207 — jalon imposé : milestone_imposed persisté à true', () => {
+    const r = createTask(db, {
+      id: 'm_imp',
+      name: 'Noël',
+      kind: 'milestone',
+      start_date: '2026-12-25',
+      milestone_imposed: true,
+    })
+    expect(r.task.milestone_imposed).toBe(true)
+    // Relecture via l'état complet : toujours booléen true.
+    const m = getFullState(db).tasks.find((t) => t.id === 'm_imp')
+    expect(m.milestone_imposed).toBe(true)
+  })
+
+  it('v2.6 / RG-GANTT-0208 — jalon non imposé par défaut (flag absent → false)', () => {
+    const r = createTask(db, {
+      id: 'm_free',
+      name: 'Validation',
+      kind: 'milestone',
+      start_date: '2026-06-17',
+    })
+    expect(r.task.milestone_imposed).toBe(false)
+  })
+
+  it('v2.6 / RG-GANTT-0207 — flag ignoré (false) sur une activité', () => {
+    const r = createTask(db, {
+      id: 't_imp',
+      name: 'A',
+      start_date: '2026-06-08',
+      end_date: '2026-06-08',
+      milestone_imposed: true,
+    })
+    expect(r.task.milestone_imposed).toBe(false)
+  })
+
+  it('v2.6 / RG-GANTT-0207 — updateTask bascule le flag imposé', () => {
+    createTask(db, {
+      id: 'm_tog',
+      name: 'Jalon',
+      kind: 'milestone',
+      start_date: '2026-06-17',
+    })
+    updateTask(db, 'm_tog', { milestone_imposed: true })
+    const m = getFullState(db).tasks.find((t) => t.id === 'm_tog')
+    expect(m.milestone_imposed).toBe(true)
+  })
+
   // v1.24 / Pr2 / RG-GANTT-0304 — Une phase n'a pas de priorité : toute valeur
   // saisie au moment de la création est ramenée à `null` par normalizePriority,
   // symétriquement au jalon (RG-GANTT-0502) mais sur kind='phase'.
@@ -867,6 +916,46 @@ describe('v1.9 — cascade aux successeurs', () => {
     const m = get('M')
     expect(m.start_date).toBe('2026-06-17')
     expect(m.end_date).toBe('2026-06-17')
+  })
+
+  // v2.6 / RG-GANTT-0208 — Un jalon NON imposé suit son prédécesseur dans les
+  // DEUX sens : quand X recule, le jalon recule aussi (≠ activité, qui reste
+  // sur place — lag = minimum, RG-GANTT-0406).
+  it('RG-GANTT-0208 — jalon non imposé : suit X quand X RECULE (cascade arrière)', () => {
+    // M jalon non imposé, prédécesseur = X, placé loin dans le futur.
+    createTask(db, {
+      id: 'M',
+      name: 'M',
+      kind: 'milestone',
+      start_date: '2026-08-17',
+      end_date: '2026-08-17',
+      predecessor_id: 'X',
+    })
+    // X recule : sa fin passe de 12/06 à 10/06.
+    updateTask(db, 'X', { end_date: '2026-06-10' })
+    const m = get('M')
+    // Le jalon non imposé se recale EXACTEMENT sur la fin de X (lag 0).
+    expect(m.start_date).toBe('2026-06-10')
+    expect(m.end_date).toBe('2026-06-10')
+  })
+
+  // v2.6 / RG-GANTT-0207 — Un jalon IMPOSÉ ne bouge jamais, même si son
+  // prédécesseur change (la date est verrouillée — ex. « date de Noël »).
+  it('RG-GANTT-0207 — jalon imposé : ne bouge pas quand X change', () => {
+    createTask(db, {
+      id: 'M',
+      name: 'Noël',
+      kind: 'milestone',
+      start_date: '2026-12-25',
+      end_date: '2026-12-25',
+      predecessor_id: 'X',
+      milestone_imposed: true,
+    })
+    // X avance (sa fin recule) ET X s'allonge : dans les deux cas, M reste fixe.
+    updateTask(db, 'X', { end_date: '2026-06-10' })
+    expect(get('M').start_date).toBe('2026-12-25')
+    updateTask(db, 'X', { end_date: '2027-01-15' })
+    expect(get('M').start_date).toBe('2026-12-25')
   })
 })
 

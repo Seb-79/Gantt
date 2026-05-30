@@ -297,6 +297,9 @@ export const CreateTaskBody = z
     // Si fournie, prend le pas sur `end_date` (qui est dérivée). Forcée à null
     // pour les jalons et phases côté DAL.
     charge_jours: ChargeJours.optional(),
+    // v2.6 — Jalon imposé : date verrouillée (non replanifiable). Pertinent
+    // uniquement pour kind='milestone' ; forcé à 0 pour tâches/phases côté DAL.
+    milestone_imposed: z.boolean().optional(),
     // v1.8 — Projet de rattachement (optionnel : si absent, le DAL utilise
     // le premier projet existant).
     project_id: NonEmptyId.optional(),
@@ -325,6 +328,7 @@ export const UpdateTaskBody = z
     not_later_than_date: IsoDate.nullable().optional(), // v2.0 / F4 — FNLT (deadline non-bloquante)
     charge_jours: ChargeJours.optional(), // v2.0 — charge stockée (source de vérité)
     collaborator_ids: z.array(NonEmptyId).optional(), // v2.0 / F6 — multi-collab
+    milestone_imposed: z.boolean().optional(), // v2.6 — jalon imposé (date verrouillée)
   })
   .refine((v) => Object.keys(v).length > 0, {
     message: 'au moins un champ doit être fourni',

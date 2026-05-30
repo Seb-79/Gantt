@@ -1468,6 +1468,23 @@ function renderBar(
           }}
           title={`${task.name} — ${task.start_date} — cliquer pour modifier`}
         />
+        {/* v2.6 — Jalon IMPOSÉ : petit cadenas 🔒 accolé au losange pour
+          signaler une date verrouillée (non replanifiable). Repère visuel pur. */}
+        {task.milestone_imposed && (
+          <span
+            className="absolute pointer-events-none select-none leading-none"
+            style={{
+              left: diamondLeft + size + 1,
+              top: ROW_HEIGHT / 2 - 7,
+              fontSize: 10,
+              zIndex: 3,
+            }}
+            title={`${task.name} — date imposée (non replanifiable)`}
+            aria-label="Date imposée"
+          >
+            🔒
+          </span>
+        )}
         {/* v1.11 — Jalon : une seule date (start == end), à droite du losange. */}
         {showDates &&
           renderDateLabels(

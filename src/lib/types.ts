@@ -123,6 +123,11 @@ export interface Task {
    *  `end_date` est dérivée de `addWorkingDays(start_date, charge_jours)`.
    *  `null` pour les jalons et les phases (pas de notion de charge propre). */
   charge_jours: number | null
+  /** v2.6 — Jalon imposé : `true` = date verrouillée, jamais replanifiée ni
+   *  déplacée par la cascade (ex. « date de Noël »). `false` (défaut) = le jalon
+   *  suit son prédécesseur comme une activité. Pertinent uniquement pour
+   *  `kind='milestone'` ; ignoré (false) pour les tâches et phases. */
+  milestone_imposed?: boolean
   /** Position d'affichage (ordre des lignes). */
   position: number
   /** Projet de rattachement (v1.8). */

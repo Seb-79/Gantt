@@ -96,6 +96,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   -- elles ne sont plus que des caches recomputés à chaque mutation).
   -- NULL pour jalons et phases (qui n'ont pas de charge propre).
   charge_jours    INTEGER,
+  -- v2.6 — Jalon imposé : 1 = date verrouillée (jamais replanifiée ni déplacée
+  -- par la cascade, ex. « date de Noël ») ; 0 = non imposé (le jalon suit son
+  -- prédécesseur comme une activité). Pertinent uniquement pour kind='milestone'.
+  milestone_imposed INTEGER NOT NULL DEFAULT 0,
   position        INTEGER NOT NULL,
   -- v1.8 — project_id est ajouté à la table tasks pour les bases neuves ;
   -- pour les bases anciennes, c'est `ensureTaskColumns()` (db/index.js) qui

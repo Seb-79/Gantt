@@ -484,13 +484,18 @@ export function getFullState(db, projectId) {
           `SELECT id, name, kind, start_date, end_date, progress,
                   collaborator_id, color, parent_id,
                   priority, not_before_date, not_later_than_date,
-                  charge_jours, position, project_id
+                  charge_jours, milestone_imposed, position, project_id
              FROM tasks
              WHERE project_id = ?
              ORDER BY position ASC, id ASC`,
         )
         .all(currentId)
     : []
+  // v2.6 — Normalise le booléen `milestone_imposed` (stocké 0/1 en SQLite) en
+  // vrai booléen JS pour coller au type `Task` côté front.
+  for (const t of tasks) {
+    t.milestone_imposed = t.milestone_imposed === 1
+  }
   // v2.0 / F6 — Enrichit les tâches avec leurs prédécesseurs et leurs
   // affectations multi-collab. Extrait dans des helpers privés pour limiter
   // la complexité cognitive de `getFullState` (sonarjs).
@@ -1542,7 +1547,29 @@ function computeMinStartFromPredecessors(db, taskId) {
  * @param {object} current  Tâche AVANT update (lue depuis la base).
  * @param {object} next     Tâche APRÈS application du patch (en cours d'éval).
  */
+/**
+ * v2.6 — Normalise le flag « jalon imposé » en 0/1 pour le stockage SQLite.
+ * Vrai (1) UNIQUEMENT si la tâche est un jalon ET la valeur est vraie (booléen
+ * client ou 0/1 hérité d'un SELECT). 0 sinon (tâches/phases : flag sans objet).
+ */
+function resolveMilestoneImposed(kind, value) {
+  return kind === 'milestone' && (value === true || value === 1) ? 1 : 0
+}
+
+/** v2.6 — Vrai si un jalon est imposé (date verrouillée). */
+function isImposedMilestone(t) {
+  return (
+    t.kind === 'milestone' &&
+    resolveMilestoneImposed(t.kind, t.milestone_imposed) === 1
+  )
+}
+
 function reconcilePredecessors(db, current, next) {
+  // v2.6 — Jalon imposé : date verrouillée. On ne la réaligne jamais sur le
+  // prédécesseur (ni à l'édition directe, ni via la cascade).
+  if (isImposedMilestone(next)) {
+    return
+  }
   const minStart = computeMinStartFromPredecessors(db, current.id)
   if (minStart === null) return
   if (next.start_date >= minStart) return
@@ -1584,6 +1611,23 @@ function reconcilePredecessors(db, current, next) {
  * @param {import('better-sqlite3').Database} db
  * @param {string} rootId  Id de la tâche dont les dates viennent de changer.
  */
+/**
+ * v2.6 — Décide si un successeur NE doit PAS être recalé sur `minStart`
+ * (= MAX(pred.end+lag)). Extrait de `propagateToSuccessors` pour limiter sa
+ * complexité cognitive. Trois régimes :
+ *   • jalon imposé  → toujours sauté (date verrouillée, RG-GANTT-0207) ;
+ *   • jalon non imposé → recalé EXACTEMENT (les deux sens) ; sauté seulement
+ *     s'il y est déjà (RG-GANTT-0208) ;
+ *   • activité → recalée uniquement vers l'avant (RG-GANTT-0406 : lag = min).
+ */
+function shouldSkipSuccessorShift(succ, minStart) {
+  if (succ.kind === 'milestone') {
+    if (succ.milestone_imposed === 1) return true
+    return succ.start_date === minStart
+  }
+  return succ.start_date >= minStart
+}
+
 function propagateToSuccessors(db, rootId) {
   // v1.21 — Successeurs récupérés via la table N:M (un succ peut avoir N préds).
   // v2.0 — On ramène charge_jours pour que computeShiftedDates lise la charge
@@ -1592,7 +1636,7 @@ function propagateToSuccessors(db, rootId) {
   // calcul de fin pondérée par l'allocation puisse se faire.
   const fetchSuccessors = db.prepare(
     `SELECT t.id, t.kind, t.start_date, t.end_date, t.parent_id,
-            t.charge_jours, t.project_id, t.collaborator_id
+            t.charge_jours, t.project_id, t.collaborator_id, t.milestone_imposed
        FROM task_predecessors tp
        JOIN tasks t ON t.id = tp.task_id
        WHERE tp.predecessor_id = ?`,
@@ -1616,7 +1660,7 @@ function propagateToSuccessors(db, rootId) {
       // Replan), on ne ramène pas la tâche en arrière.
       const minStart = computeMinStartFromPredecessors(db, succ.id)
       if (minStart === null) continue
-      if (succ.start_date >= minStart) continue
+      if (shouldSkipSuccessorShift(succ, minStart)) continue
       // v2.0 / F2 — `db` est transmis pour permettre à computeShiftedDates de
       // consommer la capacité réelle du collab (allocations %) lors du push.
       const { newStart, newEnd } = computeShiftedDates(succ, minStart, db)
@@ -2064,8 +2108,8 @@ export function createTask(db, input) {
         (id, name, kind, start_date, end_date, progress,
          collaborator_id, color, parent_id, predecessor_id,
          predecessor_lag, priority, not_before_date, not_later_than_date,
-         charge_jours, position, project_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         charge_jours, milestone_imposed, position, project_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       input.id,
       input.name,
@@ -2092,6 +2136,9 @@ export function createTask(db, input) {
       draft.not_later_than_date,
       // v2.0 — Charge stockée en source de vérité. Null pour jalons/phases.
       draft.charge_jours,
+      // v2.6 — Jalon imposé : 1 uniquement pour un jalon explicitement marqué.
+      // Toujours 0 pour les tâches et phases (le flag n'a de sens que sur jalon).
+      resolveMilestoneImposed(kind, input.milestone_imposed),
       position,
       projectId,
     )
@@ -2120,6 +2167,8 @@ export function createTask(db, input) {
     // v2.0 / F6 — Enrichit avec la liste multi-collab (alias legacy déjà
     // posé en base juste avant via l'UPDATE).
     task.collaborators = listTaskAssignments(db, input.id).map((id) => ({ id }))
+    // v2.6 — Normalise le flag jalon imposé (0/1 SQLite → booléen JS).
+    task.milestone_imposed = task.milestone_imposed === 1
     return { version, task }
   })
   return tx()
@@ -2221,12 +2270,18 @@ export function updateTask(db, id, patch) {
     // actuelle, start (et end) sont relevés en respectant la charge en jours ouvrés.
     enforceNotBeforeDate(next, db)
 
+    // v2.6 — Jalon imposé : normalisé en 0/1 (cf. resolveMilestoneImposed).
+    const imposedNext = resolveMilestoneImposed(
+      next.kind,
+      next.milestone_imposed,
+    )
+
     db.prepare(
       `UPDATE tasks
          SET name = ?, kind = ?, start_date = ?, end_date = ?, progress = ?,
              collaborator_id = ?, color = ?, parent_id = ?,
              priority = ?, not_before_date = ?, not_later_than_date = ?,
-             charge_jours = ?
+             charge_jours = ?, milestone_imposed = ?
          WHERE id = ?`,
     ).run(
       next.name,
@@ -2242,6 +2297,7 @@ export function updateTask(db, id, patch) {
       // v2.0 / F4 — FNLT persistée (non bloquante).
       next.not_later_than_date,
       next.charge_jours,
+      imposedNext,
       id,
     )
     // v2.0 / F6 — Synchronise les affectations multi-collab depuis le patch.

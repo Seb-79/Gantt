@@ -137,6 +137,37 @@ describe('TaskEditor — édition', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/date de fin/i)
   })
 
+  // v2.6 / RG-GANTT-0207 — Case « Date imposée » pour les jalons.
+  it('RG-GANTT-0207 — jalon : cocher « Date imposée » envoie milestone_imposed=true', () => {
+    const onSave = vi.fn()
+    render(
+      <TaskEditor
+        task={mkTask({ kind: 'milestone', name: 'Noël' })}
+        collaborators={COLLABS}
+        tasks={[]}
+        onSave={onSave}
+        onClose={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByLabelText(/Date imposée/))
+    fireEvent.click(screen.getByRole('button', { name: /Enregistrer/ }))
+    expect(onSave).toHaveBeenCalledTimes(1)
+    expect(onSave.mock.calls[0][0].milestone_imposed).toBe(true)
+  })
+
+  it('RG-GANTT-0207 — la case « Date imposée » est absente pour une activité', () => {
+    render(
+      <TaskEditor
+        task={mkTask({ kind: 'task', name: 'A' })}
+        collaborators={COLLABS}
+        tasks={[]}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    expect(screen.queryByLabelText(/Date imposée/)).not.toBeInTheDocument()
+  })
+
   it('bouton Supprimer appelle onDelete (uniquement en édition)', () => {
     const onDelete = vi.fn()
     render(

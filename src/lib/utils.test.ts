@@ -3114,3 +3114,137 @@ describe('v2.5 / RG-GANTT-2303 — surcharge sur jours travaillés (timeline mot
     expect(overloads.length).toBe(1)
   })
 })
+
+// =============================================================================
+// v2.6 / RG-GANTT-0208 — Transparence des jalons NON imposés dans le moteur
+//   Une tâche située APRÈS un jalon non imposé converge en UN SEUL Replan
+//   (le moteur « voit à travers » le jalon : il recalcule sa date proposée et
+//   ordonne les nœuds en conséquence). Évite le double-Replan.
+// =============================================================================
+
+describe('v2.6 / RG-GANTT-0208 — jalon non imposé transparent (1 seul Replan)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-01T00:00:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('RG-GANTT-0208 — tâche après un jalon non imposé suit dès le 1er Replan', () => {
+    // Chaîne A (tâche) → M (jalon non imposé) → B (tâche).
+    const tasks: Task[] = [
+      mkTask('A', {
+        start_date: '2026-08-01',
+        end_date: '2026-08-05',
+        charge_jours: 5,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+        priority: 3,
+      }),
+      mkTask('M', {
+        kind: 'milestone',
+        start_date: '2026-08-06',
+        end_date: '2026-08-06',
+        predecessor_id: 'A',
+        project_id: 'p1',
+      }),
+      mkTask('B', {
+        start_date: '2026-08-10',
+        end_date: '2026-08-11',
+        charge_jours: 2,
+        predecessor_id: 'M',
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+        priority: 3,
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-06-01', [], [])
+    const mB = moves.find((m) => m.id === 'B')
+    expect(mB).toBeDefined()
+    // A → 01-05/06. M (transparent) → 05/06. B suit en juin (06-08, après A),
+    // PAS en août (date périmée du jalon).
+    expect(mB!.newStart).toBe('2026-06-08')
+  })
+
+  it('RG-GANTT-0207 — un jalon imposé reste une borne FIXE pour ses successeurs', () => {
+    // M imposé au 17/08 ; B (successeur) ne peut pas démarrer avant.
+    const tasks: Task[] = [
+      mkTask('M', {
+        kind: 'milestone',
+        start_date: '2026-08-17',
+        end_date: '2026-08-17',
+        milestone_imposed: true,
+        project_id: 'p1',
+      }),
+      mkTask('B', {
+        start_date: '2026-08-18',
+        end_date: '2026-08-19',
+        charge_jours: 2,
+        predecessor_id: 'M',
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+        priority: 3,
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-06-01', [], [])
+    const mB = moves.find((m) => m.id === 'B')
+    // B reste calé sur le jalon imposé (≥ 17/08, lag 0), jamais tiré en juin.
+    const bStart = mB ? mB.newStart : '2026-08-18'
+    expect(bStart >= '2026-08-17').toBe(true)
+  })
+})
+
+// =============================================================================
+// v2.6 / RG-GANTT-0209 — Conflit d'un jalon IMPOSÉ : silencieux
+//   Un jalon imposé dont le prédécesseur finit APRÈS sa date verrouillée ne
+//   lève AUCUNE alerte (la date imposée est sacrée).
+// =============================================================================
+
+describe('v2.6 / RG-GANTT-0209 — jalon imposé en conflit : silencieux', () => {
+  it('RG-GANTT-0209 — jalon imposé avant la fin de son prédécesseur → aucune alerte', () => {
+    const tasks: Task[] = [
+      mkTask('X', {
+        start_date: '2026-06-01',
+        end_date: '2026-06-25',
+        charge_jours: 18,
+        collaborator_id: 'c1',
+        project_id: 'p1',
+      }),
+      mkTask('M', {
+        kind: 'milestone',
+        start_date: '2026-06-20', // imposé AVANT la fin de X (25/06) = conflit
+        end_date: '2026-06-20',
+        predecessor_id: 'X',
+        milestone_imposed: true,
+        project_id: 'p1',
+      }),
+    ]
+    const issues = checkCoherence(tasks).filter((i) => i.kind === 'predecessor')
+    expect(issues).toEqual([])
+  })
+
+  it('RG-GANTT-0209 — un jalon NON imposé en conflit reste signalé', () => {
+    const tasks: Task[] = [
+      mkTask('X', {
+        start_date: '2026-06-01',
+        end_date: '2026-06-25',
+        charge_jours: 18,
+        collaborator_id: 'c1',
+        project_id: 'p1',
+      }),
+      mkTask('M', {
+        kind: 'milestone',
+        start_date: '2026-06-20',
+        end_date: '2026-06-20',
+        predecessor_id: 'X',
+        project_id: 'p1',
+      }),
+    ]
+    const issues = checkCoherence(tasks).filter((i) => i.kind === 'predecessor')
+    expect(issues.length).toBe(1)
+  })
+})

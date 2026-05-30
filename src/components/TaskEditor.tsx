@@ -148,6 +148,10 @@ export default function TaskEditor({
    *  fin calculée dépasse, on signale via le bandeau de cohérence et la barre
    *  Gantt — la sauvegarde n'est jamais rejetée. */
   const [notLaterThanDate, setNotLaterThanDate] = useState<string>('')
+  /** v2.6 — Jalon imposé : date verrouillée, non replanifiable (ex. Noël).
+   *  Pertinent uniquement pour kind='milestone'. Défaut false (= le jalon suit
+   *  son prédécesseur comme une activité). */
+  const [milestoneImposed, setMilestoneImposed] = useState<boolean>(false)
   /** Message d'erreur de validation à afficher dans le modal (null = OK). */
   const [error, setError] = useState<string | null>(null)
   /**
@@ -237,6 +241,8 @@ export default function TaskEditor({
     setNotBeforeDate(src.not_before_date || '')
     // v2.0 / F4 — FNLT initialisée depuis la base (vide si null).
     setNotLaterThanDate(src.not_later_than_date || '')
+    // v2.6 — Jalon imposé initialisé depuis la base (false par défaut).
+    setMilestoneImposed(src.milestone_imposed === true)
     setError(null)
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [task, defaults])
@@ -503,6 +509,9 @@ export default function TaskEditor({
       not_before_date: kind === 'phase' ? null : notBeforeDate || null,
       not_later_than_date: kind === 'phase' ? null : notLaterThanDate || null,
       ...(kind === 'task' ? { charge_jours: charge } : {}),
+      // v2.6 — Jalon imposé : envoyé uniquement pour un jalon (le DAL force 0
+      // pour tâches/phases de toute façon).
+      ...(kind === 'milestone' ? { milestone_imposed: milestoneImposed } : {}),
       color: color || null,
     }
   }
@@ -834,6 +843,29 @@ export default function TaskEditor({
                     title={endDateTooltip()}
                   />
                 </label>
+
+                {/* v2.6 — Jalon imposé : date verrouillée, non replanifiable
+                  (ex. « date de Noël »). Visible uniquement pour les jalons.
+                  Si décoché, le jalon suit son prédécesseur comme une activité. */}
+                {kind === 'milestone' && (
+                  <label className="flex items-start gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 h-3.5 w-3.5 rounded border-slate-300 accent-blue-600"
+                      checked={milestoneImposed}
+                      onChange={(e) => setMilestoneImposed(e.target.checked)}
+                    />
+                    <span>
+                      📌 Date imposée (non replanifiable)
+                      <span
+                        className="ml-1 text-slate-400"
+                        title="Coché : la date du jalon est verrouillée et n'est jamais déplacée par le Replan ni par la cascade (ex. une échéance externe). Décoché : le jalon suit son prédécesseur comme une activité."
+                      >
+                        — verrouille la date du jalon
+                      </span>
+                    </span>
+                  </label>
+                )}
 
                 {/* v1.24 — Contrainte SNET « Ne doit pas démarrer avant le ». */}
                 {kind !== 'phase' && (

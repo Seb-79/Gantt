@@ -133,6 +133,15 @@ export function ensureTaskColumns(db) {
   if (!cols.includes('not_later_than_date')) {
     db.exec(`ALTER TABLE tasks ADD COLUMN not_later_than_date TEXT`)
   }
+  // v2.6 — Jalon imposé : date verrouillée, jamais replanifiée ni déplacée par
+  // la cascade (ex. « date de Noël »). Booléen 0/1, défaut 0 (= non imposé :
+  // un jalon non imposé suit son prédécesseur comme une activité). Ne concerne
+  // que les jalons ; ignoré pour les tâches et phases.
+  if (!cols.includes('milestone_imposed')) {
+    db.exec(
+      `ALTER TABLE tasks ADD COLUMN milestone_imposed INTEGER NOT NULL DEFAULT 0`,
+    )
+  }
   // v1.24/v2.0 — Nettoyages métier idempotents.
   cleanupTaskMetadata(db)
 
@@ -264,17 +273,18 @@ export function ensureKindAcceptsPhase(db) {
       priority        INTEGER,
       not_before_date TEXT,
       not_later_than_date TEXT,
+      milestone_imposed INTEGER NOT NULL DEFAULT 0,
       position        INTEGER NOT NULL,
       CHECK (progress BETWEEN 0 AND 100)
     );
     INSERT INTO tasks_new
       (id, name, kind, start_date, end_date, progress,
        collaborator_id, color, parent_id, predecessor_id, predecessor_lag,
-       priority, not_before_date, not_later_than_date, position)
+       priority, not_before_date, not_later_than_date, milestone_imposed, position)
     SELECT
        id, name, kind, start_date, end_date, progress,
        collaborator_id, color, parent_id, predecessor_id, predecessor_lag,
-       priority, not_before_date, not_later_than_date, position
+       priority, not_before_date, not_later_than_date, milestone_imposed, position
     FROM tasks;
     DROP TABLE tasks;
     ALTER TABLE tasks_new RENAME TO tasks;

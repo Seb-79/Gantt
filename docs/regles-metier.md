@@ -196,6 +196,41 @@ personnalisée ou la couleur grise par défaut s'appliquent.
 
 **Tests :** `utils.test.ts` → « un jalon avec un collaborator_id résiduel ne hérite PAS de la couleur du collab » ; « une activité avec le même collab continue d`hériter de sa couleur ».
 
+### RG-GANTT-0207
+
+**(v2.6 — Jalon imposé)** Un jalon peut être marqué **imposé**
+(`milestone_imposed = true`) : sa date est alors **verrouillée**. Le moteur de
+Replan ne le déplace jamais et la cascade de prédécesseur ne le bouge ni vers
+l'avant ni vers l'arrière (ex. « date de Noël », échéance externe). Le flag est
+exposé par une case « 📌 Date imposée » dans l'éditeur (jalons uniquement) et
+signalé par un cadenas 🔒 sur le losange dans le Gantt. Forcé à `false` (0) pour
+les activités et les phases. Défaut : `false` (non imposé).
+
+**Tests :** `db/index.test.js` → « RG-GANTT-0207 — jalon imposé : milestone_imposed persisté à true », « RG-GANTT-0207 — jalon imposé : ne bouge pas quand X change », « RG-GANTT-0207 — updateTask bascule le flag imposé » ; `utils.test.ts` → « RG-GANTT-0207 — un jalon imposé reste une borne FIXE pour ses successeurs » ; `TaskEditor.test.tsx` → « RG-GANTT-0207 — jalon : cocher « Date imposée » envoie milestone_imposed=true », « RG-GANTT-0207 — la case « Date imposée » est absente pour une activité ».
+
+### RG-GANTT-0208
+
+**(v2.6 — Jalon non imposé)** Un jalon **non imposé** (défaut) n'a pas de
+planning propre : il **suit son prédécesseur dans les deux sens** (= s'ancre
+exactement sur `MAX(pred.end + lag)`, qu'il faille avancer OU reculer). C'est
+l'exception à RG-GANTT-0406 (qui, pour les activités, ne ramène jamais un
+successeur en arrière). Sans prédécesseur, un jalon non imposé conserve sa date
+saisie. Le moteur de Replan le traite en outre comme **transparent** : il
+recalcule sa date proposée pendant le passage pour que les tâches situées en
+aval convergent en **un seul** Replan (pas de double-Replan).
+
+**Tests :** `db/index.test.js` → « RG-GANTT-0208 — jalon non imposé : suit X quand X RECULE (cascade arrière) » ; `utils.test.ts` → « RG-GANTT-0208 — tâche après un jalon non imposé suit dès le 1er Replan » ; `db/index.test.js` → « RG-GANTT-0208 — jalon non imposé par défaut (flag absent → false) ».
+
+### RG-GANTT-0209
+
+**(v2.6 — Conflit jalon imposé : silencieux)** Si un jalon imposé tombe **avant
+la fin** de son prédécesseur (situation impossible, ex. livraison le 20 mais
+travaux finis le 25), l'outil **ne signale rien** et ne déplace rien : la date
+imposée prime. Le détecteur de violation de prédécesseur ignore donc les jalons
+imposés.
+
+**Tests :** `utils.test.ts` → « RG-GANTT-0209 — jalon imposé avant la fin de son prédécesseur → aucune alerte », « RG-GANTT-0209 — un jalon NON imposé en conflit reste signalé ».
+
 ---
 
 ## Famille 4 — Phases
@@ -327,6 +362,11 @@ Une tâche sans prédécesseur a un délai forcément égal à 0.
 Allonger la durée d'un prédécesseur **pousse** ses successeurs pour
 préserver le délai. Raccourcir le prédécesseur **ne ramène pas** les
 successeurs en arrière (le délai est un minimum, pas un écart figé).
+
+**Exception (v2.6, RG-GANTT-0208) :** un **jalon non imposé** déroge à cette
+règle — il se cale exactement sur son prédécesseur dans les deux sens (avance
+ET recul). Les **activités** et les **jalons imposés** conservent le
+comportement décrit ici.
 
 **Tests :** `db/index.test.js` → « allonger X : Y est repoussé en conservant sa charge » ; « raccourcir X : Y reste sur place (lag = MINIMUM, v1.23) ».
 
@@ -2009,7 +2049,7 @@ fichier `*.test.*`).
 | -------------------------------------- | -------------------------------- | ------: |
 | 1 — Communes                           | 0001..0007                       |       7 |
 | 2 — Activités                          | 0100..0105                       |       6 |
-| 3 — Jalons                             | 0200..0206                       |       7 |
+| 3 — Jalons                             | 0200..0209                       |      10 |
 | 4 — Phases                             | 0300..0309                       |      10 |
 | 5 — Prédécesseur et délai              | 0400..0409                       |      10 |
 | 6 — Priorité                           | 0500..0504                       |       5 |
@@ -2030,7 +2070,7 @@ fichier `*.test.*`).
 | 21 — Refonte Replan v2.3               | 2100..2110                       |      11 |
 | 22 — Tooltip custom (v2.2)             | 2200                             |       1 |
 | 23 — Morcellement (v2.5)               | 2300..2304                       |       5 |
-| **Total**                              | —                                | **180** |
+| **Total**                              | —                                | **183** |
 
 **Notes de couverture :**
 

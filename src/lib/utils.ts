@@ -1857,8 +1857,20 @@ function placeChargeWeaving(
  * @param tasksById      Index id → tâche (toutes kinds confondues).
  * @returns              `{ inDeg, successors }`.
  */
+/**
+ * v2.6 / RG-GANTT-0208 — Un nœud est « ordonnançable » par le moteur (placé /
+ * recalculé pendant le passage) s'il s'agit d'une activité OU d'un jalon NON
+ * imposé. Un jalon IMPOSÉ (date verrouillée) et une phase restent des bornes
+ * fixes : le moteur ne les ordonne pas (ils gardent leur date stockée).
+ */
+function isReplanOrderable(t: Task): boolean {
+  if (t.kind === 'task') return true
+  if (t.kind === 'milestone') return t.milestone_imposed !== true
+  return false
+}
+
 function buildPredecessorGraph(
-  taskKindTasks: Task[],
+  orderableNodes: Task[],
   tasksById: Map<string, Task>,
 ): {
   inDeg: Map<string, number>
@@ -1866,11 +1878,15 @@ function buildPredecessorGraph(
 } {
   const inDeg = new Map<string, number>()
   const successors = new Map<string, string[]>()
-  for (const t of taskKindTasks) inDeg.set(t.id, 0)
-  for (const t of taskKindTasks) {
+  for (const t of orderableNodes) inDeg.set(t.id, 0)
+  for (const t of orderableNodes) {
     if (!t.predecessor_id) continue
     const pred = tasksById.get(t.predecessor_id)
-    if (!pred || pred.kind !== 'task') continue
+    // v2.6 — On ne suit l'arête QUE si le prédécesseur est lui-même
+    // ordonnançable (activité ou jalon non imposé). Un jalon imposé / une phase
+    // est une borne fixe : pas d'arête (comme l'ancien comportement « jalon
+    // ignoré »), ce qui évite d'attendre un nœud qui ne sera jamais traité.
+    if (!pred || !isReplanOrderable(pred)) continue
     inDeg.set(t.id, (inDeg.get(t.id) || 0) + 1)
     const arr = successors.get(pred.id) || []
     arr.push(t.id)
@@ -1880,14 +1896,17 @@ function buildPredecessorGraph(
 }
 
 function buildReplanOrder(tasks: Task[]): Task[] {
-  const taskKindTasks = tasks.filter((t) => t.kind === 'task')
+  // v2.6 — Les jalons NON imposés sont désormais ordonnançables (transparents) :
+  // le moteur recalcule leur date proposée pendant le passage pour que les
+  // tâches situées en aval convergent en UN SEUL Replan (RG-GANTT-0208).
+  const orderableNodes = tasks.filter(isReplanOrderable)
   const tasksById = new Map(tasks.map((t) => [t.id, t]))
-  // Position dans la liste = ordre d'entrée parmi les `task` (le hiérarchique
-  // est déjà appliqué côté caller).
+  // Position dans la liste = ordre d'entrée parmi les nœuds ordonnançables (le
+  // hiérarchique est déjà appliqué côté caller).
   const listPos = new Map<string, number>()
-  taskKindTasks.forEach((t, i) => listPos.set(t.id, i))
+  orderableNodes.forEach((t, i) => listPos.set(t.id, i))
 
-  const { inDeg, successors } = buildPredecessorGraph(taskKindTasks, tasksById)
+  const { inDeg, successors } = buildPredecessorGraph(orderableNodes, tasksById)
 
   /** Comparateur stable (priorité asc, puis position asc).
    *  v1.24 — La priorité d'une activité est maintenant toujours définie (1..5)
@@ -1900,7 +1919,7 @@ function buildReplanOrder(tasks: Task[]): Task[] {
     return (listPos.get(a.id) ?? 0) - (listPos.get(b.id) ?? 0)
   }
 
-  const ready: Task[] = taskKindTasks.filter(
+  const ready: Task[] = orderableNodes.filter(
     (t) => (inDeg.get(t.id) || 0) === 0,
   )
   const out: Task[] = []
@@ -1917,11 +1936,11 @@ function buildReplanOrder(tasks: Task[]): Task[] {
   }
 
   // Garde-fou anti-cycle : si l'UI a laissé passer un cycle (ne devrait pas
-  // arriver — cf. `descendantIds`), on ajoute les tâches restantes en queue
+  // arriver — cf. `descendantIds`), on ajoute les nœuds restants en queue
   // pour ne pas perdre silencieusement leur replan.
-  if (out.length < taskKindTasks.length) {
+  if (out.length < orderableNodes.length) {
     const seen = new Set(out.map((t) => t.id))
-    for (const t of taskKindTasks) {
+    for (const t of orderableNodes) {
       if (!seen.has(t.id)) out.push(t)
     }
   }
@@ -2153,6 +2172,31 @@ function placeTaskInTimeline(
 }
 
 /**
+ * v2.6 / RG-GANTT-0208 — Calcule la date PROPOSÉE d'un jalon NON imposé pendant
+ * le passage du moteur (« transparence »). Un jalon n'a pas de planning propre :
+ * il se cale exactement sur `MAX(fin proposée des prédécesseurs) + lag`. On
+ * écrit cette date dans `proposed` (start = end, jalon ponctuel) SANS l'émettre
+ * comme déplacement (il suivra via la cascade serveur), pour que les tâches
+ * situées en aval lisent une date FRAÎCHE dès le 1er Replan (pas de double-Replan).
+ *
+ * Sans prédécesseur → on conserve la date stockée (RG : un jalon non imposé
+ * isolé reste sur sa date saisie). `proposed` ayant déjà été initialisé à la
+ * date stockée, il n'y a alors rien à faire.
+ */
+function placeMilestoneProposed(
+  t: Task,
+  tasksById: Map<string, Task>,
+  proposed: Map<string, { start: string; end: string }>,
+): void {
+  if (!t.predecessor_id) return
+  const pred = tasksById.get(t.predecessor_id)
+  if (!pred) return
+  const predEnd = proposed.get(pred.id)?.end ?? pred.end_date
+  const date = computeSuccessorStart(predEnd, t.predecessor_lag || 0)
+  proposed.set(t.id, { start: date, end: date })
+}
+
+/**
  * v1.21 — Construit la liste finale des `ReplanMove` en ne gardant QUE les
  * tâches dont les dates proposées diffèrent des dates d'origine. Extrait
  * pour limiter la complexité cognitive de `replanTasks`.
@@ -2163,6 +2207,11 @@ function buildReplanMoves(
 ): ReplanMove[] {
   const moves: ReplanMove[] = []
   for (const t of order) {
+    // v2.6 — Les jalons (même non imposés, désormais dans `order`) ne sont PAS
+    // émis comme déplacements : ils suivent via la cascade serveur. Le moteur
+    // ne calcule leur date proposée que pour positionner correctement les
+    // tâches en aval (transparence, RG-GANTT-0208).
+    if (t.kind !== 'task') continue
     const p = proposed.get(t.id)
     if (!p) continue
     if (p.start === t.start_date && p.end === t.end_date) continue
@@ -2300,6 +2349,13 @@ export function computeReplanResult(
   // `workedDays` accumule les jours réellement travaillés par tâche.
   for (const t of order) {
     if (t.progress === 100) continue
+    // v2.6 / RG-GANTT-0208 — Un jalon non imposé est « transparent » : on
+    // recalcule sa date proposée (sans le placer dans la timeline ni l'émettre
+    // comme déplacement) pour que ses successeurs lisent une date fraîche.
+    if (t.kind === 'milestone') {
+      placeMilestoneProposed(t, tasksById, proposed)
+      continue
+    }
     placeTaskInTimeline(
       t,
       tasksById,
@@ -2596,6 +2652,10 @@ function detectPredecessorViolations(tasks: Task[]): CoherenceIssue[] {
   const issues: CoherenceIssue[] = []
   for (const t of tasks) {
     if (t.kind === 'phase' || !t.predecessor_id) continue
+    // v2.6 / RG-GANTT-0209 — Un jalon IMPOSÉ a une date verrouillée et sacrée :
+    // s'il tombe avant la fin de son prédécesseur, c'est un choix assumé, pas
+    // une incohérence à signaler (décision « silencieux »).
+    if (t.kind === 'milestone' && t.milestone_imposed === true) continue
     const pred = byId.get(t.predecessor_id)
     if (!pred) continue
     if (t.start_date < pred.end_date) {

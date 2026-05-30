@@ -2207,11 +2207,13 @@ function buildReplanMoves(
 ): ReplanMove[] {
   const moves: ReplanMove[] = []
   for (const t of order) {
-    // v2.6 — Les jalons (même non imposés, désormais dans `order`) ne sont PAS
-    // émis comme déplacements : ils suivent via la cascade serveur. Le moteur
-    // ne calcule leur date proposée que pour positionner correctement les
-    // tâches en aval (transparence, RG-GANTT-0208).
-    if (t.kind !== 'task') continue
+    // v2.6 / RG-GANTT-0208 — `order` ne contient que des nœuds ordonnançables
+    // (activités + jalons NON imposés). On émet un déplacement pour CHACUN dont
+    // la date proposée diffère, y compris les jalons non imposés : sinon, quand
+    // leur prédécesseur ne bouge pas, le jalon resterait bloqué et le serveur
+    // recalerait ses successeurs sur sa date périmée (→ dates incohérentes).
+    // Les moves étant dans l'ordre topologique, le jalon est PATché AVANT ses
+    // successeurs. Les jalons imposés ne sont pas dans `order` (jamais émis).
     const p = proposed.get(t.id)
     if (!p) continue
     if (p.start === t.start_date && p.end === t.end_date) continue

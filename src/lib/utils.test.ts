@@ -3167,6 +3167,14 @@ describe('v2.6 / RG-GANTT-0208 — jalon non imposé transparent (1 seul Replan)
     // A → 01-05/06. M (transparent) → 05/06. B suit en juin (06-08, après A),
     // PAS en août (date périmée du jalon).
     expect(mB!.newStart).toBe('2026-06-08')
+    // v2.6 — Le jalon non imposé doit AUSSI être émis comme déplacement (sinon
+    // il reste bloqué quand son prédécesseur ne bouge pas, et le serveur
+    // recale ses successeurs sur sa date périmée → dates incohérentes). Il
+    // suit A : fin 05/06 → jalon au 05/06.
+    const mM = moves.find((m) => m.id === 'M')
+    expect(mM).toBeDefined()
+    expect(mM!.newStart).toBe('2026-06-05')
+    expect(mM!.newEnd).toBe('2026-06-05')
   })
 
   it('RG-GANTT-0207 — un jalon imposé reste une borne FIXE pour ses successeurs', () => {

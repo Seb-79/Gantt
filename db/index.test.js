@@ -808,13 +808,16 @@ describe('v1.9 — cascade aux successeurs', () => {
       start_date: '2026-06-08',
       end_date: '2026-06-12',
     })
-    // Y : prédécesseur=X → start initialisé à la fin de X (lag inféré = 0).
-    // Charge 3 j ouvrés (ven 12/06 → mar 16/06 en sautant le w-e).
+    // Y : prédécesseur=X, charge 3 j ouvrés (pinnée pour un baseline stable).
+    // v2.7 / RG-GANTT-2307 — X (sans collab) remplit sa dernière journée → Y
+    // (activité, lag 0) démarre le JOUR OUVRÉ SUIVANT : X.end=ven 12/06 → Y
+    // démarre lun 15/06, charge 3 → fin mer 17/06.
     createTask(db, {
       id: 'Y',
       name: 'Y',
       start_date: '2026-06-12',
       end_date: '2026-06-16',
+      charge_jours: 3,
       predecessor_id: 'X',
     })
   })
@@ -824,23 +827,23 @@ describe('v1.9 — cascade aux successeurs', () => {
     return getFullState(db).tasks.find((t) => t.id === id)
   }
 
-  it('RG-GANTT-0406 — allonger X : Y est repoussé en conservant sa charge', () => {
-    // X passe de 12/06 à 17/06 (mer) → +3 j ouvrés.
+  it('RG-GANTT-0406 / RG-GANTT-2307 — allonger X : Y est repoussé au jour suivant en conservant sa charge', () => {
+    // X passe de 12/06 à 17/06 (mer). v2.7 — Y (activité, lag 0) démarre le
+    // JOUR OUVRÉ SUIVANT la fin de X : jeu 18/06.
     updateTask(db, 'X', { end_date: '2026-06-17' })
     const y = get('Y')
-    // Y démarre à la nouvelle fin de X (mer 17/06).
-    expect(y.start_date).toBe('2026-06-17')
-    // Charge conservée = 3 j ouvrés → mer + 2 = ven 19/06.
-    expect(y.end_date).toBe('2026-06-19')
+    expect(y.start_date).toBe('2026-06-18')
+    // Charge conservée = 3 j ouvrés → jeu 18 + 2 = lun 22/06 (saute le w-e).
+    expect(y.end_date).toBe('2026-06-22')
   })
 
   it('RG-GANTT-0406 — raccourcir X : Y reste sur place (lag = MINIMUM, v1.23)', () => {
-    // v1.23 — Le lag est désormais un délai MINIMUM. Réduire X ne tire plus
-    // Y en arrière (changement vs. v1.10). Y conserve sa start initiale.
+    // v1.23 — Le lag est un délai MINIMUM : réduire X ne tire pas Y en arrière.
+    // v2.7 — Baseline de Y = lun 15/06 → mer 17/06 (jour suivant + charge 3).
     updateTask(db, 'X', { end_date: '2026-06-10' })
     const y = get('Y')
-    expect(y.start_date).toBe('2026-06-12')
-    expect(y.end_date).toBe('2026-06-16')
+    expect(y.start_date).toBe('2026-06-15')
+    expect(y.end_date).toBe('2026-06-17')
   })
 
   it("v1.10 / v1.23 / RG-GANTT-0402 / RG-GANTT-0403 — le délai (predecessor_lag) est respecté lors d'un allongement", () => {
@@ -873,25 +876,28 @@ describe('v1.9 — cascade aux successeurs', () => {
     expect(y.start_date).toBe('2026-06-17')
   })
 
-  it('RG-GANTT-0407 — chaîne X → Y → Z : la cascade se propage récursivement', () => {
-    // Z : prédécesseur = Y, charge 2 j ouvrés.
+  it('RG-GANTT-0407 / RG-GANTT-2307 — chaîne X → Y → Z : la cascade se propage récursivement (jour suivant)', () => {
+    // Z : prédécesseur = Y, charge 2 j ouvrés (pinnée).
     createTask(db, {
       id: 'Z',
       name: 'Z',
       start_date: '2026-06-16',
       end_date: '2026-06-17',
+      charge_jours: 2,
       predecessor_id: 'Y',
     })
     // X étendu de 12/06 (ven) à 19/06 (ven, +5 j ouvrés).
     updateTask(db, 'X', { end_date: '2026-06-19' })
     const y = get('Y')
     const z = get('Z')
-    // Y poussé à 19/06 (ven), charge=3 j → fin mar 23/06.
-    expect(y.start_date).toBe('2026-06-19')
-    expect(y.end_date).toBe('2026-06-23')
-    // Z poussé à 23/06 (mar), charge=2 j → fin mer 24/06.
-    expect(z.start_date).toBe('2026-06-23')
-    expect(z.end_date).toBe('2026-06-24')
+    // v2.7 — Y démarre le jour suivant la fin de X (ven 19 → lun 22/06),
+    // charge 3 → fin mer 24/06.
+    expect(y.start_date).toBe('2026-06-22')
+    expect(y.end_date).toBe('2026-06-24')
+    // Z démarre le jour suivant la fin de Y (mer 24 → jeu 25/06),
+    // charge 2 → fin ven 26/06.
+    expect(z.start_date).toBe('2026-06-25')
+    expect(z.end_date).toBe('2026-06-26')
   })
 
   it('RG-GANTT-0408 — la nouvelle fin de X qui tombe un week-end est snappée au lundi pour Y', () => {
@@ -998,8 +1004,9 @@ describe('v1.21 — multi-prédécesseurs', () => {
       ],
     })
     const y = get('Y')
-    // B finit plus tard (17/06) que A (12/06) → MAX = 17/06.
-    expect(y.start_date).toBe('2026-06-17')
+    // B finit plus tard (17/06) que A (12/06) → MAX = 17/06. v2.7 / RG-GANTT-2307 :
+    // B (sans collab) remplit sa journée → Y (lag 0) démarre le jour suivant : 18/06.
+    expect(y.start_date).toBe('2026-06-18')
     // La liste est exposée et triée par id ASC (déterministe).
     expect(y.predecessors).toEqual([
       { id: 'A', lag: 0 },
@@ -1038,14 +1045,15 @@ describe('v1.21 — multi-prédécesseurs', () => {
         { id: 'B', lag: 0 },
       ],
     })
-    // Y.start = MAX(A.end=12, B.end=17) = 17/06.
-    expect(get('Y').start_date).toBe('2026-06-17')
-    // Allonger A jusqu'au 15/06 (toujours < B.end=17) → Y reste sur 17/06.
+    // v2.7 / RG-GANTT-2307 — Y (lag 0) démarre le jour suivant la fin du
+    // prédécesseur le plus tardif. MAX(jour-suivant(A=12)=15, jour-suivant(B=17)=18) = 18/06.
+    expect(get('Y').start_date).toBe('2026-06-18')
+    // Allonger A jusqu'au 15/06 (jour-suivant=16, toujours < 18) → Y reste sur 18/06.
     updateTask(db, 'A', { end_date: '2026-06-15' })
-    expect(get('Y').start_date).toBe('2026-06-17')
-    // Allonger A jusqu'au 22/06 → A devient le MAX → Y est repoussé à 22/06.
+    expect(get('Y').start_date).toBe('2026-06-18')
+    // Allonger A jusqu'au 22/06 → jour-suivant(A)=23 devient le MAX → Y → 23/06.
     updateTask(db, 'A', { end_date: '2026-06-22' })
-    expect(get('Y').start_date).toBe('2026-06-22')
+    expect(get('Y').start_date).toBe('2026-06-23')
   })
 
   it('updateTask predecessors[] vide → la liste est supprimée', () => {

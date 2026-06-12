@@ -169,13 +169,16 @@ describe('Tâches', () => {
       })
       .expect(200)
     expect(r.body.task.predecessor_id).toBe('t1a')
-    expect(r.body.task.start_date).toBe('2026-05-29')
+    // v2.7 / RG-GANTT-2307 — t1a (activité) remplit sa journée du 29/05 (ven) →
+    // le successeur (lag 0) démarre le jour ouvré suivant : lun 01/06.
+    expect(r.body.task.start_date).toBe('2026-06-01')
   })
 
   // ---- v1.21 — Multi-prédécesseurs (nouveau format API) ------------------
 
   it('POST avec predecessors[] = 2 entrées : start = MAX(pred.end) et liste exposée', async () => {
-    // Démo : t1a finit 2026-05-29, t1c finit 2026-06-15. MAX = 2026-06-15.
+    // Démo : t1a finit 2026-05-29, t1c finit 2026-06-15. MAX = 2026-06-15 →
+    // v2.7 / RG-GANTT-2307 : successeur (lag 0) le jour ouvré suivant = 2026-06-16.
     const r = await request(app)
       .post('/api/tasks')
       .send({
@@ -189,7 +192,7 @@ describe('Tâches', () => {
         ],
       })
       .expect(200)
-    expect(r.body.task.start_date).toBe('2026-06-15')
+    expect(r.body.task.start_date).toBe('2026-06-16')
     // L'API expose la liste complète, triée par id ASC.
     expect(r.body.task.predecessors).toEqual([
       { id: 't1a', lag: 0 },
@@ -218,7 +221,7 @@ describe('Tâches', () => {
     const state = await request(app).get('/api/state').expect(200)
     const t = state.body.tasks.find((x) => x.id === 'tSwap')
     expect(t.predecessors).toEqual([{ id: 't1c', lag: 0 }])
-    expect(t.start_date).toBe('2026-06-15') // recalé sur t1c.end
+    expect(t.start_date).toBe('2026-06-16') // recalé : jour ouvré suivant t1c.end (RG-GANTT-2307)
   })
 
   // ---- v1.5 — Déplacement (drag & drop) ----------------------------------
@@ -327,7 +330,8 @@ describe('Tâches', () => {
       .expect(200)
     const state = await request(app).get('/api/state').expect(200)
     const t2a = state.body.tasks.find((t) => t.id === 't2a')
-    expect(t2a.start_date).toBe('2026-05-29')
+    // v2.7 / RG-GANTT-2307 — jour ouvré suivant la fin de t1a (29/05 ven) = 01/06.
+    expect(t2a.start_date).toBe('2026-06-01')
     expect(t2a.predecessor_id).toBe('t1a')
   })
 })

@@ -22,7 +22,9 @@ import { fileURLToPath } from 'node:url'
 // dédié (pur, sans dépendance BDD). Une seule source de vérité serveur.
 import {
   addWorkingDaysServer,
+  addDaysIsoServer,
   computeSuccessorStart,
+  isNonWorkingDayIso,
   snapForwardToWorkingDayServer,
   workingDaysBetweenServer,
 } from './working-days.js'
@@ -44,7 +46,12 @@ import {
 } from './migrations.js'
 // v2.0 / Refacto (a) — Moteur de capacité allouée extrait dans db/capacity.js.
 // Couvre allocation × absence (F2+F3) et la sommation multi-collab (F6).
-import { addWorkingDaysWithAllocationServer } from './capacity.js'
+import {
+  addWorkingDaysWithAllocationServer,
+  listAllocationsServer,
+  loadAbsencesMap,
+  effectiveCapacityServer,
+} from './capacity.js'
 // v2.0 / Refacto (a) — Normalisations défensives extraites dans db/normalize.js
 // (filet de sécurité au-dessus de la validation Zod côté API).
 import {
@@ -1512,19 +1519,109 @@ function computeShiftedDates(succ, targetStart, db) {
  * @param {string} taskId
  * @returns {string|null}  Date 'YYYY-MM-DD' ou null.
  */
-function computeMinStartFromPredecessors(db, taskId) {
+/**
+ * v2.7 / RG-GANTT-2307 (serveur) — Vrai si le prédécesseur REMPLIT entièrement
+ * sa dernière journée travaillée (reste de capacité nul). Miroir serveur de
+ * `predecessorFillsLastDay` côté client : un successeur lag 0 démarre alors le
+ * jour ouvré SUIVANT (sinon le même jour). Un jalon (instantané) → false.
+ */
+/**
+ * v2.7 — Contextes de capacité (allocations + absences) par collab d'une tâche.
+ * Vide → F0 (1 par jour ouvré). Extrait pour limiter la complexité cognitive.
+ */
+function buildCollabContextsServer(db, projectId, collabIds) {
+  const contexts = []
+  if (!projectId) return contexts
+  for (const cId of collabIds) {
+    const allocs = listAllocationsServer(db, projectId, cId)
+    if (allocs.length > 0) {
+      contexts.push({ allocs, absences: loadAbsencesMap(db, cId) })
+    }
+  }
+  return contexts
+}
+
+/** v2.7 — Capacité d'un jour : Σ contextes, ou 1 par jour ouvré si aucun (F0). */
+function dayCapacitySumServer(contexts, dayIso) {
+  if (contexts.length === 0) return isNonWorkingDayIso(dayIso) ? 0 : 1
+  let cap = 0
+  for (const ctx of contexts) {
+    cap += effectiveCapacityServer(dayIso, ctx.allocs, ctx.absences)
+  }
+  return cap
+}
+
+function predecessorFillsLastDayServer(db, pred) {
+  if (!pred || pred.kind === 'milestone') return false
+  const charge =
+    pred.charge_jours && pred.charge_jours >= 1
+      ? pred.charge_jours
+      : Math.max(1, workingDaysBetweenServer(pred.start_date, pred.end_date))
+  const contexts = buildCollabContextsServer(
+    db,
+    pred.project_id,
+    listTaskAssignments(db, pred.id),
+  )
+  const needed = Math.max(1, charge)
+  let consumed = 0
+  let cur = pred.start_date
+  let lastCap = 0
+  let lastConsumed = 0
+  const maxScan = Math.max(needed * 30, 10000)
+  for (let i = 0; i < maxScan; i++) {
+    const cap = dayCapacitySumServer(contexts, cur)
+    if (cap > 0) {
+      lastCap = cap
+      lastConsumed = Math.min(needed - consumed, cap)
+      consumed += lastConsumed
+      if (consumed >= needed - 1e-9) break
+    }
+    cur = addDaysIsoServer(cur, 1)
+  }
+  return lastCap - lastConsumed <= 1e-9
+}
+
+/**
+ * v2.7 — Borne basse imposée par UN prédécesseur, avec le relais capacité-aware
+ * pour lag 0 (RG-GANTT-2307) : journée pleine → jour ouvré suivant ; reste de
+ * capacité → même jour. lag ≥ 1 inchangé.
+ */
+function predecessorBoundServer(db, pred, predEnd, lag, successorKind) {
+  // v2.7 — Le relais « jour suivant » ne concerne que les ACTIVITÉS : un jalon
+  // successeur MARQUE la complétion du prédécesseur → il reste calé sur sa fin
+  // (même jour), jamais repoussé au lendemain.
+  if (
+    lag === 0 &&
+    successorKind !== 'milestone' &&
+    predecessorFillsLastDayServer(db, pred)
+  ) {
+    return snapForwardToWorkingDayServer(addDaysIsoServer(predEnd, 1))
+  }
+  return computeSuccessorStart(predEnd, lag)
+}
+
+function computeMinStartFromPredecessors(db, taskId, successorKind = 'task') {
   const preds = listPredecessorsForTask(db, taskId)
   if (preds.length === 0) return null
   const placeholders = preds.map(() => '?').join(',')
   const predRows = db
-    .prepare(`SELECT id, end_date FROM tasks WHERE id IN (${placeholders})`)
+    .prepare(
+      `SELECT id, kind, start_date, end_date, charge_jours, project_id
+         FROM tasks WHERE id IN (${placeholders})`,
+    )
     .all(...preds.map((p) => p.id))
-  const endById = new Map(predRows.map((r) => [r.id, r.end_date]))
+  const rowById = new Map(predRows.map((r) => [r.id, r]))
   let maxStart = null
   for (const p of preds) {
-    const predEnd = endById.get(p.id)
-    if (!predEnd) continue
-    const candidate = computeSuccessorStart(predEnd, p.lag)
+    const pred = rowById.get(p.id)
+    if (!pred || !pred.end_date) continue
+    const candidate = predecessorBoundServer(
+      db,
+      pred,
+      pred.end_date,
+      p.lag,
+      successorKind,
+    )
     if (maxStart === null || candidate > maxStart) maxStart = candidate
   }
   return maxStart
@@ -1570,7 +1667,7 @@ function reconcilePredecessors(db, current, next) {
   if (isImposedMilestone(next)) {
     return
   }
-  const minStart = computeMinStartFromPredecessors(db, current.id)
+  const minStart = computeMinStartFromPredecessors(db, current.id, next.kind)
   if (minStart === null) return
   if (next.start_date >= minStart) return
   // v2.0 — Préserve la charge stockée plutôt que de la back-dériver depuis
@@ -1658,7 +1755,7 @@ function propagateToSuccessors(db, rootId) {
       // toujours traité comme un MINIMUM : si succ.start est déjà ≥ minStart
       // (ex. décalage volontaire saisi par l'utilisateur ou poussée par
       // Replan), on ne ramène pas la tâche en arrière.
-      const minStart = computeMinStartFromPredecessors(db, succ.id)
+      const minStart = computeMinStartFromPredecessors(db, succ.id, succ.kind)
       if (minStart === null) continue
       if (shouldSkipSuccessorShift(succ, minStart)) continue
       // v2.0 / F2 — `db` est transmis pour permettre à computeShiftedDates de
@@ -2014,14 +2111,25 @@ function resolveCreateStart(db, input, predecessors) {
   const ids = predecessors.map((p) => p.id)
   const placeholders = ids.map(() => '?').join(',')
   const rows = db
-    .prepare(`SELECT id, end_date FROM tasks WHERE id IN (${placeholders})`)
+    .prepare(
+      `SELECT id, kind, start_date, end_date, charge_jours, project_id
+         FROM tasks WHERE id IN (${placeholders})`,
+    )
     .all(...ids)
-  const endById = new Map(rows.map((r) => [r.id, r.end_date]))
+  const rowById = new Map(rows.map((r) => [r.id, r]))
   let minStart = null
   for (const p of predecessors) {
-    const predEnd = endById.get(p.id)
-    if (!predEnd) continue
-    const cand = computeSuccessorStart(predEnd, p.lag)
+    const pred = rowById.get(p.id)
+    if (!pred || !pred.end_date) continue
+    // v2.7 / RG-GANTT-2307 — Relais capacité-aware (lag 0 → jour suivant si la
+    // dernière journée du prédécesseur est pleine).
+    const cand = predecessorBoundServer(
+      db,
+      pred,
+      pred.end_date,
+      p.lag,
+      input.kind || 'task',
+    )
     if (minStart === null || cand > minStart) minStart = cand
   }
   if (minStart === null) return fallback

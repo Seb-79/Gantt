@@ -455,8 +455,14 @@ export default function App() {
    * non sur le chevauchement naïf des enveloppes `[start, end]`.
    */
   const coherenceIssues = useMemo(
-    () => checkCoherence(orderedTasks, engineTimeline),
-    [orderedTasks, engineTimeline],
+    () =>
+      checkCoherence(
+        orderedTasks,
+        engineTimeline,
+        state?.member_allocations ?? [],
+        state?.collaborator_absences ?? [],
+      ),
+    [orderedTasks, engineTimeline, state],
   )
 
   /**

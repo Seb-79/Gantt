@@ -2035,6 +2035,41 @@ l'activité morcelée est son **1er jour réellement travaillé**.
 **Tests :** `src/components/GanttChart.tsx` (rendu `renderHollowDays`, vérifié
 visuellement) ; logique de placement couverte par RG-GANTT-2300..2302.
 
+### RG-GANTT-2305
+
+**(v2.7 / Relais fractionnaire)** La timeline moteur suit la capacité au grain
+**fractionnaire** : chaque `(collaborateur, jour)` a une capacité
+`allocation × (1 − absence)` (ou 1 par jour ouvré sans allocation), et plusieurs
+activités peuvent **se partager** une journée tant que la somme des fractions
+consommées ≤ capacité. Le tissage consomme le **reste disponible** d'un jour
+partiellement pris (au lieu de sauter tout jour touché). Conséquence : une
+activité peut démarrer le **même jour** que la fin d'un prédécesseur si celui-ci
+n'a pas rempli sa dernière journée.
+
+**Tests :** `utils.test.ts` → « RG-GANTT-2305 — A (75%) laisse 0,5 le 2e jour, B s’y glisse le MÊME jour ».
+
+### RG-GANTT-2306
+
+**(v2.7 / Surcharge fractionnaire)** La surcharge d'un collaborateur se mesure
+sur la **somme des fractions** consommées un jour donné : surcharge **ssi**
+`Σ fractions(collab, jour) > capacité(collab, jour)`. Deux demi-journées qui
+tiennent dans la capacité (ex. 0,25 + 0,5 ≤ 0,75) ne sont **pas** une surcharge.
+
+**Tests :** `utils.test.ts` → « RG-GANTT-2306 — partage 0,25 + 0,5 = 0,75 ≤ capacité → PAS de surcharge ».
+
+### RG-GANTT-2307
+
+**(v2.7 / Relais prédécesseur capacité-aware)** Pour un **lag 0**, la borne basse
+d'un successeur dépend du **remplissage de la dernière journée du prédécesseur** :
+si le prédécesseur a consommé toute la capacité de sa dernière journée (reste = 0,
+ex. charge entière, sans collaborateur, allocation diviseuse) → le successeur
+démarre le **jour ouvré suivant** (pas de chevauchement) ; s'il en reste → le
+successeur démarre **le même jour** (le tissage consomme le reste). Pour un
+**lag N ≥ 1**, le délai plein s'applique (inchangé). La règle se base sur le
+prédécesseur (pas sur la disponibilité propre du collaborateur du successeur).
+
+**Tests :** `utils.test.ts` → « RG-GANTT-2307 — sans collaborateur, lag 0 : successeur le JOUR SUIVANT ».
+
 ---
 
 ## Synthèse de couverture
@@ -2070,7 +2105,8 @@ fichier `*.test.*`).
 | 21 — Refonte Replan v2.3               | 2100..2110                       |      11 |
 | 22 — Tooltip custom (v2.2)             | 2200                             |       1 |
 | 23 — Morcellement (v2.5)               | 2300..2304                       |       5 |
-| **Total**                              | —                                | **183** |
+| 23b — Relais fractionnaire (v2.7)      | 2305..2307                       |       3 |
+| **Total**                              | —                                | **186** |
 
 **Notes de couverture :**
 

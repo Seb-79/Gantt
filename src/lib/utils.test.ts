@@ -3256,3 +3256,134 @@ describe('v2.6 / RG-GANTT-0209 — jalon imposé en conflit : silencieux', () =>
     expect(issues.length).toBe(1)
   })
 })
+
+// =============================================================================
+// v2.7 / RG-GANTT-2305..2307 — Relais à la capacité (timeline FRACTIONNAIRE)
+//   Une journée est un budget de capacité ; plusieurs activités peuvent la
+//   PARTAGER tant que la somme des fractions ≤ capacité. Surcharge = somme > cap.
+// =============================================================================
+
+describe('v2.7 / RG-GANTT-2305 — timeline fractionnaire (partage de journée)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-01T00:00:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const alloc = (
+    id: string,
+    collab: string,
+    pct: number,
+  ): MemberAllocation => ({
+    id,
+    project_id: 'p1',
+    collaborator_id: collab,
+    start_date: '2026-01-01',
+    end_date: '2026-12-31',
+    allocation_pct: pct,
+  })
+
+  it('RG-GANTT-2305 — A (75%) laisse 0,5 le 2e jour, B s’y glisse le MÊME jour', () => {
+    // c1 @75%. A (prio 1) : 01/06→0,75, 02/06→0,25 (reste 0,5 le 02/06).
+    // B (prio 2, charge 1) doit démarrer le 02/06 (partage), pas le 03/06.
+    const tasks: Task[] = [
+      mkTask('A', {
+        start_date: '2026-06-01',
+        end_date: '2026-06-02',
+        charge_jours: 1,
+        priority: 1,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+      mkTask('B', {
+        start_date: '2026-06-01',
+        end_date: '2026-06-02',
+        charge_jours: 1,
+        priority: 2,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-06-01', [alloc('a1', 'c1', 75)], [])
+    const mB = moves.find((m) => m.id === 'B')
+    expect(mB).toBeDefined()
+    // Partage de la journée 02/06 (A=0,25 + B=0,5 = 0,75 = capacité).
+    expect(mB!.newStart).toBe('2026-06-02')
+  })
+
+  it('RG-GANTT-2306 — partage 0,25 + 0,5 = 0,75 ≤ capacité → PAS de surcharge', () => {
+    const tasks: Task[] = [
+      mkTask('A', {
+        start_date: '2026-06-01',
+        end_date: '2026-06-02',
+        charge_jours: 1,
+        priority: 1,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+      mkTask('B', {
+        start_date: '2026-06-01',
+        end_date: '2026-06-02',
+        charge_jours: 1,
+        priority: 2,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const allocs = [alloc('a1', 'c1', 75)]
+    const { timeline } = computeReplanResult(tasks, '2026-06-01', allocs, [])
+    // A et B partagent le 02/06 (0,25 + 0,5 = 0,75 = capacité 75%) → OK.
+    const issues = checkCoherence(tasks, timeline, allocs, []).filter(
+      (i) => i.kind === 'overload',
+    )
+    expect(issues).toEqual([])
+  })
+})
+
+// =============================================================================
+// v2.7 / RG-GANTT-2307 — Relais prédécesseur capacité-aware (lag 0)
+//   Si le prédécesseur REMPLIT sa dernière journée → successeur le lendemain.
+//   S'il en laisse une fraction → successeur le même jour (via le tissage).
+// =============================================================================
+
+describe('v2.7 / RG-GANTT-2307 — relais prédécesseur (jour suivant si journée pleine)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-01T00:00:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('RG-GANTT-2307 — sans collaborateur, lag 0 : successeur le JOUR SUIVANT', () => {
+    // P (sans collab, charge 1) remplit sa journée → S (lag 0) doit démarrer
+    // le lendemain ouvré, pas le même jour (corrige « Activité Tests »).
+    const tasks: Task[] = [
+      mkTask('P', {
+        start_date: '2026-06-01',
+        end_date: '2026-06-01',
+        charge_jours: 1,
+        priority: 3,
+        project_id: 'p1',
+      }),
+      mkTask('S', {
+        start_date: '2026-06-01',
+        end_date: '2026-06-01',
+        charge_jours: 1,
+        predecessor_id: 'P',
+        priority: 3,
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-06-01', [], [])
+    const mS = moves.find((m) => m.id === 'S')
+    expect(mS).toBeDefined()
+    expect(mS!.newStart).toBe('2026-06-02')
+  })
+})

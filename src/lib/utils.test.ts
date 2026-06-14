@@ -3387,3 +3387,55 @@ describe('v2.7 / RG-GANTT-2307 — relais prédécesseur (jour suivant si journ�
     expect(mS!.newStart).toBe('2026-06-02')
   })
 })
+
+// =============================================================================
+// v2.7 / RG-GANTT-2308 — Combinaison charge fractionnaire + relais : une
+//   activité de 0,5 j laisse son successeur démarrer LE MÊME jour.
+// =============================================================================
+
+describe('v2.7 / RG-GANTT-2308 — demi-journée : successeur le même jour', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-01T00:00:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('RG-GANTT-2308 — P (0,5 j) puis S (0,5 j) tiennent dans la même journée', () => {
+    const alloc100 = {
+      id: 'a1',
+      project_id: 'p1',
+      collaborator_id: 'c1',
+      start_date: '2026-01-01',
+      end_date: '2026-12-31',
+      allocation_pct: 100,
+    }
+    const tasks: Task[] = [
+      mkTask('P', {
+        start_date: '2026-06-01',
+        end_date: '2026-06-01',
+        charge_jours: 0.5,
+        priority: 1,
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+      mkTask('S', {
+        start_date: '2026-06-01',
+        end_date: '2026-06-01',
+        charge_jours: 0.5,
+        priority: 2,
+        predecessor_id: 'P',
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const moves = replanTasks(tasks, '2026-06-01', [alloc100], [])
+    const mS = moves.find((m) => m.id === 'S')
+    // P remplit 0,5 le 01/06 → reste 0,5 → S démarre LE MÊME jour (01/06).
+    const sStart = mS ? mS.newStart : '2026-06-01'
+    expect(sStart).toBe('2026-06-01')
+  })
+})

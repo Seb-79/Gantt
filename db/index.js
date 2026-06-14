@@ -1491,7 +1491,7 @@ function computeShiftedDates(succ, targetStart, db) {
   // v2.0 — Lit la charge depuis `charge_jours` (source de vérité) ; back-dérive
   // depuis l'écart courant en filet de sécurité (bases anciennes / tests).
   const charge =
-    succ.charge_jours && succ.charge_jours >= 1
+    succ.charge_jours && succ.charge_jours >= 0.25
       ? succ.charge_jours
       : Math.max(1, workingDaysBetweenServer(succ.start_date, succ.end_date))
   // v2.0 / F2 — Si `db` est fourni, on utilise le moteur allocation-aware
@@ -1554,7 +1554,7 @@ function dayCapacitySumServer(contexts, dayIso) {
 function predecessorFillsLastDayServer(db, pred) {
   if (!pred || pred.kind === 'milestone') return false
   const charge =
-    pred.charge_jours && pred.charge_jours >= 1
+    pred.charge_jours && pred.charge_jours >= 0.25
       ? pred.charge_jours
       : Math.max(1, workingDaysBetweenServer(pred.start_date, pred.end_date))
   const contexts = buildCollabContextsServer(
@@ -1562,7 +1562,7 @@ function predecessorFillsLastDayServer(db, pred) {
     pred.project_id,
     listTaskAssignments(db, pred.id),
   )
-  const needed = Math.max(1, charge)
+  const needed = Math.max(0.25, charge)
   let consumed = 0
   let cur = pred.start_date
   let lastCap = 0
@@ -1673,7 +1673,7 @@ function reconcilePredecessors(db, current, next) {
   // v2.0 — Préserve la charge stockée plutôt que de la back-dériver depuis
   // l'écart courant (plus juste sémantiquement).
   const charge =
-    next.charge_jours && next.charge_jours >= 1
+    next.charge_jours && next.charge_jours >= 0.25
       ? next.charge_jours
       : Math.max(
           1,
@@ -1909,6 +1909,17 @@ function ensureCollabIsMember(db, collabId, projectId) {
  *        ont été explicitement fournies par l'appelant).
  * @returns {{charge_jours:number|null, end_date:string}}
  */
+/**
+ * v2.7 / RG-GANTT-2308 — Normalise une charge en multiple de 0,25 jour, borne
+ * basse 0,25, haute 3650. Toute valeur non multiple de 0,25 est arrondie au
+ * quart le plus proche (ex. 0,6 → 0,5).
+ */
+function normalizeChargeQuarter(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return 0.25
+  return Math.min(3650, Math.max(0.25, Math.round(n / 0.25) * 0.25))
+}
+
 function resolveChargeAndEnd(next, patch, db, isUpdate = false) {
   if (next.kind === 'milestone') {
     return { charge_jours: null, end_date: next.start_date }
@@ -1959,12 +1970,13 @@ function resolveChargeAndEnd(next, patch, db, isUpdate = false) {
   // N'est actif que lors d'un PATCH (isUpdate=true) : à la création, si
   // charge_jours est fourni, end doit toujours être recalculée (cas 3a normal).
   if (isUpdate && hasExplicitCharge && hasExplicitEnd) {
-    const c = Math.max(1, Math.floor(Number(patch.charge_jours)))
+    // v2.7 / RG-GANTT-2308 — charge fractionnaire (multiple de 0,25, min 0,25).
+    const c = normalizeChargeQuarter(patch.charge_jours)
     return { charge_jours: c, end_date: patch.end_date }
   }
   // Cas 3a : charge explicite gagne.
   if (hasExplicitCharge) {
-    const c = Math.max(1, Math.floor(Number(patch.charge_jours)))
+    const c = normalizeChargeQuarter(patch.charge_jours)
     return { charge_jours: c, end_date: endFromCharge(next.start_date, c) }
   }
   // Cas 3b : end_date explicite → back-dérivation de la charge.
@@ -1981,7 +1993,7 @@ function resolveChargeAndEnd(next, patch, db, isUpdate = false) {
   }
   // Cas 3c : charge déjà connue (sur la tâche courante) → on la conserve et
   // recalcule end depuis le start (potentiellement nouveau).
-  if (next.charge_jours && next.charge_jours >= 1) {
+  if (next.charge_jours && next.charge_jours >= 0.25) {
     return {
       charge_jours: next.charge_jours,
       end_date: endFromCharge(next.start_date, next.charge_jours),
@@ -2028,7 +2040,7 @@ function enforceNotBeforeDate(next, db) {
   let charge = 0
   if (next.kind !== 'milestone') {
     charge =
-      next.charge_jours && next.charge_jours >= 1
+      next.charge_jours && next.charge_jours >= 0.25
         ? next.charge_jours
         : Math.max(1, workingDaysBetweenServer(next.start_date, next.end_date))
   }

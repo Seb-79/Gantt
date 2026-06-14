@@ -319,13 +319,17 @@ export default function TaskEditor({
   }
 
   /**
-   * v1.9 — Modifie la charge (jours ouvrés) → recalcule end_date.
-   * La valeur est bornée à un entier ≥ 1.
+   * v1.9 / v2.7 — Modifie la charge (jours ouvrés) → recalcule end_date.
+   * v2.7 / RG-GANTT-2308 — Charge FRACTIONNAIRE : multiple de 0,25, minimum 0,25.
+   * La valeur saisie est arrondie au quart le plus proche.
    *
    * @param raw  Valeur saisie (string venant de l'input number).
    */
   function handleChargeChange(raw: string) {
-    const n = Math.max(1, Math.floor(Number(raw) || 1))
+    const parsed = Number(raw)
+    const n = Number.isFinite(parsed)
+      ? Math.max(0.25, Math.round(parsed / 0.25) * 0.25)
+      : 0.25
     setCharge(n)
     if (startDate && kind === 'task') {
       setEndDate(endFromCharge(startDate, n))
@@ -800,14 +804,14 @@ export default function TaskEditor({
                     <label className="block text-xs w-24">
                       <span
                         className="text-slate-600"
-                        title="Nombre de jours ouvrés (lundi-vendredi). Détermine la date de fin."
+                        title="Charge en jours ouvrés, par pas de 0,25 (¼ de jour), minimum 0,25. Détermine la date de fin."
                       >
-                        Charge (j)
+                        Charge (j, pas 0,25)
                       </span>
                       <input
                         type="number"
-                        min={1}
-                        step={1}
+                        min={0.25}
+                        step={0.25}
                         className="mt-0.5 block w-full border border-slate-300 rounded px-2 py-1"
                         value={charge}
                         onChange={(e) => handleChargeChange(e.target.value)}

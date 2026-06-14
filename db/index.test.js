@@ -2473,3 +2473,47 @@ describe('v2.0 / F6 — task_assignments (multi-collab)', () => {
     fresh.close()
   })
 })
+
+// =============================================================================
+// v2.7 / RG-GANTT-2308 — Charge fractionnaire (multiples de 0,25 j)
+// =============================================================================
+describe('v2.7 / RG-GANTT-2308 — charge fractionnaire', () => {
+  let db
+  beforeEach(() => {
+    db = initDb(':memory:')
+  })
+
+  it('RG-GANTT-2308 — créer une activité de 0,5 jour : charge préservée, end = start', () => {
+    const r = createTask(db, {
+      id: 't_half',
+      name: 'Demi-journée',
+      start_date: '2026-06-01',
+      end_date: '2026-06-01',
+      charge_jours: 0.5,
+    })
+    expect(r.task.charge_jours).toBe(0.5)
+    expect(r.task.end_date).toBe('2026-06-01')
+  })
+
+  it('RG-GANTT-2308 — charge 1,5 arrondie au quart la plus proche est préservée', () => {
+    const r = createTask(db, {
+      id: 't_1_5',
+      name: 'Une journée et demie',
+      start_date: '2026-06-01',
+      end_date: '2026-06-01',
+      charge_jours: 1.5,
+    })
+    expect(r.task.charge_jours).toBe(1.5)
+  })
+
+  it('RG-GANTT-2308 — une saisie non multiple de 0,25 est normalisée (0,6 → 0,5)', () => {
+    const r = createTask(db, {
+      id: 't_0_6',
+      name: 'Bizarre',
+      start_date: '2026-06-01',
+      end_date: '2026-06-01',
+      charge_jours: 0.6,
+    })
+    expect(r.task.charge_jours).toBe(0.5)
+  })
+})

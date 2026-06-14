@@ -2070,6 +2070,18 @@ prédécesseur (pas sur la disponibilité propre du collaborateur du successeur)
 
 **Tests :** `utils.test.ts` → « RG-GANTT-2307 — sans collaborateur, lag 0 : successeur le JOUR SUIVANT ».
 
+### RG-GANTT-2308
+
+**(v2.7 / Charge fractionnaire)** La charge d'une activité (`charge_jours`) est un
+**multiple de 0,25 jour** (¼ de jour), **minimum 0,25**, maximum 3650. Toute
+saisie non multiple de 0,25 est arrondie au quart le plus proche (ex. 0,6 → 0,5).
+La charge est stockée telle quelle (REAL) et n'est plus arrondie à l'entier : une
+activité de 0,5 jour reste 0,5 (fin = début si la journée la contient). Combinée
+au relais fractionnaire (RG-GANTT-2305/2307), une tâche < 1 jour permet à son
+successeur de démarrer le même jour.
+
+**Tests :** `db/index.test.js` → « RG-GANTT-2308 — créer une activité de 0,5 jour : charge préservée, end = start », « RG-GANTT-2308 — charge 1,5 … est préservée », « RG-GANTT-2308 — une saisie non multiple de 0,25 est normalisée (0,6 → 0,5) ».
+
 ---
 
 ## Synthèse de couverture
@@ -2105,8 +2117,8 @@ fichier `*.test.*`).
 | 21 — Refonte Replan v2.3               | 2100..2110                       |      11 |
 | 22 — Tooltip custom (v2.2)             | 2200                             |       1 |
 | 23 — Morcellement (v2.5)               | 2300..2304                       |       5 |
-| 23b — Relais fractionnaire (v2.7)      | 2305..2307                       |       3 |
-| **Total**                              | —                                | **186** |
+| 23b — Relais fractionnaire (v2.7)      | 2305..2308                       |       4 |
+| **Total**                              | —                                | **187** |
 
 **Notes de couverture :**
 

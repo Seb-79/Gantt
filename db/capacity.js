@@ -147,7 +147,7 @@ export function addWorkingDaysWithAllocationServer(
     })
   }
   if (collabContexts.length === 0) return addWorkingDaysServer(startIso, charge)
-  const needed = Math.max(1, charge)
+  const needed = Math.max(0.25, charge)
   let consumed = 0
   let cur = startIso
   let lastWorked = startIso

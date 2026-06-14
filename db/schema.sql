@@ -95,7 +95,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   -- des SELECT existants (les colonnes start_date / end_date restent inchangées,
   -- elles ne sont plus que des caches recomputés à chaque mutation).
   -- NULL pour jalons et phases (qui n'ont pas de charge propre).
-  charge_jours    INTEGER,
+  -- v2.7 — Charge FRACTIONNAIRE (multiple de 0,25). SQLite stocke 0,25/0,5/…
+  -- en REAL même dans une colonne à affinité INTEGER (conversion non lossy),
+  -- donc les bases existantes n'ont pas besoin de migration de schéma.
+  charge_jours    REAL,
   -- v2.6 — Jalon imposé : 1 = date verrouillée (jamais replanifiée ni déplacée
   -- par la cascade, ex. « date de Noël ») ; 0 = non imposé (le jalon suit son
   -- prédécesseur comme une activité). Pertinent uniquement pour kind='milestone'.

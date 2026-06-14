@@ -55,15 +55,16 @@ const Lag = z
   .max(3650, 'doit être ≤ 3650')
 
 /**
- * v2.0 — Charge en jours ouvrés (≥ 1) d'une activité. Source de vérité
- * désormais : la date de fin est dérivée de `start_date + charge_jours`.
- * Plafonné à 3650 (≈ 10 ans) pour éviter les saisies aberrantes.
+ * v2.0 / v2.7 — Charge en jours ouvrés d'une activité. Source de vérité : la
+ * date de fin est dérivée de `start_date + charge_jours`.
+ * v2.7 / RG-GANTT-2308 — Charge FRACTIONNAIRE : multiple de 0,25 (¼ de jour),
+ * minimum 0,25, maximum 3650. Le DAL re-normalise au quart le plus proche.
  */
 const ChargeJours = z
   .number({ message: 'doit être un nombre' })
-  .int('doit être entier')
-  .min(1, 'doit être ≥ 1')
+  .min(0.25, 'doit être ≥ 0,25')
   .max(3650, 'doit être ≤ 3650')
+  .multipleOf(0.25, 'doit être un multiple de 0,25')
 
 /**
  * v1.18 — Priorité facultative pour le « Replan » : entier 1..5 ; 1 = la plus

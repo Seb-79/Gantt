@@ -434,7 +434,7 @@ export function computeEndFromCharge(
   // consommation pondérée par allocation × (1 − absence), SOMMÉE sur tous
   // les collabs affectés (additif uniforme, Q12a validé).
   const absences = ctx.absences || []
-  const needed = Math.max(1, charge)
+  const needed = Math.max(0.25, charge)
   let consumed = 0
   let cur = startIso
   let lastWorked = startIso
@@ -2274,15 +2274,14 @@ function placeTaskInTimeline(
 ): void {
   // v2.0 — Charge totale lue depuis `task.charge_jours` (source de vérité).
   const totalCharge =
-    t.charge_jours && t.charge_jours >= 1
+    t.charge_jours && t.charge_jours >= 0.25
       ? t.charge_jours
       : Math.max(1, workingDaysBetween(t.start_date, t.end_date))
   // v2.2 / RG-C (RG-GANTT-1904) — Reste à faire = charge × (1 − progress/100).
+  // v2.7 / RG-GANTT-2308 — Le reste à faire reste FRACTIONNAIRE (plus d'arrondi
+  // entier `Math.ceil`) : une charge de 0,5 reste 0,5. Borne basse 0,25.
   const progressFrac = Math.max(0, Math.min(100, t.progress ?? 0)) / 100
-  const effectiveCharge = Math.max(
-    1,
-    Math.ceil(totalCharge * (1 - progressFrac)),
-  )
+  const effectiveCharge = Math.max(0.25, totalCharge * (1 - progressFrac))
   // v2.3 / RG-GANTT-2103 (Option γ) — Pour une activité en cours
   // (0 < progress < 100), `start_date` est FIGÉE à sa valeur historique : le
   // Replan ne la recalcule pas, la consommation du reste à faire repart de
@@ -3132,7 +3131,7 @@ function sumDescendantTaskCharges(nodeId: string, tasks: Task[]): number {
   let total = 0
   const children = tasks.filter((t) => t.parent_id === nodeId)
   for (const c of children) {
-    if (c.kind === 'task' && c.charge_jours && c.charge_jours >= 1) {
+    if (c.kind === 'task' && c.charge_jours && c.charge_jours >= 0.25) {
       total += c.charge_jours
     } else if (c.kind === 'phase') {
       total += sumDescendantTaskCharges(c.id, tasks)
@@ -3176,7 +3175,7 @@ function phaseChildContribution(
 ): { charge: number; progress: number } | null {
   if (c.kind === 'milestone') return null
   if (c.kind === 'task') {
-    const chg = c.charge_jours && c.charge_jours >= 1 ? c.charge_jours : 0
+    const chg = c.charge_jours && c.charge_jours >= 0.25 ? c.charge_jours : 0
     return { charge: chg, progress: c.progress ?? 0 }
   }
   // c.kind === 'phase' : récursion.

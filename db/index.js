@@ -1557,6 +1557,12 @@ function predecessorFillsLastDayServer(db, pred) {
     pred.charge_jours && pred.charge_jours >= 0.25
       ? pred.charge_jours
       : Math.max(1, workingDaysBetweenServer(pred.start_date, pred.end_date))
+  // NB (revue #4) — On utilise la charge TOTALE pour le remplissage de la
+  // dernière journée. Tenir compte du reste (× (1 − progress)) pour une activité
+  // EN COURS a été tenté puis abandonné : le calcul depuis `start_date` ne
+  // s'aligne pas proprement sur `end_date` (sémantique de l'in-progress mal
+  // définie) et déstabilisait des comportements bien testés. À reprendre avec
+  // une vraie spec de l'in-progress si le besoin se confirme.
   const contexts = buildCollabContextsServer(
     db,
     pred.project_id,

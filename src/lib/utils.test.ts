@@ -3439,3 +3439,165 @@ describe('v2.7 / RG-GANTT-2308 — demi-journée : successeur le même jour', ()
     expect(sStart).toBe('2026-06-01')
   })
 })
+
+// =============================================================================
+// v2.7 — Correctifs revue de code (surcharge à capacité réelle, #2 + #5)
+// =============================================================================
+describe('v2.7 / RG-GANTT-2306 — surcharge mesurée sur la capacité RÉELLE', () => {
+  it('RG-GANTT-2306 — Σ 1,0 sur un collab à 50% → SURCHARGE (capacité 0,5)', () => {
+    const tasks: Task[] = [
+      mkTask('A', {
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+      mkTask('B', {
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const allocs: MemberAllocation[] = [
+      {
+        id: 'a1',
+        project_id: 'p1',
+        collaborator_id: 'c1',
+        start_date: '2026-01-01',
+        end_date: '2026-12-31',
+        allocation_pct: 50,
+      },
+    ]
+    // Timeline moteur : A et B consomment chacune 0,5 le 02/06 → Σ 1,0 > 0,5.
+    const timeline = new Map([
+      [
+        'c1',
+        [
+          {
+            taskId: 'A',
+            start: '2026-06-02',
+            end: '2026-06-02',
+            fraction: 0.5,
+          },
+          {
+            taskId: 'B',
+            start: '2026-06-02',
+            end: '2026-06-02',
+            fraction: 0.5,
+          },
+        ],
+      ],
+    ])
+    const overloads = checkCoherence(tasks, timeline, allocs, []).filter(
+      (i) => i.kind === 'overload',
+    )
+    expect(overloads.length).toBe(1)
+  })
+
+  it('RG-GANTT-2306 — Σ 0,5 sur un collab à 50% → PAS de surcharge', () => {
+    const tasks: Task[] = [
+      mkTask('A', {
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+      mkTask('B', {
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const allocs: MemberAllocation[] = [
+      {
+        id: 'a1',
+        project_id: 'p1',
+        collaborator_id: 'c1',
+        start_date: '2026-01-01',
+        end_date: '2026-12-31',
+        allocation_pct: 50,
+      },
+    ]
+    const timeline = new Map([
+      [
+        'c1',
+        [
+          {
+            taskId: 'A',
+            start: '2026-06-02',
+            end: '2026-06-02',
+            fraction: 0.25,
+          },
+          {
+            taskId: 'B',
+            start: '2026-06-02',
+            end: '2026-06-02',
+            fraction: 0.25,
+          },
+        ],
+      ],
+    ])
+    const overloads = checkCoherence(tasks, timeline, allocs, []).filter(
+      (i) => i.kind === 'overload',
+    )
+    expect(overloads).toEqual([])
+  })
+})
+
+// =============================================================================
+// v2.7 — Correctif revue #1 : le Plan de charge ne double-compte pas une
+//   journée PARTAGÉE fractionnairement (utilise la fraction réelle de l'entrée).
+// =============================================================================
+describe('v2.7 / RG-GANTT-2305 — plan de charge sur journée partagée', () => {
+  const c1: Collaborator = {
+    id: 'c1',
+    name: 'Alice',
+    color: '#3b82f6',
+    position: 0,
+  }
+
+  it('RG-GANTT-2305 — A(0,5)+B(0,5) le même jour → charge 1,0 (pas 2,0)', () => {
+    const tasks: Task[] = [
+      mkTask('A', {
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+      mkTask('B', {
+        collaborator_id: 'c1',
+        collaborator_ids: ['c1'],
+        project_id: 'p1',
+      }),
+    ]
+    const allocs: MemberAllocation[] = [
+      {
+        id: 'a1',
+        project_id: 'p1',
+        collaborator_id: 'c1',
+        start_date: '2026-01-01',
+        end_date: '2026-12-31',
+        allocation_pct: 100,
+      },
+    ]
+    const dates = buildDateRange('2026-06-02', '2026-06-02')
+    const timeline = new Map([
+      [
+        'c1',
+        [
+          {
+            taskId: 'A',
+            start: '2026-06-02',
+            end: '2026-06-02',
+            fraction: 0.5,
+          },
+          {
+            taskId: 'B',
+            start: '2026-06-02',
+            end: '2026-06-02',
+            fraction: 0.5,
+          },
+        ],
+      ],
+    ])
+    const wl = computeWorkload(tasks, [c1], dates, allocs, [], timeline)
+    expect(wl.get('c1')![0]).toBeCloseTo(1.0, 9)
+  })
+})

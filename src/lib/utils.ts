@@ -1396,14 +1396,7 @@ export function computeWorkload(
   // sur la cellule du collab correspondant. Les autres tâches (non placées
   // par le moteur, ex. sans collab) ne contribuent pas via ce chemin.
   if (engineTimeline) {
-    paintFromEngineTimeline(
-      result,
-      tasks,
-      engineTimeline,
-      dates,
-      allocations,
-      absences,
-    )
+    paintFromEngineTimeline(result, engineTimeline, dates)
     return result
   }
   // Fallback v2.2 (rétrocompat) : lecture par plage [start_date, end_date].
@@ -1427,66 +1420,22 @@ export function computeWorkload(
  */
 function paintFromEngineTimeline(
   result: Map<string, number[]>,
-  tasks: Task[],
   engineTimeline: Map<string, TimelineEntry[]>,
   dates: Date[],
-  allocations: MemberAllocation[],
-  absences: CollaboratorAbsence[],
 ): void {
-  const taskById = new Map(tasks.map((t) => [t.id, t]))
+  // v2.7 (fix revue #1) — Chaque entrée est désormais PAR JOUR et porte la
+  // fraction EXACTE consommée par le collab ce jour-là. On ajoute donc
+  // directement cette fraction, sans recalculer la capacité (ce qui
+  // double-comptait les journées partagées entre deux activités).
+  const idxByIso = new Map<string, number>()
+  dates.forEach((d, i) => idxByIso.set(dateToIso(d), i))
   for (const [cId, entries] of engineTimeline) {
     const arr = result.get(cId)
     if (!arr) continue
-    for (const entry of entries) {
-      const t = taskById.get(entry.taskId)
-      if (!t) continue
-      accumulateEntryWorkload(
-        t,
-        arr,
-        cId,
-        entry.start,
-        entry.end,
-        dates,
-        allocations,
-        absences,
-      )
-    }
-  }
-}
-
-/**
- * v2.3 / RG-GANTT-2104 — Helper : peint la charge d'une tâche sur la plage
- * effective `[entryStart, entryEnd]` retournée par le moteur Replan, en
- * pondérant par allocation × (1−absence) comme `accumulateTaskWorkload`.
- */
-function accumulateEntryWorkload(
-  t: Task,
-  arr: number[],
-  collabId: string,
-  entryStart: string,
-  entryEnd: string,
-  dates: Date[],
-  allocations: MemberAllocation[],
-  absences: CollaboratorAbsence[],
-): void {
-  const start = isoToDate(entryStart).getTime()
-  const end = isoToDate(entryEnd).getTime()
-  const useAllocations = allocations.length > 0
-  for (let i = 0; i < dates.length; i++) {
-    const d = dates[i]
-    const ts = d.getTime()
-    if (ts < start || ts > end) continue
-    if (isNonWorkingDay(d)) continue
-    if (useAllocations) {
-      arr[i] += getDailyAllocation(
-        dateToIso(d),
-        allocations,
-        t.project_id,
-        collabId,
-        absences,
-      )
-    } else {
-      arr[i] += 1
+    for (const e of entries) {
+      const i = idxByIso.get(e.start)
+      if (i === undefined) continue
+      arr[i] += e.fraction ?? 0
     }
   }
 }
@@ -1745,7 +1694,12 @@ export interface ReplanMove {
  */
 export interface WorkedDay {
   day: string
+  /** Fraction TOTALE consommée ce jour (Σ sur les collabs). */
   frac: number
+  /** v2.7 (fix revue) — Répartition EXACTE par collaborateur (telle que
+   *  consommée par le tissage), pour que le plan de charge et la surcharge
+   *  utilisent la vraie part de chaque collab (pas une division uniforme). */
+  byCollab: Array<{ cId: string; frac: number }>
 }
 
 /**
@@ -1824,7 +1778,7 @@ function placeChargeWeaving(
   const maxScan = Math.max(Math.ceil(needed) * 30, 10000)
   for (let i = 0; i < maxScan; i++) {
     const remaining = needed - consumed
-    const taken =
+    const { placed, byCollab } =
       collabIds.length === 0
         ? consumeNoCollabDay(cur, remaining)
         : consumeCollabDay(
@@ -1837,11 +1791,11 @@ function placeChargeWeaving(
             projectId,
             useAllocations,
           )
-    if (taken > 0) {
-      consumed += taken
+    if (placed > 0) {
+      consumed += placed
       if (firstWorked === null) firstWorked = cur
       lastWorked = cur
-      days.push({ day: cur, frac: taken })
+      days.push({ day: cur, frac: placed, byCollab })
       // Tolérance numérique (cumul de fractions 0.25/0.5/0.75/1.0).
       if (consumed >= needed - 1e-9) break
     }
@@ -1850,20 +1804,27 @@ function placeChargeWeaving(
   return { start: firstWorked ?? earliest, end: lastWorked, days }
 }
 
+/** v2.7 — Résultat de la consommation d'UNE journée par une activité. */
+interface DayConsumption {
+  placed: number
+  byCollab: Array<{ cId: string; frac: number }>
+}
+
 /**
  * v2.7 — Sans collaborateur (F0) : un jour ouvré offre 1 unité ; on consomme
- * `min(reste, 1)`. Aucune écriture dans la grille (pas de ressource partagée).
+ * `min(reste, 1)`. Aucune écriture dans la grille (pas de ressource partagée),
+ * et aucune répartition par collab (la tâche n'en a pas).
  */
-function consumeNoCollabDay(dayIso: string, remaining: number): number {
-  if (isNonWorkingDay(isoToDate(dayIso))) return 0
-  return Math.min(remaining, 1)
+function consumeNoCollabDay(dayIso: string, remaining: number): DayConsumption {
+  if (isNonWorkingDay(isoToDate(dayIso))) return { placed: 0, byCollab: [] }
+  return { placed: Math.min(remaining, 1), byCollab: [] }
 }
 
 /**
  * v2.7 — Avec collaborateur(s) : consomme le RESTE disponible du jour
  * (`Σ capacité_collab − déjà_consommé`), borné par `remaining`, et l'impute
  * gloutonnement aux collabs (mutation de `timeline`). Retourne la fraction
- * réellement consommée ce jour (0 si le jour est plein / non ouvré).
+ * totale consommée + sa répartition EXACTE par collab.
  */
 function consumeCollabDay(
   dayIso: string,
@@ -1874,7 +1835,7 @@ function consumeCollabDay(
   absences: CollaboratorAbsence[],
   projectId: string | null,
   useAllocations: boolean,
-): number {
+): DayConsumption {
   const avail: Array<{ cId: string; av: number }> = []
   let total = 0
   for (const cId of collabIds) {
@@ -1890,16 +1851,18 @@ function consumeCollabDay(
     if (av > 0) avail.push({ cId, av })
     total += av
   }
-  if (total <= 0) return 0
+  if (total <= 0) return { placed: 0, byCollab: [] }
   let toPlace = Math.min(remaining, total)
   const placed = toPlace
+  const byCollab: Array<{ cId: string; frac: number }> = []
   for (const { cId, av } of avail) {
     if (toPlace <= 1e-9) break
     const give = Math.min(av, toPlace)
     addConsumption(timeline, cId, dayIso, give)
+    byCollab.push({ cId, frac: give })
     toPlace -= give
   }
-  return placed
+  return { placed, byCollab }
 }
 
 /**
@@ -2052,12 +2015,14 @@ function blockCompletedTaskDays(
   while (cur <= endIso) {
     if (!isNonWorkingDay(isoToDate(cur))) {
       let frac = 0
+      const byCollab: Array<{ cId: string; frac: number }> = []
       for (const cId of collabIds) {
         const cap = collabDayCapacity(cur, cId, [], [], null, false)
         addConsumption(timeline, cId, cur, cap)
+        byCollab.push({ cId, frac: cap })
         frac += cap
       }
-      days.push({ day: cur, frac })
+      days.push({ day: cur, frac, byCollab })
     }
     cur = addDaysIso(cur, 1)
   }
@@ -2444,20 +2409,17 @@ function buildEnrichedTimeline(
     const collabIds = taskCollabIds(t)
     if (collabIds.length === 0) continue
     const days = workedDays.get(t.id) ?? envelopeWorkingDays(t, proposed)
-    // v2.7 — La fraction d'une tâche est répartie entre ses collabs (additif
-    // F6). Pour le suivi par collab, on divise la fraction du jour par le
-    // nombre de collabs (approx. uniforme, cohérente avec computeEndFromCharge).
-    for (const cId of collabIds) {
-      const list = timeline.get(cId) ?? []
-      for (const d of days) {
-        list.push({
-          taskId: t.id,
-          start: d.day,
-          end: d.day,
-          fraction: d.frac / collabIds.length,
-        })
+    // v2.7 (fix revue #1/#3) — On émet UNE entrée par (collab, jour) avec la
+    // fraction EXACTE consommée par ce collab ce jour-là (depuis `byCollab`),
+    // au lieu d'une division uniforme. Le plan de charge et la surcharge
+    // reflètent ainsi la consommation réelle (pas de double-comptage des
+    // journées partagées).
+    for (const d of days) {
+      for (const { cId, frac } of d.byCollab) {
+        const list = timeline.get(cId) ?? []
+        list.push({ taskId: t.id, start: d.day, end: d.day, fraction: frac })
+        timeline.set(cId, list)
       }
-      timeline.set(cId, list)
     }
   }
   for (const [cId, list] of timeline) {
@@ -2470,7 +2432,8 @@ function buildEnrichedTimeline(
 /**
  * v2.5 — Jours ouvrés de l'enveloppe proposée `[start, end]` d'une tâche.
  * Fallback de `buildEnrichedTimeline` pour les tâches qui n'ont pas de jours
- * travaillés enregistrés (ne devrait pas arriver dans le flux normal).
+ * travaillés enregistrés (ne devrait pas arriver dans le flux normal). La
+ * fraction par collab y est répartie uniformément (cas dégénéré only).
  */
 function envelopeWorkingDays(
   t: Task,
@@ -2479,10 +2442,18 @@ function envelopeWorkingDays(
   const p = proposed.get(t.id)
   const start = p?.start ?? t.start_date
   const end = p?.end ?? t.end_date
+  const collabIds = taskCollabIds(t)
+  const per = collabIds.length > 0 ? 1 / collabIds.length : 1
   const days: WorkedDay[] = []
   let cur = start
   while (cur <= end) {
-    if (!isNonWorkingDay(isoToDate(cur))) days.push({ day: cur, frac: 1 })
+    if (!isNonWorkingDay(isoToDate(cur))) {
+      days.push({
+        day: cur,
+        frac: 1,
+        byCollab: collabIds.map((cId) => ({ cId, frac: per })),
+      })
+    }
     cur = addDaysIso(cur, 1)
   }
   return days
@@ -2740,10 +2711,11 @@ function dayCapacityForCollab(
 function collectConflictPairKeys(
   entries: TimelineEntry[],
   cId: string,
+  taskById: Map<string, Task>,
   allocations: MemberAllocation[],
   absences: CollaboratorAbsence[],
 ): Set<string> {
-  // Jour → liste des (taskId, fraction, projet) travaillés ce jour par ce collab.
+  // Jour → liste des (taskId, fraction) travaillés ce jour par ce collab.
   const byDay = new Map<string, Array<{ id: string; frac: number }>>()
   for (const e of entries) {
     const arr = byDay.get(e.start) ?? []
@@ -2754,10 +2726,17 @@ function collectConflictPairKeys(
   for (const [day, list] of byDay) {
     if (list.length < 2) continue
     const sum = list.reduce((s, x) => s + x.frac, 0)
-    const cap = dayCapacityForCollab(cId, day, null, allocations, absences)
-    // Capacité « no-allocation » = 1 ; sinon allocation réelle. Surcharge ssi
-    // la somme dépasse la capacité (tolérance numérique).
-    const capacity = allocations.length === 0 ? 1 : cap
+    // v2.7 (fix revue) — Capacité = allocation RÉELLE du collab ce jour. On
+    // récupère le projet via l'une des tâches du jour (toutes du même projet
+    // dans une vue projet). Sans allocations → capacité 1 (jour ouvré).
+    const projectId = taskById.get(list[0].id)?.project_id ?? null
+    const capacity = dayCapacityForCollab(
+      cId,
+      day,
+      projectId,
+      allocations,
+      absences,
+    )
     if (sum <= capacity + 1e-9) continue
     const arr = list.map((x) => x.id).sort()
     for (let i = 0; i < arr.length; i++) {
@@ -2780,6 +2759,7 @@ function findOverloadPairsFromTimeline(
   for (const key of collectConflictPairKeys(
     entries,
     cId,
+    taskById,
     allocations,
     absences,
   )) {
